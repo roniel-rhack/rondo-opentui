@@ -196,11 +196,20 @@ tests/            # bun:test — core, CLI and live TUI rendering
 ## Releases
 
 Tagging `vX.Y.Z` builds standalone binaries for macOS (arm64/x64) and Linux
-(arm64/x64) on native runners, publishes them with checksums, and asks the
-Homebrew tap to refresh its formula.
+(arm64/x64) on native runners, publishes them with `checksums-sha256.txt`, and
+asks [roniel-rhack/homebrew-tap](https://github.com/roniel-rhack/homebrew-tap)
+to refresh `Formula/rondo-opentui.rb`.
 
 ```bash
 git tag v0.1.0 && git push origin v0.1.0
+```
+
+The tap update needs a `HOMEBREW_TAP_TOKEN` repository secret with `repo`
+scope on the tap. Without it the release still publishes and the formula can be
+refreshed by hand:
+
+```bash
+gh workflow run update-rondo-opentui.yml -R roniel-rhack/homebrew-tap -f version=0.1.0
 ```
 
 ## Tests
