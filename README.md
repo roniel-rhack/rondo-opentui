@@ -7,21 +7,20 @@ original Go/Bubbletea implementation.
 Same data, same CLI, new interface: real mouse support, layered overlays,
 flexbox layout, a command palette and live filtering.
 
-```
- ◆ RonDO   ▤ All 14  ◐ Active 12  ✓ Done 2  ✎ Journal 1                                   12:16
-╭─ ● Tasks ────────────────────────────────────╮ ╭─ Details ───────────────────────────────────╮
-│┃ ○ Plan Q3 roadmap                           │ │ ○ Plan Q3 roadmap                           │
-│┃     Aug 23             #planning            │ │                                             │
-││ ○ Ship v2 release                     HIGH  │ │  Pending   Medium                           │
-││   • Aug 21   ●●●● 3/3  #release             │ │                                             │
-│  ✓ Update dependencies                       │ │ Due        Aug 23, 2026  SOON               │
-││ ○ Migrate database to PostgreSQL      HIGH  │ │ Tags       #planning                        │
-││   ! Mar 16   ○○○○ 0/5  #database #infrast…  │ │                                             │
-││ ◐ Fix login timeout bug               URG!  │ │ SUBTASKS                                    │
-││   ! Feb 23   ●●○○ 2/4  #bug #auth +1        │ │ ████░░░░░░░░░░░░  1/4                       │
-╰─ 14 tasks ───────────────────────────────────╯ ╰─ #14 · updated Aug 21, 2026 12:16 PM ───────╯
-  a add  e edit  space status  t subtask  / filter  f focus  ^k palette  ? help     ⇅ Created
-```
+<p align="center">
+  <img src="assets/demo.gif" width="820" alt="RonDO demo: filtering, the task form, the command palette and the journal">
+</p>
+
+<p align="center">
+  <img src="assets/tasks.png" width="820" alt="Task list and detail panel">
+</p>
+<p align="center"><em>Metadata grid per row, subtask meters, notes and time logs in the detail panel</em></p>
+
+<p align="center">
+  <img src="assets/journal.png" width="820" alt="Journal view">
+</p>
+<p align="center"><em>One note per day, timestamped entries, smart date labels</em></p>
+
 
 ## Install
 
@@ -192,6 +191,19 @@ src/
     components/   # Header, lists, detail, overlays, forms, dialogs
 tests/            # bun:test — core, CLI and live TUI rendering
 ```
+
+## Demo
+
+The recording is generated with [VHS](https://github.com/charmbracelet/vhs) from
+a seeded throwaway profile, so it never touches your own database:
+
+```bash
+bun run build
+PATH="$PWD/dist:$PATH" vhs assets/demo.tape
+```
+
+`scripts/demo-seed.sh` fills `$RONDO_HOME` with sample tasks, subtasks, notes,
+time logs and journal entries, with due dates relative to today.
 
 ## Releases
 

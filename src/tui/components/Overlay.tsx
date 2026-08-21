@@ -49,16 +49,21 @@ export function Overlay({
     : Math.max(Math.floor(screenHeight / 8), 1);
 
   return (
-    <box
-      position="absolute"
-      left={0}
-      top={0}
-      width={screenWidth}
-      height={screenHeight}
-      zIndex={100}
-      backgroundColor={mix(theme.bg, theme.scrim, entrance)}
-      onMouseDown={onBackdropClick}
-    >
+    <>
+      {/* Backdrop and modal are siblings: nesting them would make the dialog
+          inherit the scrim's opacity and turn its text translucent. */}
+      <box
+        position="absolute"
+        left={0}
+        top={0}
+        width={screenWidth}
+        height={screenHeight}
+        zIndex={100}
+        backgroundColor={theme.scrim}
+        opacity={0.72 * entrance}
+        onMouseDown={onBackdropClick}
+      />
+
       <box
         position="absolute"
         left={left}
@@ -117,7 +122,7 @@ export function Overlay({
           </box>
         ) : null}
       </box>
-    </box>
+    </>
   );
 }
 

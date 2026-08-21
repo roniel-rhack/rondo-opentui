@@ -1,5 +1,9 @@
 import { type KeyEvent } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
+import {
+  useKeyboard,
+  useRenderer,
+  useTerminalDimensions,
+} from "@opentui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   formatDateTime,
@@ -117,8 +121,16 @@ function fromTask(task: Task): TaskFormValues {
 
 export function App({ data, onQuit }: AppProps) {
   const { width, height } = useTerminalDimensions();
+  const renderer = useRenderer();
   const [dark, setDark] = useState(isDark());
   const theme = useMemo(() => tuiTheme(dark), [dark]);
+
+  // Repaint the base layer when the palette changes, otherwise the previous
+  // theme lingers wherever nothing else marked the cells dirty.
+  useEffect(() => {
+    renderer.setBackgroundColor(theme.bg);
+    renderer.requestRender();
+  }, [renderer, theme]);
   const [cfg, setCfg] = useState<Config>(data.cfg);
 
   const [tasks, setTasks] = useState<Task[]>(() => data.listTasks());
