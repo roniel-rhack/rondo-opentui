@@ -1,10 +1,10 @@
 /**
  * Design tokens for the TUI.
  *
- * The palette is intentionally richer than the CLI one: a near-black blue base
- * with layered surfaces, a cyan accent, a violet secondary and semantic colors
- * that keep their meaning in both light and dark mode. Components never
- * hard-code a color — everything comes from here.
+ * The palette is intentionally richer than the CLI one: a neutral gray base in
+ * the VS Code Dark Modern range with layered surfaces, a cyan accent, a violet
+ * secondary and semantic colors that keep their meaning in both light and dark
+ * mode. Components never hard-code a color — everything comes from here.
  */
 export interface TuiTheme {
   dark: boolean;
@@ -49,34 +49,34 @@ export interface TuiTheme {
 const DARK: TuiTheme = {
   dark: true,
 
-  bg: "#0b0d13",
-  surface: "#11141d",
-  surfaceAlt: "#171b27",
-  surfaceHigh: "#1c2130",
+  bg: "#1e1e1e",
+  surface: "#252526",
+  surfaceAlt: "#2d2d30",
+  surfaceHigh: "#333336",
 
-  border: "#252b3b",
-  borderSubtle: "#1a1f2c",
+  border: "#3c3c3c",
+  borderSubtle: "#2b2b2b",
   borderFocus: "#22d3ee",
 
-  text: "#e8ecf5",
-  textDim: "#9aa4bd",
-  textMuted: "#5d6780",
-  textOn: "#07090f",
+  text: "#e4e4e4",
+  textDim: "#a6a6a6",
+  textMuted: "#7a7a7a",
+  textOn: "#0d1417",
 
   accent: "#22d3ee",
   accentDim: "#0e7f92",
-  accentSoft: "#0d2b33",
-  secondary: "#a78bfa",
+  accentSoft: "#123840",
+  secondary: "#c5a5ff",
 
-  success: "#34d399",
+  success: "#4ade80",
   warning: "#fbbf24",
   danger: "#fb7185",
   info: "#60a5fa",
 
-  selectionBg: "#1b2333",
-  hoverBg: "#151a26",
-  scrim: "#05060a",
-  track: "#232a3a",
+  selectionBg: "#2b3b41",
+  hoverBg: "#2a2d2e",
+  scrim: "#101010",
+  track: "#3c3c3c",
 };
 
 const LIGHT: TuiTheme = {

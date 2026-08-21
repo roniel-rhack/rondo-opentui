@@ -14,7 +14,7 @@ Set Height 660
 Set FontSize 15
 Set Padding 18
 Set TypingSpeed 45ms
-Set Theme { "name": "RonDO", "background": "#0b0d13", "foreground": "#e8ecf5", "cursor": "#22d3ee", "selection": "#1b2333", "black": "#11141d", "red": "#fb7185", "green": "#34d399", "yellow": "#fbbf24", "blue": "#60a5fa", "magenta": "#a78bfa", "cyan": "#22d3ee", "white": "#e8ecf5", "brightBlack": "#5d6780", "brightRed": "#fb7185", "brightGreen": "#34d399", "brightYellow": "#fbbf24", "brightBlue": "#60a5fa", "brightMagenta": "#a78bfa", "brightCyan": "#22d3ee", "brightWhite": "#ffffff" }
+Set Theme { "name": "RonDO", "background": "#1e1e1e", "foreground": "#e4e4e4", "cursor": "#22d3ee", "selection": "#2b3b41", "black": "#252526", "red": "#fb7185", "green": "#4ade80", "yellow": "#fbbf24", "blue": "#60a5fa", "magenta": "#c5a5ff", "cyan": "#22d3ee", "white": "#e4e4e4", "brightBlack": "#7a7a7a", "brightRed": "#fb7185", "brightGreen": "#4ade80", "brightYellow": "#fbbf24", "brightBlue": "#60a5fa", "brightMagenta": "#c5a5ff", "brightCyan": "#22d3ee", "brightWhite": "#ffffff" }
 
 # ─── Setup (hidden) ───
 Hide
