@@ -1,5 +1,5 @@
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   formatNoteTitle,
   formatTime,
@@ -7,6 +7,7 @@ import {
 } from "../../core/config/config.ts";
 import type { Note } from "../../core/journal/journal.ts";
 import { GoTime } from "../../core/time.ts";
+import { useSmoothScrollIntoView } from "../hooks/useSmoothScroll.ts";
 import type { TuiTheme } from "../theme.ts";
 
 interface NoteListProps {
@@ -67,15 +68,17 @@ function NoteRows({
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
   const selectedId = notes[selected]?.id;
 
-  useEffect(() => {
-    if (selectedId === undefined) return;
-    scrollRef.current?.scrollChildIntoView(`note-row-${selectedId}`);
-  }, [selectedId]);
+  useSmoothScrollIntoView(
+    scrollRef,
+    selectedId === undefined ? undefined : `note-row-${selectedId}`,
+  );
 
   return (
     <scrollbox
       ref={scrollRef}
-      focused={focused}
+      // Never focused, or the scrollbox would answer j/k itself and fight the
+      // cursor-driven scrolling. Wheel and drag still work.
+      focused={false}
       flexGrow={1}
       scrollX={false}
       scrollbarOptions={{

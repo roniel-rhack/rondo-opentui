@@ -46,10 +46,12 @@ src/
     commands/      tasks · journal · subtasks · timelog · note · misc · config · skill
   tui/             OpenTUI + React
     app.tsx        State, keyboard routing, layout, modals
-    state.ts       Pure selectors: filtering, sorting, fuzzy matching
+    state.ts       Tabs (Active first, All last) and pure selectors:
+                   filtering, sorting, fuzzy matching
     data.ts        Store facade the components talk to
     theme.ts       Design tokens (dark + light), mix(), meter()
-    hooks/         usePomodoro · useTween/useEntrance/useCountdown
+    hooks/         usePomodoro · useTween/useEntrance/useCountdown ·
+                   useSmoothScrollIntoView
     components/    Header · TaskList · TaskDetail · JournalPanel · Panels ·
                    Dialogs · TaskForm · Settings · Overlay · primitives
 tests/             bun:test — core, CLI, TUI selectors, live TUI rendering
@@ -100,8 +102,15 @@ Hard-won, all of them cost time once:
   translucent backdrop inherits it and turns unreadable — keep them siblings.
 - **Nothing repaints unless it is dirty.** After a palette switch, call
   `renderer.setBackgroundColor()` + `requestRender()` or the old colors linger.
-- **Scrollboxes do not follow the cursor.** Give rows an `id` and call
-  `scrollChildIntoView(id)` when the selection changes.
+- **Scrollboxes do not follow the cursor.** Give rows an `id` and scroll to it
+  when the selection changes — `useSmoothScrollIntoView` does that with an
+  animated offset.
+- **A focused `<scrollbox>` answers `j`/`k`/arrows itself**, so a list that
+  also scrolls from its own cursor scrolls twice per keypress. Pass
+  `focused={false}` when the app routes those keys.
+- **`scrollChildIntoView` only shows up in `scrollTop` after the next layout
+  pass**, so it cannot be used to probe for a target. Absolute child positions
+  lag the same way: measure offsets against the first row instead.
 - **`scrollbarOptions={{ visible }}` forces the bar on**; omit it for auto.
 - `<markdown>` renders nothing without a tree-sitter client — not worth it.
 - The React root re-renders itself outside `act()`; that warning is
