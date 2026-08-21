@@ -204,3 +204,15 @@ describe("focus store", () => {
     expect(sessions[0]!.taskId).toBe(0);
   });
 });
+
+describe("focus store delete", () => {
+  test("delete removes an abandoned session", () => {
+    const store = newStore();
+    const sess = session({ taskId: 7 });
+    store.create(sess);
+
+    store.delete(sess.id);
+
+    expect(store.listByTask(7).length).toBe(0);
+  });
+});

@@ -14,6 +14,8 @@ interface NoteListProps {
   theme: TuiTheme;
   cfg: Config;
   notes: Note[];
+  /** Overrides the default empty message, e.g. while a search filters. */
+  emptyText?: string;
   selected: number;
   focused: boolean;
   onSelect: (index: number) => void;
@@ -24,6 +26,7 @@ export function NoteList({
   theme,
   cfg,
   notes,
+  emptyText,
   selected,
   focused,
   onSelect,
@@ -31,7 +34,9 @@ export function NoteList({
   if (notes.length === 0) {
     return (
       <box flexGrow={1} alignItems="center" justifyContent="center" padding={2}>
-        <text fg={theme.textMuted}>No journal notes yet — press a to write</text>
+        <text fg={theme.textMuted}>
+          {emptyText ?? "No journal notes yet — press a to write"}
+        </text>
       </box>
     );
   }

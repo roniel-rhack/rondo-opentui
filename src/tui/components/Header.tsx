@@ -14,6 +14,8 @@ interface HeaderProps {
   timerLabel: string;
   timerRatio: number;
   timerColor: string;
+  /** Title of the task the session is attached to, when there is one. */
+  timerTask?: string;
   cycleDots: string;
   clock: string;
   compact: boolean;
@@ -74,6 +76,7 @@ export function Header({
   timerLabel,
   timerRatio,
   timerColor,
+  timerTask,
   cycleDots,
   clock,
   compact,
@@ -115,17 +118,23 @@ export function Header({
 
         {timer ? (
           <box flexDirection="row" paddingRight={1}>
+            {timerTask && !compact ? (
+              <text fg={theme.textDim}>{`${timerTask} · `}</text>
+            ) : null}
             <text fg={timerColor} attributes={TextAttributes.BOLD}>
               {`${timerLabel} ${timer} `}
             </text>
             {compact ? null : (
               <>
-                <Meter
-                  theme={theme}
-                  ratio={timerRatio}
-                  width={10}
-                  color={timerColor}
-                />
+                {/* The task title takes the meter's room; keep whichever fits. */}
+                {timerTask ? null : (
+                  <Meter
+                    theme={theme}
+                    ratio={timerRatio}
+                    width={10}
+                    color={timerColor}
+                  />
+                )}
                 <text fg={theme.textMuted}>{` ${cycleDots}`}</text>
               </>
             )}

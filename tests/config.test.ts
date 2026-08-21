@@ -58,9 +58,16 @@ describe("defaults", () => {
   });
 
   test("path points at ~/.todo-app/config.json", () => {
-    const p = configPath();
-    expect(basename(p)).toBe("config.json");
-    expect(basename(dirname(p))).toBe(".todo-app");
+    // Other test files may export RONDO_HOME into this shared process.
+    const previous = process.env.RONDO_HOME;
+    delete process.env.RONDO_HOME;
+    try {
+      const p = configPath();
+      expect(basename(p)).toBe("config.json");
+      expect(basename(dirname(p))).toBe(".todo-app");
+    } finally {
+      if (previous !== undefined) process.env.RONDO_HOME = previous;
+    }
   });
 });
 
@@ -377,5 +384,20 @@ describe("persistence", () => {
     const decoded = fromJSON(toJSON(cfg));
     validateWithWarnings(decoded);
     expect(decoded.panelRatio).toBe(0.55);
+  });
+});
+
+describe("theme preference", () => {
+  test("survives a save and load round trip", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rondo-theme-"));
+    const path = join(dir, "config.json");
+    const cfg = defaultConfig();
+    cfg.theme = "light";
+    save(cfg, path);
+    expect(load(path).theme).toBe("light");
+  });
+
+  test("defaults to empty when absent", () => {
+    expect(defaultConfig().theme).toBe("");
   });
 });

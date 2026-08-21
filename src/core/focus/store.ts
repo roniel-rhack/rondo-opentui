@@ -71,6 +71,11 @@ export class FocusStore {
     session.id = Number(res.lastInsertRowid);
   }
 
+  /** Removes a session outright, used when a running one is abandoned. */
+  delete(id: number): void {
+    this.db.run(`DELETE FROM focus_sessions WHERE id = ?`, [id]);
+  }
+
   complete(id: number): void {
     const res = this.db.run(
       `UPDATE focus_sessions SET completed_at = ? WHERE id = ?`,

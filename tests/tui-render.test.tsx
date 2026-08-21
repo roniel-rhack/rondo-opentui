@@ -16,6 +16,10 @@ import { TABS, type TabId } from "../src/tui/state.ts";
 
 initTheme(true);
 
+// The app persists theme and panel ratio through saveConfig, so every test in
+// this file must point RONDO_HOME away from the real ~/.todo-app.
+process.env.RONDO_HOME = mkdtempSync(join(tmpdir(), "rondo-tui-render-"));
+
 // OpenTUI's React root re-renders itself once the renderer is ready, outside of
 // act(). The warning is library-internal noise, so keep it out of the report.
 const consoleError = console.error;
@@ -712,5 +716,259 @@ describe("TUI list density", () => {
       .find((line) => line.includes("#alpha"))!;
     expect(taggedRow).not.toContain("#gamma");
     setup.renderer.destroy();
+  });
+});
+
+describe("TUI review fixes", () => {
+  test("h navigates back in the journal instead of hiding the note", async () => {
+    const { captureCharFrame, goToTab, press, renderer } = await mount();
+
+    await goToTab("journal");
+    await press("l");
+    await press("h");
+
+    const frame = captureCharFrame();
+    expect(frame).not.toContain("Note hidden");
+    expect(frame).toContain("● Journal");
+    renderer.destroy();
+  });
+
+  test("x hides the selected journal note", async () => {
+    const { captureCharFrame, goToTab, press, renderer } = await mount();
+
+    await goToTab("journal");
+    await press("x");
+
+    expect(captureCharFrame()).toContain("Note hidden");
+    renderer.destroy();
+  });
+
+  test("the palette hides task actions while the journal is open", async () => {
+    const { captureCharFrame, goToTab, press, type, renderer } = await mount();
+
+    await goToTab("journal");
+    await press("k", { ctrl: true });
+    await type("cycle");
+
+    expect(captureCharFrame()).toContain("No matching command");
+    renderer.destroy();
+  });
+
+  test("the search counter totals the current tab, not every task", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("/");
+    expect(captureCharFrame()).toContain("2/2");
+    renderer.destroy();
+  });
+
+  test("the list footer counts only the current tab", async () => {
+    const { captureCharFrame, renderer } = await mount();
+    expect(captureCharFrame()).toContain("2 tasks");
+    renderer.destroy();
+  });
+
+  test("an applied filter stays visible after enter", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
+
+    await press("/");
+    await type("report");
+    await press("RETURN");
+
+    expect(captureCharFrame()).toContain("1/2");
+    renderer.destroy();
+  });
+
+  test("the journal hides the sort indicator", async () => {
+    const { captureCharFrame, goToTab, renderer } = await mount();
+
+    await goToTab("journal");
+    expect(captureCharFrame()).not.toContain("⇅");
+    renderer.destroy();
+  });
+
+  test("/ searches the journal by entry text", async () => {
+    const { captureCharFrame, goToTab, press, type, renderer } = await mount();
+
+    await goToTab("journal");
+    await press("/");
+    await type("zzzz");
+
+    expect(captureCharFrame()).toContain("0/1");
+    renderer.destroy();
+  });
+
+  test("enter does not confirm a delete", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("d");
+    expect(captureCharFrame()).toContain("Delete task");
+
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("Delete task");
+
+    await press("y");
+    expect(captureCharFrame()).not.toContain("Delete task");
+    renderer.destroy();
+  });
+
+  test("an empty prompt shows an error instead of doing nothing", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("t");
+    await press("RETURN");
+
+    expect(captureCharFrame()).toContain("Cannot be empty");
+    renderer.destroy();
+  });
+
+  test("q asks before quitting while a focus session runs", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("f");
+    await press("q");
+
+    expect(captureCharFrame()).toContain("focus session is running");
+    renderer.destroy();
+  });
+
+  test("the palette scrolls past the first ten actions", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("k", { ctrl: true });
+    for (let i = 0; i < 30; i++) await press("n", { ctrl: true });
+
+    expect(captureCharFrame()).toContain("Go to Journal");
+    renderer.destroy();
+  });
+
+  test("a time log accepts a trailing note", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
+
+    await press("L");
+    await type("45m fixing build");
+    await press("RETURN");
+
+    const frame = captureCharFrame();
+    expect(frame).toContain("Logged 45m");
+    expect(frame).toContain("fixing build");
+    renderer.destroy();
+  });
+
+  test("the due field accepts typed shortcuts like tomorrow", async () => {
+    const { captureCharFrame, press, type, data, renderer } = await mount();
+
+    await press("a");
+    await type("Ship it");
+    await press("TAB");
+    await press("TAB");
+    await type("tomorrow");
+    await press("s", { ctrl: true });
+
+    expect(captureCharFrame()).not.toContain("Due date must be");
+    const created = data.listTasks().find((t) => t.title === "Ship it")!;
+    expect(created.dueDate).not.toBeNull();
+    renderer.destroy();
+  });
+
+  test("statistics name the states like the tabs do", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("S");
+    const frame = captureCharFrame();
+    expect(frame).toContain("in progress");
+    expect(frame).toContain("todo");
+    renderer.destroy();
+  });
+
+  test("a blocker can be added from the palette", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
+
+    await press("k", { ctrl: true });
+    await type("block on");
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("Block on");
+
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("BLOCKED");
+    renderer.destroy();
+  });
+
+  test("the subtask panel gets its own key hints", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("toggle");
+    renderer.destroy();
+  });
+
+  test("the header names the task under focus", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("f");
+    expect(captureCharFrame().split("\n")[0]).toContain("Refactor");
+    renderer.destroy();
+  });
+
+  test("escape leaves the detail panel before clearing the filter", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
+
+    await press("/");
+    await type("re");
+    await press("RETURN");
+    await press("RETURN"); // into the detail panel
+
+    await press("ESCAPE");
+    expect(captureCharFrame()).toContain("2/2"); // filter bar still applied
+
+    await press("ESCAPE");
+    expect(captureCharFrame()).not.toContain("2/2");
+    expect(captureCharFrame()).toContain("2 tasks");
+    renderer.destroy();
+  });
+
+  test("q keeps the help overlay open", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("?");
+    await press("q");
+    expect(captureCharFrame()).toContain("Keyboard & mouse");
+    renderer.destroy();
+  });
+
+  test("H reveals hidden notes after x hides one", async () => {
+    const { captureCharFrame, goToTab, press, renderer } = await mount();
+
+    await goToTab("journal");
+    await press("x");
+    expect(captureCharFrame()).toContain("Note hidden");
+
+    await press("H");
+    const frame = captureCharFrame();
+    expect(frame).toContain("Showing hidden notes");
+    expect(frame).toContain("·hidden");
+    renderer.destroy();
+  });
+
+  test("T persists the chosen theme", async () => {
+    const { press, renderer } = await mount();
+
+    await press("T");
+    const cfg = JSON.parse(
+      readFileSync(join(process.env.RONDO_HOME!, "config.json"), "utf8"),
+    );
+    expect(cfg.theme).toBe("light");
+    renderer.destroy();
+  });
+
+  test("resizing the panels persists the ratio", async () => {
+    const { press, renderer } = await mount();
+
+    await press("<");
+    const cfg = JSON.parse(
+      readFileSync(join(process.env.RONDO_HOME!, "config.json"), "utf8"),
+    );
+    expect(cfg.panel_ratio).toBeCloseTo(0.35);
+    renderer.destroy();
   });
 });

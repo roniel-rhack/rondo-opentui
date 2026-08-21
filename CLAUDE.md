@@ -11,7 +11,7 @@ bun install
 bun run start          # TUI
 bun run start list     # any argument dispatches to the CLI instead
 bun run dev            # TUI with --watch
-bun test               # 301 tests
+bun test               # 350 tests
 bun run typecheck      # tsc --noEmit
 bun run build          # dist/rondo-opentui (single binary, ad-hoc signed)
 ```
@@ -73,6 +73,9 @@ constrains a few things:
 - **CLI output is a contract**: same commands, flags, exit codes (`3` for not
   found), JSON field names and table headers. Color auto-disables when stdout
   is not a TTY.
+- **`config.json` may carry a TS-only `theme` key** ("dark" / "light"). The Go
+  build ignores it on read and drops it when it rewrites the file — losing it
+  is fine, inventing more keys like it needs the same care.
 
 ## Testing
 
@@ -112,6 +115,12 @@ Hard-won, all of them cost time once:
   pass**, so it cannot be used to probe for a target. Absolute child positions
   lag the same way: measure offsets against the first row instead.
 - **`scrollbarOptions={{ visible }}` forces the bar on**; omit it for auto.
+- **Shifted letters keep a lowercase `key.name`** (`L` arrives as name `"l"`
+  with `shift` set; only `key.sequence` is `"L"`). A switch on `key.name`
+  swallows them before any `key.sequence` switch runs — guard with
+  `key.shift`, or `L`/`H` shortcuts silently die.
+- In `mockInput.pressKey`, arrows are named `ARROW_DOWN`/`ARROW_UP` (from
+  `KeyCodes`); `"DOWN"` is typed as literal text.
 - `<markdown>` renders nothing without a tree-sitter client — not worth it.
 - The React root re-renders itself outside `act()`; that warning is
   library-internal noise and is filtered in `tests/tui-render.test.tsx`.

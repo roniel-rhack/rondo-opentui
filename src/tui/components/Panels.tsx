@@ -178,11 +178,12 @@ interface StatusBarProps {
   messageKind: "info" | "success" | "error";
   /** Changes whenever a new message arrives, restarting the timer bar. */
   messageId: number;
-  sort: SortKey;
+  /** How long the current toast lives; errors get longer than info. */
+  messageMs: number;
+  /** Omitted where sorting does not apply, e.g. the journal. */
+  sort?: SortKey;
   width: number;
 }
-
-const TOAST_MS = 3200;
 
 /** Bottom bar: key hints, or the active toast with a draining timer bar. */
 export function StatusBar({
@@ -191,10 +192,11 @@ export function StatusBar({
   message,
   messageKind,
   messageId,
+  messageMs,
   sort,
   width,
 }: StatusBarProps) {
-  const remaining = useCountdown(message ? messageId : null, TOAST_MS);
+  const remaining = useCountdown(message ? messageId : null, messageMs);
 
   const tone =
     messageKind === "error"
@@ -233,7 +235,9 @@ export function StatusBar({
             ))}
           </box>
         )}
-        <text fg={theme.textMuted}>{`⇅ ${SORT_LABELS[sort]}`}</text>
+        {sort ? (
+          <text fg={theme.textMuted}>{`⇅ ${SORT_LABELS[sort]}`}</text>
+        ) : null}
       </box>
 
       {/* Toast timer: a hairline that drains as the message expires. The row
@@ -280,7 +284,7 @@ const HELP_SECTIONS: [string, [string, string][]][] = [
       ["space / s", "Cycle status"],
       ["t", "Add subtask"],
       ["n", "Add note"],
-      ["L", "Log time"],
+      ["L", "Log time (\"45m note\")"],
       ["o", "Cycle sort order"],
       ["/", "Filter tasks"],
       ["#", "Toggle tag bar"],
@@ -292,8 +296,9 @@ const HELP_SECTIONS: [string, [string, string][]][] = [
       ["a", "Add entry to today"],
       ["e", "Edit entry"],
       ["d", "Delete entry"],
+      ["/", "Search entries"],
       ["H", "Show hidden notes"],
-      ["h", "Hide / restore note"],
+      ["x", "Hide / restore note"],
     ],
   ],
   [
@@ -320,7 +325,7 @@ export function HelpOverlay({
   onClose,
 }: HelpOverlayProps) {
   useKeyboard((key: KeyEvent) => {
-    if (key.name === "escape" || key.name === "q" || key.sequence === "?") {
+    if (key.name === "escape" || key.sequence === "?") {
       onClose();
     }
   });
@@ -385,7 +390,7 @@ function StatRow({
 }) {
   return (
     <box flexDirection="row">
-      <text fg={theme.textDim}>{label.padEnd(9)}</text>
+      <text fg={theme.textDim}>{label.padEnd(12)}</text>
       <AnimatedMeter theme={theme} ratio={ratio} width={width} color={color} />
       <text fg={theme.text}>{` ${value}`}</text>
     </box>
@@ -442,8 +447,8 @@ export function StatsOverlay({
           TASKS
         </text>
         <StatRow theme={theme} label="done" value={done} ratio={done / (total || 1)} color={theme.success} />
-        <StatRow theme={theme} label="active" value={active} ratio={active / (total || 1)} color={theme.accent} />
-        <StatRow theme={theme} label="pending" value={pending} ratio={pending / (total || 1)} color={theme.textDim} />
+        <StatRow theme={theme} label="in progress" value={active} ratio={active / (total || 1)} color={theme.accent} />
+        <StatRow theme={theme} label="todo" value={pending} ratio={pending / (total || 1)} color={theme.textDim} />
 
         <box height={1} />
         <text fg={theme.accent} attributes={TextAttributes.BOLD}>
@@ -472,7 +477,7 @@ export function StatsOverlay({
           color={theme.warning}
         />
         <box flexDirection="row">
-          <text fg={theme.textDim}>{"streak   "}</text>
+          <text fg={theme.textDim}>{"streak      "}</text>
           <text fg={theme.text}>{`${streakDays} days`}</text>
           <text fg={theme.textDim}>{"    logged  "}</text>
           <text fg={theme.text}>{formatDuration(logged)}</text>

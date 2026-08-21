@@ -4,7 +4,8 @@ import { useRef, useState, type ReactNode } from "react";
 import type { TextareaRenderable } from "@opentui/core";
 import { RecurFreq, recurFreqString } from "../../core/task/recur.ts";
 import { Priority, priorityString } from "../../core/task/task.ts";
-import { DateOnly, GoTime, parseDateOnly } from "../../core/time.ts";
+import { DateOnly, GoTime } from "../../core/time.ts";
+import { parseDueInput } from "../state.ts";
 import { mix, priorityColors, type TuiTheme } from "../theme.ts";
 import { Button, Overlay } from "./Overlay.tsx";
 
@@ -81,9 +82,9 @@ function validate(values: TaskFormValues): string | null {
   if (values.title.trim() === "") return "Title is required";
   if (values.due.trim() !== "") {
     try {
-      parseDateOnly(values.due.trim(), "utc");
+      parseDueInput(values.due, GoTime.now());
     } catch {
-      return "Due date must be YYYY-MM-DD";
+      return "Due date must be YYYY-MM-DD, today, tomorrow or +Nd/+Nw";
     }
   }
   return null;
@@ -295,7 +296,7 @@ export function TaskForm({
 
       <box flexDirection="row">
         <box flexGrow={1} paddingRight={1} flexDirection="column">
-          {label("due", "Due date")}
+          {label("due", "Due date", "or today / +3d")}
           {textInput("due", "YYYY-MM-DD", values.due, (v) =>
             setValues({ ...values, due: v }),
           )}

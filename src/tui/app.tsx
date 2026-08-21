@@ -4,7 +4,7 @@ import {
   useRenderer,
   useTerminalDimensions,
 } from "@opentui/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   formatDateTime,
   formatNoteTitle,
@@ -16,8 +16,7 @@ import { SessionKind } from "../core/focus/focus.ts";
 import type { Note } from "../core/journal/journal.ts";
 import { RecurFreq, recurFreqString } from "../core/task/recur.ts";
 import { Status, statusString, type Task } from "../core/task/task.ts";
-import { parseDuration } from "../core/task/timelog.ts";
-import { DateOnly, GoTime, parseDateOnly } from "../core/time.ts";
+import { DateOnly, GoTime } from "../core/time.ts";
 import { initTheme, isDark } from "../core/ui/colors.ts";
 import type { RondoData, TaskDraft, UndoAction } from "./data.ts";
 import { usePomodoro } from "./hooks/usePomodoro.ts";
@@ -26,7 +25,13 @@ import {
   TABS,
   clampIndex,
   emptyFilters,
+  exportContent,
+  focusStatusMessage,
+  parseDueInput,
+  parseTimeLogInput,
   tabCounts,
+  toastDuration,
+  visibleNotes,
   visibleTasks,
   type Filters,
   type SortKey,
@@ -49,11 +54,11 @@ import {
   CommandPalette,
   ConfirmDialog,
   PromptDialog,
+  TaskPickerDialog,
   type PaletteAction,
 } from "./components/Dialogs.tsx";
 import { TaskForm, emptyTaskForm, type TaskFormValues } from "./components/TaskForm.tsx";
 import { SettingsOverlay } from "./components/Settings.tsx";
-import { writeJSON, writeTasks } from "../core/export/export.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -77,6 +82,13 @@ type Modal =
       multiline?: boolean;
       onSubmit: (value: string) => void;
     }
+  | {
+      type: "task-pick";
+      title: string;
+      subtitle?: string;
+      tasks: Task[];
+      onPick: (taskId: number) => void;
+    }
   | { type: "palette" }
   | { type: "help" }
   | { type: "stats" }
@@ -94,12 +106,11 @@ export interface AppProps {
 }
 
 function toDraft(values: TaskFormValues): TaskDraft {
-  const due = values.due.trim();
   return {
     title: values.title.trim(),
     description: values.description.trim(),
     priority: values.priority,
-    dueDate: due === "" ? null : parseDateOnly(due, "utc"),
+    dueDate: parseDueInput(values.due, GoTime.now()),
     tags: values.tags
       .split(",")
       .map((t) => t.trim())
@@ -122,8 +133,16 @@ function fromTask(task: Task): TaskFormValues {
 export function App({ data, onQuit }: AppProps) {
   const { width, height } = useTerminalDimensions();
   const renderer = useRenderer();
-  const [dark, setDark] = useState(isDark());
+  // A saved preference wins over whatever the terminal reports.
+  const [dark, setDark] = useState(() =>
+    data.cfg.theme !== "" ? data.cfg.theme === "dark" : isDark(),
+  );
   const theme = useMemo(() => tuiTheme(dark), [dark]);
+
+  // Aligns the shared CLI palette (colors.ts) with the effective theme.
+  useEffect(() => {
+    initTheme(dark);
+  }, [dark]);
 
   // Repaint the base layer when the palette changes, otherwise the previous
   // theme lingers wherever nothing else marked the cells dirty.
@@ -175,7 +194,7 @@ export function App({ data, onQuit }: AppProps) {
 
   useEffect(() => {
     if (!toast) return;
-    const id = setTimeout(() => setToast(null), 3200);
+    const id = setTimeout(() => setToast(null), toastDuration(toast.kind));
     return () => clearTimeout(id);
   }, [toast]);
 
@@ -196,10 +215,20 @@ export function App({ data, onQuit }: AppProps) {
     () => visibleTasks(tasks, tab, filters, sort),
     [tasks, tab, filters, sort],
   );
+  // Baseline for "N of M" and search counters: the tab without any filter.
+  const tabTotal = useMemo(
+    () => visibleTasks(tasks, tab, emptyFilters, sort).length,
+    [tasks, tab, sort],
+  );
+  const shownNotes = useMemo(
+    () => visibleNotes(notes, filters.query),
+    [notes, filters.query],
+  );
   const counts = useMemo(() => tabCounts(tasks, notes.length), [tasks, notes]);
 
   const selectedTask = shown[clampIndex(taskIndex, shown.length)] ?? null;
-  const selectedNote = notes[clampIndex(noteIndex, notes.length)] ?? null;
+  const selectedNote =
+    shownNotes[clampIndex(noteIndex, shownNotes.length)] ?? null;
 
   const taskTitles = useMemo(
     () => new Map(tasks.map((t) => [t.id, `#${t.id} ${t.title}`])),
@@ -209,6 +238,10 @@ export function App({ data, onQuit }: AppProps) {
   useEffect(() => {
     setTaskIndex((i) => clampIndex(i, shown.length));
   }, [shown.length]);
+
+  useEffect(() => {
+    setNoteIndex((i) => clampIndex(i, shownNotes.length));
+  }, [shownNotes.length]);
 
   useEffect(() => {
     setSubtaskIndex(0);
@@ -376,12 +409,12 @@ export function App({ data, onQuit }: AppProps) {
     setModal({
       type: "prompt",
       title: "Log time",
-      label: "Duration (1h30m, 45m, 2h)",
-      placeholder: "25m",
+      label: "Duration, then an optional note",
+      placeholder: "25m what you did",
       onSubmit: (value) => {
         try {
-          const duration = parseDuration(value);
-          data.logTime(taskId, duration, "");
+          const { duration, note } = parseTimeLogInput(value);
+          data.logTime(taskId, duration, note);
           closeModal();
           reloadTasks();
           notify(`Logged ${value}`, "success");
@@ -479,10 +512,7 @@ export function App({ data, onQuit }: AppProps) {
         process.env.RONDO_HOME ?? process.cwd(),
         `rondo-export.${format}`,
       );
-      const content =
-        format === "json"
-          ? writeJSON(tasks, notes)
-          : `${writeTasks(tasks)}`;
+      const content = exportContent(format, tasks, notes);
       try {
         writeFileSync(path, content, "utf8");
         notify(`Exported to ${path}`, "success");
@@ -493,11 +523,55 @@ export function App({ data, onQuit }: AppProps) {
     [notes, notify, tasks],
   );
 
+  const persistConfig = useCallback(
+    (next: Config, failure: string) => {
+      data.cfg = next;
+      setCfg(next);
+      try {
+        saveConfig(next);
+      } catch (err) {
+        notify(`${failure}: ${(err as Error).message}`, "error");
+      }
+    },
+    [data, notify],
+  );
+
   const toggleTheme = useCallback(() => {
     const next = !dark;
-    initTheme(next);
     setDark(next);
-  }, [dark]);
+    persistConfig(
+      { ...cfg, theme: next ? "dark" : "light" },
+      "Could not save theme",
+    );
+  }, [cfg, dark, persistConfig]);
+
+  const resizePanels = useCallback(
+    (delta: number) => {
+      const next = Math.min(Math.max(ratio + delta, 0.2), 0.8);
+      setRatio(next);
+      persistConfig(
+        { ...cfg, panelRatio: Number(next.toFixed(2)) },
+        "Could not save layout",
+      );
+    },
+    [cfg, persistConfig, ratio],
+  );
+
+  // Dragging fires continuously; write the ratio once the mouse settles.
+  const dragSave = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dragPanels = useCallback(
+    (next: number) => {
+      setRatio(next);
+      if (dragSave.current) clearTimeout(dragSave.current);
+      dragSave.current = setTimeout(() => {
+        persistConfig(
+          { ...cfg, panelRatio: Number(next.toFixed(2)) },
+          "Could not save layout",
+        );
+      }, 400);
+    },
+    [cfg, persistConfig],
+  );
 
   const cycleSort = useCallback(() => {
     const order: SortKey[] = ["created", "due", "priority"];
@@ -508,11 +582,25 @@ export function App({ data, onQuit }: AppProps) {
 
   const toggleFocus = useCallback(() => {
     pomodoro.toggle(selectedTask?.id ?? 0);
-    notify(
-      pomodoro.running ? "Focus stopped" : `Focus started (${cfg.focus.workDuration}m)`,
-      "info",
-    );
+    notify(focusStatusMessage(pomodoro.running, pomodoro.kind, cfg), "info");
   }, [cfg, notify, pomodoro, selectedTask]);
+
+  const requestQuit = useCallback(() => {
+    if (!pomodoro.running) {
+      onQuit?.();
+      return;
+    }
+    setModal({
+      type: "confirm",
+      title: "Quit",
+      message: "A focus session is running — quit and discard it?",
+      confirmLabel: "Quit",
+      onConfirm: () => {
+        pomodoro.stop();
+        onQuit?.();
+      },
+    });
+  }, [onQuit, pomodoro]);
 
   const toggleHiddenNotes = useCallback(() => {
     const next = !showHidden;
@@ -528,21 +616,81 @@ export function App({ data, onQuit }: AppProps) {
     notify(selectedNote.hidden ? "Note restored" : "Note hidden", "success");
   }, [data, notify, reloadNotes, selectedNote]);
 
+  const openBlockPicker = useCallback(() => {
+    if (!selectedTask) return;
+    const target = selectedTask;
+    const candidates = tasks.filter(
+      (t) => t.id !== target.id && !target.blockedByIds.includes(t.id),
+    );
+    if (candidates.length === 0) {
+      notify("No other task to block on", "info");
+      return;
+    }
+    setModal({
+      type: "task-pick",
+      title: "Block on",
+      subtitle: `#${target.id} ${target.title}`,
+      tasks: candidates,
+      onPick: (blockerId) => {
+        closeModal();
+        try {
+          data.addDependency(target.id, blockerId);
+          notify(`#${target.id} now blocked by #${blockerId}`, "success");
+        } catch (err) {
+          notify((err as Error).message, "error");
+        }
+        reloadTasks();
+      },
+    });
+  }, [closeModal, data, notify, reloadTasks, selectedTask, tasks]);
+
+  const openUnblockPicker = useCallback(() => {
+    if (!selectedTask) return;
+    const target = selectedTask;
+    const blockers = tasks.filter((t) => target.blockedByIds.includes(t.id));
+    if (blockers.length === 0) {
+      notify("This task has no blockers", "info");
+      return;
+    }
+    setModal({
+      type: "task-pick",
+      title: "Remove blocker",
+      subtitle: `#${target.id} ${target.title}`,
+      tasks: blockers,
+      onPick: (blockerId) => {
+        closeModal();
+        data.removeDependency(target.id, blockerId);
+        notify(`#${target.id} unblocked from #${blockerId}`, "success");
+        reloadTasks();
+      },
+    });
+  }, [closeModal, data, notify, reloadTasks, selectedTask, tasks]);
+
   // -------------------------------------------------------------- palette
 
   const paletteActions = useMemo<PaletteAction[]>(() => {
+    // Task actions act on the current selection; the journal cannot see it,
+    // so they disappear there instead of mutating something invisible.
+    const taskActions: PaletteAction[] =
+      tab === "journal"
+        ? []
+        : [
+            { id: "task.add", group: "Task", label: "New task", hint: "a", run: openAddTask },
+            { id: "task.edit", group: "Task", label: "Edit selected task", hint: "e", run: openEditTask },
+            { id: "task.status", group: "Task", label: "Cycle status", hint: "space", run: () => cycleStatus(selectedTask) },
+            { id: "task.delete", group: "Task", label: "Delete selected task", hint: "d", run: deleteSelectedTask },
+            { id: "task.subtask", group: "Task", label: "Add subtask", hint: "t", run: addSubtask },
+            { id: "task.note", group: "Task", label: "Add note", hint: "n", run: addTaskNote },
+            { id: "task.time", group: "Task", label: "Log time", hint: "L", run: logTime },
+            { id: "task.block", group: "Task", label: "Block on…", run: openBlockPicker },
+            { id: "task.unblock", group: "Task", label: "Remove blocker…", run: openUnblockPicker },
+            { id: "view.sort", group: "View", label: "Cycle sort order", hint: "o", run: cycleSort },
+            { id: "view.tags", group: "View", label: "Toggle tag bar", hint: "#", run: () => setTagBar((v) => !v) },
+          ];
     const actions: PaletteAction[] = [
-      { id: "task.add", group: "Task", label: "New task", hint: "a", run: openAddTask },
-      { id: "task.edit", group: "Task", label: "Edit selected task", hint: "e", run: openEditTask },
-      { id: "task.status", group: "Task", label: "Cycle status", hint: "space", run: () => cycleStatus(selectedTask) },
-      { id: "task.delete", group: "Task", label: "Delete selected task", hint: "d", run: deleteSelectedTask },
-      { id: "task.subtask", group: "Task", label: "Add subtask", hint: "t", run: addSubtask },
-      { id: "task.note", group: "Task", label: "Add note", hint: "n", run: addTaskNote },
-      { id: "task.time", group: "Task", label: "Log time", hint: "L", run: logTime },
+      ...taskActions,
       { id: "journal.add", group: "Journal", label: "Add journal entry", hint: "a", run: addJournalEntry },
-      { id: "view.sort", group: "View", label: "Cycle sort order", hint: "o", run: cycleSort },
-      { id: "view.tags", group: "View", label: "Toggle tag bar", hint: "#", run: () => setTagBar((v) => !v) },
-      { id: "view.search", group: "View", label: "Filter tasks", hint: "/", run: () => setSearching(true) },
+      { id: "view.search", group: "View", label: "Filter", hint: "/", run: () => setSearching(true) },
       { id: "view.theme", group: "View", label: "Toggle light / dark", hint: "T", run: toggleTheme },
       { id: "view.stats", group: "View", label: "Show statistics", hint: "S", run: () => setModal({ type: "stats" }) },
       { id: "view.help", group: "View", label: "Show help", hint: "?", run: () => setModal({ type: "help" }) },
@@ -551,7 +699,7 @@ export function App({ data, onQuit }: AppProps) {
       { id: "app.settings", group: "App", label: "Focus settings", hint: "P", run: () => setModal({ type: "settings" }) },
       { id: "app.export.md", group: "App", label: "Export everything to Markdown", run: () => exportAll("md") },
       { id: "app.export.json", group: "App", label: "Export everything to JSON", run: () => exportAll("json") },
-      { id: "app.quit", group: "App", label: "Quit", hint: "q", run: () => onQuit?.() },
+      { id: "app.quit", group: "App", label: "Quit", hint: "q", run: requestQuit },
     ];
     for (const t of TABS) {
       actions.push({
@@ -571,10 +719,13 @@ export function App({ data, onQuit }: AppProps) {
     cycleStatus,
     deleteSelectedTask,
     logTime,
-    onQuit,
     openAddTask,
+    openBlockPicker,
     openEditTask,
+    openUnblockPicker,
+    requestQuit,
     selectedTask,
+    tab,
     toggleFocus,
     toggleTheme,
     undo,
@@ -586,7 +737,7 @@ export function App({ data, onQuit }: AppProps) {
     (delta: number) => {
       if (tab === "journal") {
         if (panel === 0) {
-          setNoteIndex((i) => clampIndex(i + delta, notes.length));
+          setNoteIndex((i) => clampIndex(i + delta, shownNotes.length));
           setEntryIndex(0);
         } else {
           setEntryIndex((i) =>
@@ -603,7 +754,7 @@ export function App({ data, onQuit }: AppProps) {
         );
       }
     },
-    [notes.length, panel, selectedNote, selectedTask, shown.length, tab],
+    [panel, selectedNote, selectedTask, shown.length, shownNotes.length, tab],
   );
 
   const isJournalTab = tab === "journal";
@@ -636,7 +787,7 @@ export function App({ data, onQuit }: AppProps) {
 
     switch (key.name) {
       case "q":
-        onQuit?.();
+        requestQuit();
         return;
       case "tab":
         setTab((current) => {
@@ -662,14 +813,13 @@ export function App({ data, onQuit }: AppProps) {
         return;
       case "left":
       case "h":
-        if (key.name === "h" && tab === "journal") {
-          toggleNoteHidden();
-          return;
-        }
+        // Shifted letters (H) belong to the sequence switch below.
+        if (key.name === "h" && key.shift) break;
         setPanel(0);
         return;
       case "right":
       case "l":
+        if (key.name === "l" && key.shift) break;
         setPanel(1);
         return;
       case "1":
@@ -679,8 +829,9 @@ export function App({ data, onQuit }: AppProps) {
         setPanel(1);
         return;
       case "escape":
-        if (filters.query !== "" || filters.tag) setFilters(emptyFilters);
-        else setPanel(0);
+        // Leave the detail panel first; a second escape clears the filter.
+        if (panel === 1) setPanel(0);
+        else if (filters.query !== "" || filters.tag) setFilters(emptyFilters);
         return;
       case "return":
         if (tab !== "journal" && panel === 1) toggleSubtaskAt(subtaskIndex);
@@ -699,19 +850,20 @@ export function App({ data, onQuit }: AppProps) {
         toggleFocus();
         return;
       case "o":
-        cycleSort();
+        // The journal is date-ordered; sorting only means something for tasks.
+        if (!isJournalTab) cycleSort();
         return;
       case "/":
-        if (!isJournalTab) setSearching(true);
+        setSearching(true);
         return;
       case "f1":
-        setSort("created");
+        if (!isJournalTab) setSort("created");
         return;
       case "f2":
-        setSort("due");
+        if (!isJournalTab) setSort("due");
         return;
       case "f3":
-        setSort("priority");
+        if (!isJournalTab) setSort("priority");
         return;
       default:
         break;
@@ -744,6 +896,9 @@ export function App({ data, onQuit }: AppProps) {
       case "L":
         if (tab !== "journal") logTime();
         break;
+      case "x":
+        if (tab === "journal") toggleNoteHidden();
+        break;
       case "H":
         if (tab === "journal") toggleHiddenNotes();
         break;
@@ -754,10 +909,10 @@ export function App({ data, onQuit }: AppProps) {
         setModal({ type: "settings" });
         break;
       case "<":
-        setRatio((r) => Math.max(r - 0.05, 0.2));
+        resizePanels(-0.05);
         break;
       case ">":
-        setRatio((r) => Math.min(r + 0.05, 0.8));
+        resizePanels(0.05);
         break;
       case "S":
         setModal({ type: "stats" });
@@ -766,10 +921,7 @@ export function App({ data, onQuit }: AppProps) {
         setModal({ type: "help" });
         break;
       case "#":
-        setTagBar((v) => !v);
-        break;
-      case "/":
-        if (!isJournalTab) setSearching(true);
+        if (!isJournalTab) setTagBar((v) => !v);
         break;
       default:
         break;
@@ -778,38 +930,62 @@ export function App({ data, onQuit }: AppProps) {
 
   // --------------------------------------------------------------- layout
 
+  // Truncated by hand: the renderer elides in the middle, which reads badly.
+  const focusTaskTitle = useMemo(() => {
+    if (!pomodoro.taskId) return undefined;
+    const title = tasks.find((t) => t.id === pomodoro.taskId)?.title;
+    if (!title) return undefined;
+    const cap = width >= 110 ? 28 : 14;
+    return title.length > cap ? `${title.slice(0, cap - 1)}…` : title;
+  }, [pomodoro.taskId, tasks, width]);
+
   const compact = width < 72;
   const listWidth = compact
     ? width
     : Math.max(Math.round(width * ratio), 24);
   const isJournal = isJournalTab;
 
+  // The status bar is the discoverability surface; keep it in step with
+  // whatever the focused panel actually answers to.
   const hints: [string, string][] = isJournal
     ? [
         ["a", "add"],
         ["e", "edit"],
         ["d", "delete"],
-        ["h", "hide"],
+        ["/", "search"],
+        ["x", "hide"],
         ["H", "hidden"],
         ["^k", "palette"],
         ["?", "help"],
       ]
-    : [
-        ["a", "add"],
-        ["e", "edit"],
-        ["space", "status"],
-        ["t", "subtask"],
-        ["/", "filter"],
-        ["f", "focus"],
-        ["^k", "palette"],
-        ["?", "help"],
-      ];
+    : panel === 1
+      ? [
+          ["space", "toggle"],
+          ["e", "edit"],
+          ["d", "delete"],
+          ["t", "add step"],
+          ["h", "back"],
+          ["^k", "palette"],
+          ["?", "help"],
+        ]
+      : [
+          ["a", "add"],
+          ["e", "edit"],
+          ["space", "status"],
+          ["t", "subtask"],
+          ["/", "filter"],
+          ["f", "focus"],
+          ["^k", "palette"],
+          ["?", "help"],
+        ];
 
   const listSubtitle = isJournal
-    ? `${notes.length} days`
-    : shown.length === tasks.length
-      ? `${tasks.length} tasks`
-      : `${shown.length} of ${tasks.length}`;
+    ? shownNotes.length === notes.length
+      ? `${notes.length} days`
+      : `${shownNotes.length} of ${notes.length}`
+    : shown.length === tabTotal
+      ? `${tabTotal} tasks`
+      : `${shown.length} of ${tabTotal}`;
 
   const detailTitle = isJournal
     ? selectedNote
@@ -842,6 +1018,7 @@ export function App({ data, onQuit }: AppProps) {
         timerColor={
           pomodoro.kind === SessionKind.Work ? theme.warning : theme.success
         }
+        timerTask={focusTaskTitle}
         cycleDots={`${"●".repeat(pomodoro.cyclePos)}${"○".repeat(
           Math.max(cfg.focus.longBreakInterval - pomodoro.cyclePos, 0),
         )}`}
@@ -868,15 +1045,17 @@ export function App({ data, onQuit }: AppProps) {
             focused={panel === 0}
             onMouseDown={() => setPanel(0)}
           >
-            {searching && !isJournal ? (
+            {/* An applied filter must stay visible after enter, so the bar
+                sticks around while a query is active. */}
+            {searching || filters.query !== "" ? (
               <SearchBar
                 theme={theme}
                 value={filters.query}
                 active={searching}
                 onInput={(query) => setFilters((f) => ({ ...f, query }))}
                 onSubmit={() => setSearching(false)}
-                resultCount={shown.length}
-                totalCount={tasks.length}
+                resultCount={isJournal ? shownNotes.length : shown.length}
+                totalCount={isJournal ? notes.length : tabTotal}
               />
             ) : null}
 
@@ -884,7 +1063,12 @@ export function App({ data, onQuit }: AppProps) {
               <NoteList
                 theme={theme}
                 cfg={cfg}
-                notes={notes}
+                notes={shownNotes}
+                emptyText={
+                  filters.query !== ""
+                    ? "No entries match — esc clears the search"
+                    : undefined
+                }
                 selected={noteIndex}
                 focused={panel === 0}
                 onSelect={(i) => {
@@ -926,8 +1110,7 @@ export function App({ data, onQuit }: AppProps) {
             width={1}
             backgroundColor={theme.bg}
             onMouseDrag={(event) => {
-              const next = Math.min(Math.max(event.x / width, 0.2), 0.8);
-              setRatio(next);
+              dragPanels(Math.min(Math.max(event.x / width, 0.2), 0.8));
             }}
           />
         )}
@@ -979,7 +1162,8 @@ export function App({ data, onQuit }: AppProps) {
         message={toast?.message ?? null}
         messageKind={toast?.kind ?? "info"}
         messageId={toast?.id ?? 0}
-        sort={sort}
+        messageMs={toastDuration(toast?.kind ?? "info")}
+        sort={isJournal ? undefined : sort}
         width={width}
       />
 
@@ -1021,6 +1205,19 @@ export function App({ data, onQuit }: AppProps) {
           screenHeight={height}
           onSubmit={modal.onSubmit}
           onCancel={closeModal}
+        />
+      ) : null}
+
+      {modal.type === "task-pick" ? (
+        <TaskPickerDialog
+          theme={theme}
+          title={modal.title}
+          subtitle={modal.subtitle}
+          tasks={modal.tasks}
+          screenWidth={width}
+          screenHeight={height}
+          onPick={modal.onPick}
+          onClose={closeModal}
         />
       ) : null}
 

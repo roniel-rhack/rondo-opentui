@@ -19,6 +19,8 @@ export interface PomodoroState {
   progress: number;
   label: string;
   timer: string | null;
+  /** Task the running session is attached to, or null when idle. */
+  taskId: number | null;
   start: (taskId: number) => void;
   stop: () => void;
   toggle: (taskId: number) => void;
@@ -48,6 +50,9 @@ export function usePomodoro(
   const [kind, setKind] = useState<SessionKind>(SessionKind.Work);
   const [cyclePos, setCyclePos] = useState(1);
   const [remainingMs, setRemainingMs] = useState(0);
+  // Wall-clock end of the running session. Remaining time is always derived
+  // from it, so a busy event loop cannot make the timer drift.
+  const [endAt, setEndAt] = useState<number | null>(null);
   const finishRef = useRef(onFinish);
   finishRef.current = onFinish;
 
@@ -67,47 +72,52 @@ export function usePomodoro(
       setSession(created);
       setKind(nextKind);
       setRemainingMs(duration / 1e6);
+      setEndAt(Date.now() + duration / 1e6);
     },
     [cfg, cyclePos, data],
   );
 
   const stop = useCallback(() => {
+    // An abandoned session never counted; keep it out of streaks and stats.
+    if (session) data.focus.delete(session.id);
     setSession(null);
+    setEndAt(null);
     setRemainingMs(0);
-  }, []);
+  }, [data, session]);
 
   useEffect(() => {
-    if (!session) return;
+    if (!session || endAt === null) return;
     const id = setInterval(() => {
-      setRemainingMs((prev) => {
-        const next = prev - 1000;
-        if (next > 0) return next;
+      const remaining = Math.max(endAt - Date.now(), 0);
+      setRemainingMs(remaining);
+      if (remaining > 0) return;
 
-        data.focus.complete(session.id);
-        finishRef.current(session.kind);
+      clearInterval(id);
+      data.focus.complete(session.id);
+      finishRef.current(session.kind);
 
-        // Advance the cycle: work → break → work…
-        if (session.kind === SessionKind.Work) {
-          const isLong = cyclePos >= cfg.focus.longBreakInterval;
-          const breakKind = isLong
-            ? SessionKind.LongBreak
-            : SessionKind.ShortBreak;
-          setCyclePos(isLong ? 1 : cyclePos + 1);
-          if (cfg.focus.autoStartBreak) {
-            start(session.taskId, breakKind);
-          } else {
-            setSession(null);
-            setKind(breakKind);
-          }
+      // Advance the cycle: work → break → work…
+      if (session.kind === SessionKind.Work) {
+        const isLong = cyclePos >= cfg.focus.longBreakInterval;
+        const breakKind = isLong
+          ? SessionKind.LongBreak
+          : SessionKind.ShortBreak;
+        setCyclePos(isLong ? 1 : cyclePos + 1);
+        if (cfg.focus.autoStartBreak) {
+          start(session.taskId, breakKind);
         } else {
           setSession(null);
-          setKind(SessionKind.Work);
+          setEndAt(null);
+          setKind(breakKind);
         }
-        return 0;
-      });
+      } else {
+        setSession(null);
+        setEndAt(null);
+        setKind(SessionKind.Work);
+      }
     }, 1000);
     return () => clearInterval(id);
-  }, [session, cfg, cyclePos, data, start]);
+  }, [session, endAt, cfg, cyclePos, data, start]);
 
   const toggle = useCallback(
     (taskId: number) => {
@@ -127,6 +137,7 @@ export function usePomodoro(
     progress: totalMs > 0 ? 1 - remainingMs / totalMs : 0,
     label: sessionKindLabel(kind),
     timer: session ? formatTimer(remainingMs * 1e6) : null,
+    taskId: session ? session.taskId : null,
     start: (taskId: number) => start(taskId, kind),
     stop,
     toggle,

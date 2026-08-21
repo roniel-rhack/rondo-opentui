@@ -1,6 +1,7 @@
 import { TextAttributes, type KeyEvent, type TextareaRenderable } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import { useMemo, useRef, useState } from "react";
+import { Status, type Task } from "../../core/task/task.ts";
 import { fuzzyScore } from "../state.ts";
 import { mix, type TuiTheme } from "../theme.ts";
 import { Button, Overlay } from "./Overlay.tsx";
@@ -33,7 +34,9 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   useKeyboard((key: KeyEvent) => {
     if (key.name === "escape" || key.name === "n") onCancel();
-    if (key.name === "y" || key.name === "return") onConfirm();
+    // Enter is too easy to press by reflex to let it destroy things; only
+    // an explicit y confirms a destructive dialog.
+    if (key.name === "y" || (key.name === "return" && !danger)) onConfirm();
   });
 
   return (
@@ -44,7 +47,7 @@ export function ConfirmDialog({
       screenWidth={screenWidth}
       screenHeight={screenHeight}
       accent={danger ? theme.danger : theme.accent}
-      footer="y confirm · n cancel"
+      footer={danger ? "y confirm · n / esc cancel" : "y / enter confirm · n cancel"}
       onBackdropClick={onCancel}
     >
       <box paddingTop={1} paddingBottom={1} flexDirection="column">
@@ -102,6 +105,7 @@ export function PromptDialog({
   onCancel,
 }: PromptDialogProps) {
   const [value, setValue] = useState(initial);
+  const [error, setError] = useState<string | null>(null);
   const areaRef = useRef<TextareaRenderable | null>(null);
 
   const currentValue = () =>
@@ -109,7 +113,11 @@ export function PromptDialog({
 
   const submit = () => {
     const text = currentValue().trim();
-    if (text !== "") onSubmit(text);
+    if (text === "") {
+      setError("Cannot be empty");
+      return;
+    }
+    onSubmit(text);
   };
 
   useKeyboard((key: KeyEvent) => {
@@ -146,9 +154,10 @@ export function PromptDialog({
               focused
               initialValue={initial}
               placeholder={placeholder}
-              onContentChange={() =>
-                setValue(areaRef.current?.plainText ?? value)
-              }
+              onContentChange={() => {
+                setValue(areaRef.current?.plainText ?? value);
+                setError(null);
+              }}
               backgroundColor="transparent"
               textColor={theme.text}
               placeholderColor={theme.textMuted}
@@ -159,7 +168,10 @@ export function PromptDialog({
               focused
               value={value}
               placeholder={placeholder}
-              onInput={setValue}
+              onInput={(v) => {
+                setValue(v);
+                setError(null);
+              }}
               onSubmit={submit}
               backgroundColor="transparent"
               textColor={theme.text}
@@ -168,6 +180,14 @@ export function PromptDialog({
             />
           )}
         </box>
+
+        {error ? (
+          <box paddingTop={1}>
+            <text fg={theme.danger} attributes={TextAttributes.BOLD}>
+              {`⚠ ${error}`}
+            </text>
+          </box>
+        ) : null}
 
         <box flexDirection="row" paddingTop={1}>
           <Button theme={theme} label="Save" primary onPress={submit} />
@@ -206,16 +226,18 @@ export function CommandPalette({
   const [index, setIndex] = useState(0);
 
   const results = useMemo(() => {
-    if (query === "") return actions.slice(0, 10);
+    if (query === "") return actions;
     return actions
       .map((a) => ({ a, score: fuzzyScore(query, `${a.group} ${a.label}`) }))
       .filter((r) => r.score !== null)
       .sort((x, y) => (y.score ?? 0) - (x.score ?? 0))
-      .slice(0, 10)
       .map((r) => r.a);
   }, [actions, query]);
 
   const selected = Math.min(index, Math.max(results.length - 1, 0));
+  // Ten rows slide over the full result list, so every action stays reachable.
+  const windowStart = Math.max(0, selected - 9);
+  const visible = results.slice(windowStart, windowStart + 10);
 
   useKeyboard((key: KeyEvent) => {
     if (key.name === "escape") {
@@ -280,19 +302,158 @@ export function CommandPalette({
         {results.length === 0 ? (
           <text fg={theme.textMuted}>No matching command</text>
         ) : (
-          results.map((action, i) => (
+          visible.map((action, i) => (
             <PaletteRow
               key={action.id}
               theme={theme}
               action={action}
-              selected={i === selected}
+              selected={windowStart + i === selected}
               onPress={() => {
                 onClose();
                 action.run();
               }}
-              onHover={() => setIndex(i)}
+              onHover={() => setIndex(windowStart + i)}
             />
           ))
+        )}
+      </box>
+    </Overlay>
+  );
+}
+
+interface TaskPickerDialogProps {
+  theme: TuiTheme;
+  title: string;
+  subtitle?: string;
+  tasks: Task[];
+  screenWidth: number;
+  screenHeight: number;
+  onPick: (taskId: number) => void;
+  onClose: () => void;
+}
+
+/** Fuzzy task chooser used for picking blockers. */
+export function TaskPickerDialog({
+  theme,
+  title,
+  subtitle,
+  tasks,
+  screenWidth,
+  screenHeight,
+  onPick,
+  onClose,
+}: TaskPickerDialogProps) {
+  const [query, setQuery] = useState("");
+  const [index, setIndex] = useState(0);
+
+  const results = useMemo(() => {
+    if (query === "") return tasks;
+    return tasks
+      .map((t) => ({
+        t,
+        score: fuzzyScore(query, `${t.title} ${t.tags.join(" ")}`),
+      }))
+      .filter((r) => r.score !== null)
+      .sort((x, y) => (y.score ?? 0) - (x.score ?? 0))
+      .map((r) => r.t);
+  }, [query, tasks]);
+
+  const selected = Math.min(index, Math.max(results.length - 1, 0));
+  const windowStart = Math.max(0, selected - 9);
+  const visible = results.slice(windowStart, windowStart + 10);
+
+  useKeyboard((key: KeyEvent) => {
+    if (key.name === "escape") {
+      onClose();
+      return;
+    }
+    if (key.name === "down" || (key.ctrl && key.name === "n")) {
+      setIndex((i) => Math.min(i + 1, results.length - 1));
+    }
+    if (key.name === "up" || (key.ctrl && key.name === "p")) {
+      setIndex((i) => Math.max(i - 1, 0));
+    }
+    if (key.name === "return") {
+      const task = results[selected];
+      if (task) onPick(task.id);
+    }
+  });
+
+  return (
+    <Overlay
+      theme={theme}
+      title={title}
+      subtitle={subtitle}
+      width={70}
+      screenWidth={screenWidth}
+      screenHeight={screenHeight}
+      footer="↑↓ move · enter pick · esc close"
+      onBackdropClick={onClose}
+    >
+      <box
+        flexDirection="row"
+        border
+        borderStyle="rounded"
+        borderColor={theme.accent}
+        backgroundColor={mix(theme.surfaceAlt, theme.accentSoft, 0.4)}
+        height={3}
+        paddingLeft={1}
+      >
+        <text fg={theme.accent} attributes={TextAttributes.BOLD}>
+          {"⌕ "}
+        </text>
+        <box flexGrow={1}>
+          <input
+            focused
+            value={query}
+            placeholder="Type to filter tasks…"
+            onInput={(v) => {
+              setQuery(v);
+              setIndex(0);
+            }}
+            backgroundColor="transparent"
+            textColor={theme.text}
+            placeholderColor={theme.textMuted}
+            cursorColor={theme.accent}
+          />
+        </box>
+      </box>
+
+      <box flexDirection="column" paddingTop={1}>
+        {results.length === 0 ? (
+          <text fg={theme.textMuted}>No matching task</text>
+        ) : (
+          visible.map((task, i) => {
+            const isSelected = windowStart + i === selected;
+            return (
+              <box
+                key={task.id}
+                flexDirection="row"
+                backgroundColor={isSelected ? theme.selectionBg : undefined}
+                onMouseOver={() => setIndex(windowStart + i)}
+                onMouseDown={() => onPick(task.id)}
+              >
+                <text fg={isSelected ? theme.accent : theme.borderSubtle}>
+                  {isSelected ? "┃ " : "│ "}
+                </text>
+                <text fg={theme.textMuted}>{`#${task.id}`.padEnd(5)}</text>
+                <text
+                  fg={
+                    task.status === Status.Done
+                      ? theme.textMuted
+                      : isSelected
+                        ? theme.text
+                        : theme.textDim
+                  }
+                  attributes={isSelected ? TextAttributes.BOLD : undefined}
+                  flexGrow={1}
+                  truncate
+                >
+                  {task.title}
+                </text>
+              </box>
+            );
+          })
         )}
       </box>
     </Overlay>

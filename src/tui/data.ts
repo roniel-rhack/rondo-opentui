@@ -3,6 +3,7 @@ import type { Config } from "../core/config/config.ts";
 import { FocusStore } from "../core/focus/store.ts";
 import { JournalStore } from "../core/journal/store.ts";
 import { TaskStore, newTask } from "../core/task/store.ts";
+import { hasCycle } from "../core/task/deps.ts";
 import { RecurFreq, nextDueDate } from "../core/task/recur.ts";
 import {
   Status,
@@ -108,6 +109,11 @@ export class RondoData {
       });
       this.tasks.create(spawned);
       this.tasks.updateRecurrence(spawned.id, task.recurFreq, interval);
+      // The recurrence lives on in the spawned occurrence. Clearing it here
+      // keeps a later Done → Pending → Done bounce from spawning duplicates.
+      this.tasks.updateRecurrence(task.id, RecurFreq.None, 0);
+      task.recurFreq = RecurFreq.None;
+      task.recurInterval = 0;
     }
 
     task.status = next;
@@ -125,9 +131,23 @@ export class RondoData {
     return { kind: "task", label: `Deleted "${task.title}"`, task };
   }
 
-  /** Task IDs blocked by this task; deletion is refused while non-empty. */
+  /** Task IDs blocked by this task; deleting the task unblocks them. */
   blockedBy(task: Task): number[] {
     return this.tasks.listBlocksIds(task.id);
+  }
+
+  /** Marks taskId as blocked by blockerId, refusing cycles and self-blocks. */
+  addDependency(taskId: number, blockerId: number): void {
+    if (
+      hasCycle(taskId, [blockerId], (id) => this.tasks.listBlockerIds(id))
+    ) {
+      throw new Error("that would create a dependency cycle");
+    }
+    this.tasks.setBlocker(taskId, blockerId);
+  }
+
+  removeDependency(taskId: number, blockerId: number): void {
+    this.tasks.removeBlocker(taskId, blockerId);
   }
 
   addSubtask(taskId: number, title: string): void {

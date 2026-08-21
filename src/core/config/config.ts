@@ -55,6 +55,9 @@ export interface Config {
   dateFormat: string;
   timeFormat: string;
   dateTimeFormat: string;
+  /** "dark", "light" or "" to follow the terminal. TUI-only; the Go build
+   * ignores the key on read and drops it when it rewrites the file. */
+  theme: string;
   focus: FocusConfig;
 }
 
@@ -64,6 +67,7 @@ interface ConfigJSON {
   date_format?: string;
   time_format?: string;
   datetime_format?: string;
+  theme?: string;
   focus?: {
     work_duration_min?: number;
     short_break_duration_min?: number;
@@ -81,6 +85,7 @@ export function defaultConfig(): Config {
     dateFormat: DEFAULT_DATE_FORMAT,
     timeFormat: DEFAULT_TIME_FORMAT,
     dateTimeFormat: `${DEFAULT_DATE_FORMAT} ${DEFAULT_TIME_FORMAT}`,
+    theme: "",
     focus: {
       workDuration: 25,
       shortBreakDuration: 5,
@@ -100,6 +105,7 @@ export function zeroConfig(): Config {
     dateFormat: "",
     timeFormat: "",
     dateTimeFormat: "",
+    theme: "",
     focus: {
       workDuration: 0,
       shortBreakDuration: 0,
@@ -148,6 +154,8 @@ export function validateWithWarnings(cfg: Config): string[] {
   if (!isValidTimeLayout(cfg.dateTimeFormat)) {
     cfg.dateTimeFormat = `${cfg.dateFormat} ${cfg.timeFormat}`;
   }
+
+  if (cfg.theme !== "dark" && cfg.theme !== "light") cfg.theme = "";
 
   const f = cfg.focus;
   if (f.workDuration === 0) f.workDuration = 25;
@@ -281,6 +289,8 @@ export function toJSON(cfg: Config): ConfigJSON {
     date_format: cfg.dateFormat,
     time_format: cfg.timeFormat,
     datetime_format: cfg.dateTimeFormat,
+    // Only written when set, so files the Go build rewrites stay identical.
+    ...(cfg.theme !== "" ? { theme: cfg.theme } : {}),
     focus: {
       work_duration_min: cfg.focus.workDuration,
       short_break_duration_min: cfg.focus.shortBreakDuration,
@@ -299,6 +309,7 @@ export function fromJSON(raw: ConfigJSON): Config {
   cfg.dateFormat = raw.date_format ?? "";
   cfg.timeFormat = raw.time_format ?? "";
   cfg.dateTimeFormat = raw.datetime_format ?? "";
+  cfg.theme = raw.theme ?? "";
   const f = raw.focus ?? {};
   cfg.focus = {
     workDuration: f.work_duration_min ?? 0,

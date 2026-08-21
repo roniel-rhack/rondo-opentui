@@ -1,4 +1,10 @@
+import type { Config } from "../core/config/config.ts";
+import { writeJSON, writeNotes, writeTasks } from "../core/export/export.ts";
+import { SessionKind } from "../core/focus/focus.ts";
+import { dateTitle, type Note } from "../core/journal/journal.ts";
 import { Status, type Task } from "../core/task/task.ts";
+import { parseDuration } from "../core/task/timelog.ts";
+import { GoTime, parseDateOnly } from "../core/time.ts";
 
 export type TabId = "all" | "active" | "done" | "journal";
 
@@ -58,21 +64,83 @@ export function fuzzyScore(needle: string, haystack: string): number | null {
   return score - haystack.length * 0.01;
 }
 
-export function matchesQuery(t: Task, query: string): boolean {
-  if (query === "") return true;
-  const haystack = `${t.title} ${t.description} ${t.tags.join(" ")}`;
-  return fuzzyScore(query, haystack) !== null;
+/** Journal notes matching a query, filtered but never re-ranked: the journal
+ * reads chronologically, so order is part of its meaning. */
+export function visibleNotes(notes: readonly Note[], query: string): Note[] {
+  if (query === "") return [...notes];
+  return notes.filter((n) => {
+    const haystack = `${dateTitle(n)} ${n.entries.map((e) => e.body).join(" ")}`;
+    return fuzzyScore(query, haystack) !== null;
+  });
 }
 
-export function statusForTab(tab: TabId): Status | null {
-  switch (tab) {
-    case "active":
-      return Status.InProgress;
-    case "done":
-      return Status.Done;
-    default:
-      return null;
+/** Parses "45m" or "1h30m fixing the build" into a duration plus note. */
+export function parseTimeLogInput(raw: string): {
+  duration: number;
+  note: string;
+} {
+  const trimmed = raw.trim();
+  const space = trimmed.search(/\s/);
+  const durationPart = space === -1 ? trimmed : trimmed.slice(0, space);
+  const note = space === -1 ? "" : trimmed.slice(space + 1).trim();
+  return { duration: parseDuration(durationPart), note };
+}
+
+/**
+ * Due-date input: the typed forms mirror the clickable presets. Accepts
+ * "today", "tomorrow", "+Nd", "+Nw", "none"/empty, or a plain YYYY-MM-DD.
+ * Throws when nothing matches, like parseDateOnly does.
+ */
+export function parseDueInput(raw: string, now: GoTime): GoTime | null {
+  const input = raw.trim().toLowerCase();
+  if (input === "" || input === "none") return null;
+
+  let days: number | null = null;
+  if (input === "today") days = 0;
+  else if (input === "tomorrow") days = 1;
+  else {
+    const offset = /^\+(\d+)([dw])$/.exec(input);
+    if (offset) days = Number(offset[1]) * (offset[2] === "w" ? 7 : 1);
   }
+
+  if (days !== null) {
+    // Due dates are UTC-anchored; anchor the local calendar day, like the
+    // clickable presets do.
+    return parseDateOnly(now.addDate(0, 0, days).format("2006-01-02"), "utc");
+  }
+  return parseDateOnly(raw.trim(), "utc");
+}
+
+/** Toast for the focus toggle, matching what actually starts or stops. */
+export function focusStatusMessage(
+  running: boolean,
+  kind: SessionKind,
+  cfg: Config,
+): string {
+  if (running) return "Focus stopped";
+  switch (kind) {
+    case SessionKind.ShortBreak:
+      return `Break started (${cfg.focus.shortBreakDuration}m)`;
+    case SessionKind.LongBreak:
+      return `Break started (${cfg.focus.longBreakDuration}m)`;
+    default:
+      return `Focus started (${cfg.focus.workDuration}m)`;
+  }
+}
+
+/** Errors deserve more reading time than confirmations. */
+export function toastDuration(kind: "info" | "success" | "error"): number {
+  return kind === "error" ? 6400 : 3200;
+}
+
+/** Full export, both stores, in either format. */
+export function exportContent(
+  format: "md" | "json",
+  tasks: readonly Task[],
+  notes: readonly Note[],
+): string {
+  if (format === "json") return writeJSON(tasks, notes);
+  return `${writeTasks(tasks)}\n${writeNotes(notes)}`;
 }
 
 /** Tasks shown for a tab, after filtering and sorting. */
