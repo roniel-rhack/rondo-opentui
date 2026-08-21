@@ -13,7 +13,7 @@
     "start": "bun run src/index.tsx",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "bun build --compile --outfile dist/rondo-opentui src/index.tsx && (codesign -s - dist/rondo-opentui 2>/dev/null || true)"
+    "build": "bun build --compile --outfile dist/rondo-opentui src/index.tsx && (codesign -f -s - dist/rondo-opentui 2>/dev/null || true)"
   },
   "devDependencies": {
     "@types/bun": "latest",

@@ -42,10 +42,11 @@ jobs:
         run: bun build --compile --outfile rondo-opentui src/index.tsx
 
       # Unsigned binaries produced by `bun build --compile` are killed on
-      # start by macOS, so give them an ad-hoc signature.
+      # start by macOS, so give them an ad-hoc signature. Force it: on x64 Bun
+      # already signs the output and codesign refuses to sign twice.
       - name: Sign binary (macOS)
         if: runner.os == 'macOS'
-        run: codesign -s - rondo-opentui
+        run: codesign -f -s - rondo-opentui
 
       - name: Package
         env:
