@@ -151,5 +151,8 @@ Sleep 2.5s
 Type "T"
 Sleep 1.5s
 
+# The focus session is still running, so q asks for confirmation first.
 Type "q"
+Sleep 1.5s
+Type "y"
 Sleep 1s
