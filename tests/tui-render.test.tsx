@@ -972,3 +972,62 @@ describe("TUI review fixes", () => {
     renderer.destroy();
   });
 });
+
+describe("TUI long titles", () => {
+  const LONG =
+    "Titulo enormemente largo numero uno para la prueba de edicion con " +
+    "textarea y mas texto de relleno al final para que el input solo " +
+    "muestre la cola";
+
+  async function createLongTask(m: Awaited<ReturnType<typeof mount>>) {
+    await m.press("a");
+    await m.type(LONG);
+    await m.press("s", { ctrl: true });
+  }
+
+  test("a long title stays on one row in the list", async () => {
+    const m = await mount();
+    await createLongTask(m);
+
+    // Only the list panel: the detail panel repeats the title on the right.
+    const lines = captureLines(m).map((l) => l.slice(0, 40));
+    const row = lines.findIndex((l) => l.includes("Titulo enorme"));
+    expect(row).toBeGreaterThan(0);
+    expect(lines[row]).toMatch(/○ Titulo/);
+    expect(lines[row + 1]).not.toContain("para la prueba");
+    m.renderer.destroy();
+  });
+
+  test("editing shows the whole long title, not just its tail", async () => {
+    const m = await mount();
+    await createLongTask(m);
+
+    await m.press("e");
+    const lines = m.captureCharFrame().split("\n");
+    const start = lines.findIndex((l) => l.includes("Title"));
+    const end = lines.findIndex((l) => l.includes("Description"));
+    expect(start).toBeGreaterThan(0);
+    const titleBox = lines.slice(start, end).join("\n");
+    // Both ends of the title must be inside the field at once.
+    expect(titleBox).toContain("numero uno");
+    expect(titleBox).toContain("muestre la cola");
+    m.renderer.destroy();
+  });
+
+  test("enter on the title still submits the form", async () => {
+    const m = await mount();
+
+    await m.press("a");
+    await m.type("Quick entry task");
+    await m.press("RETURN");
+
+    expect(m.data.listTasks().some((t) => t.title === "Quick entry task")).toBe(
+      true,
+    );
+    m.renderer.destroy();
+  });
+
+  function captureLines(m: { captureCharFrame: () => string }): string[] {
+    return m.captureCharFrame().split("\n");
+  }
+});

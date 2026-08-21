@@ -89,7 +89,7 @@ export function Overlay({
             {title}
           </text>
           {subtitle ? (
-            <text fg={theme.textMuted} flexGrow={1} truncate>
+            <text fg={theme.textMuted} flexGrow={1} wrapMode="none" truncate>
               {`  ${subtitle}`}
             </text>
           ) : (

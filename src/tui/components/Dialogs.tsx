@@ -433,10 +433,15 @@ export function TaskPickerDialog({
                 onMouseOver={() => setIndex(windowStart + i)}
                 onMouseDown={() => onPick(task.id)}
               >
-                <text fg={isSelected ? theme.accent : theme.borderSubtle}>
+                <text
+                  flexShrink={0}
+                  fg={isSelected ? theme.accent : theme.borderSubtle}
+                >
                   {isSelected ? "┃ " : "│ "}
                 </text>
-                <text fg={theme.textMuted}>{`#${task.id}`.padEnd(5)}</text>
+                <text flexShrink={0} fg={theme.textMuted}>
+                  {`#${task.id}`.padEnd(5)}
+                </text>
                 <text
                   fg={
                     task.status === Status.Done
@@ -447,6 +452,7 @@ export function TaskPickerDialog({
                   }
                   attributes={isSelected ? TextAttributes.BOLD : undefined}
                   flexGrow={1}
+                  wrapMode="none"
                   truncate
                 >
                   {task.title}
@@ -480,14 +486,15 @@ function PaletteRow({
       onMouseOver={onHover}
       onMouseDown={onPress}
     >
-      <text fg={selected ? theme.accent : theme.borderSubtle}>
+      <text flexShrink={0} fg={selected ? theme.accent : theme.borderSubtle}>
         {selected ? "┃ " : "│ "}
       </text>
-      <text fg={theme.textMuted}>{`${action.group.padEnd(8)}`}</text>
+      <text flexShrink={0} fg={theme.textMuted}>{`${action.group.padEnd(8)}`}</text>
       <text
         fg={selected ? theme.text : theme.textDim}
         attributes={selected ? TextAttributes.BOLD : undefined}
         flexGrow={1}
+        wrapMode="none"
         truncate
       >
         {action.label}

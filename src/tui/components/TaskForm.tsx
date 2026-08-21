@@ -1,6 +1,6 @@
 import { TextAttributes, type KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { TextareaRenderable } from "@opentui/core";
 import { RecurFreq, recurFreqString } from "../../core/task/recur.ts";
 import { Priority, priorityString } from "../../core/task/task.ts";
@@ -101,6 +101,7 @@ export function TaskForm({
   onCancel,
 }: TaskFormProps) {
   const [values, setValues] = useState<TaskFormValues>(initial);
+  const titleRef = useRef<TextareaRenderable | null>(null);
   const descriptionRef = useRef<TextareaRenderable | null>(null);
   const [fieldIndex, setFieldIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -108,10 +109,20 @@ export function TaskForm({
   const field: FieldId = FIELDS[fieldIndex] ?? "title";
   const focus = (id: FieldId) => setFieldIndex(FIELDS.indexOf(id));
 
+  // Editing continues at the end of the title, like the old input did.
+  useEffect(() => {
+    const area = titleRef.current;
+    if (area) area.cursorOffset = area.plainText.length;
+  }, []);
+
   const submit = () => {
-    // The textarea owns its buffer, so read the latest text straight from it.
+    // The textareas own their buffers, so read the latest text from the refs.
+    // The title is conceptually one line: whatever enter left behind in the
+    // buffer collapses back into spaces.
+    const rawTitle = titleRef.current?.plainText ?? values.title;
+    const title = rawTitle.replace(/\s+/g, " ").trim();
     const description = descriptionRef.current?.plainText ?? values.description;
-    const values2 = { ...values, description };
+    const values2 = { ...values, title, description };
     setValues(values2);
 
     const problem = validate(values2);
@@ -140,6 +151,12 @@ export function TaskForm({
       return;
     }
     if (key.ctrl && key.name === "s") {
+      submit();
+      return;
+    }
+    // Enter still submits from the title even though it is a textarea; the
+    // stray newline it inserts is collapsed on read.
+    if (key.name === "return" && field === "title") {
       submit();
       return;
     }
@@ -261,15 +278,35 @@ export function TaskForm({
       title={title}
       subtitle="tab move · ←→ choose · ctrl+s save"
       width={76}
-      height={Math.min(screenHeight - 2, 26)}
+      height={Math.min(screenHeight - 2, 28)}
       screenWidth={screenWidth}
       screenHeight={screenHeight}
       footer="tab / shift+tab field · ctrl+s save · esc cancel"
       onBackdropClick={onCancel}
     >
       {label("title", "Title")}
-      {textInput("title", "What needs doing?", values.title, (v) =>
-        setValues({ ...values, title: v }),
+      {/* A textarea so long titles wrap into view instead of scrolling away
+          under the cursor; enter still submits. */}
+      {frame(
+        "title",
+        5,
+        <textarea
+          ref={titleRef}
+          focused={field === "title"}
+          initialValue={values.title}
+          placeholder="What needs doing?"
+          wrapMode="word"
+          onContentChange={() =>
+            setValues((prev) => ({
+              ...prev,
+              title: titleRef.current?.plainText ?? prev.title,
+            }))
+          }
+          backgroundColor="transparent"
+          textColor={theme.text}
+          placeholderColor={theme.textMuted}
+          cursorColor={theme.accent}
+        />,
       )}
 
       {label("description", "Description", "markdown · multiline")}

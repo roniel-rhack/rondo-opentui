@@ -166,12 +166,15 @@ function TaskRow({
       onMouseDown={onSelect}
     >
       <box flexDirection="row" paddingRight={1}>
-        {/* Priority rail doubles as the selection indicator. */}
-        <text fg={selected && focused ? theme.accent : railColor}>
+        {/* Priority rail doubles as the selection indicator. flexShrink 0
+            everywhere but the title: an overflowing no-wrap title would
+            otherwise squeeze the glyph's padding away. */}
+        <text flexShrink={0} fg={selected && focused ? theme.accent : railColor}>
           {railGlyph}
         </text>
 
         <box
+          flexShrink={0}
           paddingLeft={1}
           paddingRight={1}
           onMouseDown={(event) => {
@@ -194,17 +197,26 @@ function TaskRow({
                 : undefined
           }
           flexGrow={1}
+          // truncate only kicks in once wrapping is off; otherwise long
+          // titles wrap and break the row layout.
+          wrapMode="none"
           truncate
         >
           {task.title}
         </text>
 
         {task.recurFreq !== RecurFreq.None ? (
-          <text fg={done ? theme.textMuted : theme.secondary}>{" ↻ "}</text>
+          <text flexShrink={0} fg={done ? theme.textMuted : theme.secondary}>
+            {" ↻ "}
+          </text>
         ) : null}
 
         {task.priority > 1 && !done ? (
-          <text fg={priorityColor} attributes={TextAttributes.BOLD}>
+          <text
+            flexShrink={0}
+            fg={priorityColor}
+            attributes={TextAttributes.BOLD}
+          >
             {` ${priorityLabel(task.priority)} `}
           </text>
         ) : null}

@@ -11,7 +11,7 @@ bun install
 bun run start          # TUI
 bun run start list     # any argument dispatches to the CLI instead
 bun run dev            # TUI with --watch
-bun test               # 350 tests
+bun test               # 353 tests
 bun run typecheck      # tsc --noEmit
 bun run build          # dist/rondo-opentui (single binary, ad-hoc signed)
 ```
@@ -101,6 +101,12 @@ Hard-won, all of them cost time once:
   text from the renderable ref (`ref.current.plainText`).
 - **`truncate` elides in the middle** (`0/5...ase #infra`). When the tail
   matters, trim the string yourself.
+- **`truncate` only works with `wrapMode="none"`.** The default wrap mode
+  wins otherwise: long text wraps into extra lines and breaks the row layout
+  instead of truncating.
+- **Overflowing no-wrap text shrinks its flex siblings.** A `wrapMode="none"`
+  title wider than the row squeezes the glyph box's padding away (`○Title`).
+  Put `flexShrink={0}` on every fixed-width cell in the row.
 - **`opacity` applies to the whole subtree.** A dialog nested inside a
   translucent backdrop inherits it and turns unreadable — keep them siblings.
 - **Nothing repaints unless it is dirty.** After a palette switch, call

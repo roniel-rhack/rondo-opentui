@@ -224,7 +224,7 @@ export function StatusBar({
             <text fg={tone} attributes={TextAttributes.BOLD}>
               {`${icon} `}
             </text>
-            <text fg={theme.text} flexGrow={1} truncate>
+            <text fg={theme.text} flexGrow={1} wrapMode="none" truncate>
               {message}
             </text>
           </box>

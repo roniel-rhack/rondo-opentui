@@ -86,16 +86,17 @@ function SubtaskRow({
       onMouseOut={() => setHover(false)}
       onMouseDown={onPress}
     >
-      <text fg={selected ? theme.accent : theme.borderSubtle}>
+      <text flexShrink={0} fg={selected ? theme.accent : theme.borderSubtle}>
         {selected ? "┃" : "│"}
       </text>
-      <text fg={completed ? theme.success : theme.textMuted}>
+      <text flexShrink={0} fg={completed ? theme.success : theme.textMuted}>
         {completed ? " ▣ " : " ▢ "}
       </text>
       <text
         fg={completed ? theme.textMuted : theme.text}
         attributes={completed ? TextAttributes.STRIKETHROUGH : undefined}
         flexGrow={1}
+        wrapMode="none"
         truncate
       >
         {title}
@@ -164,7 +165,7 @@ export function TaskDetail({
       contentOptions={{ flexDirection: "column" }}
     >
       <box flexDirection="row" paddingTop={1}>
-        <text fg={statusColor} attributes={TextAttributes.BOLD}>
+        <text flexShrink={0} fg={statusColor} attributes={TextAttributes.BOLD}>
           {done ? "✓ " : task.status === Status.InProgress ? "◐ " : "○ "}
         </text>
         <text

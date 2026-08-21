@@ -106,18 +106,22 @@ function NoteRows({
             backgroundColor={isSelected ? theme.selectionBg : undefined}
             onMouseDown={() => onSelect(index)}
           >
-            <text fg={isSelected && focused ? theme.accent : theme.borderSubtle}>
+            <text
+              flexShrink={0}
+              fg={isSelected && focused ? theme.accent : theme.borderSubtle}
+            >
               {isSelected ? "┃" : "│"}
             </text>
             <text
               fg={note.hidden ? theme.textMuted : theme.text}
               attributes={isSelected ? TextAttributes.BOLD : undefined}
               flexGrow={1}
+              wrapMode="none"
               truncate
             >
               {` ${formatNoteTitle(cfg, note.date, now)}`}
             </text>
-            <text fg={theme.textDim}>
+            <text flexShrink={0} fg={theme.textDim}>
               {`${note.entries.length}${note.hidden ? " ·hidden" : ""}`}
             </text>
           </box>
