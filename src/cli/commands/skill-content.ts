@@ -6,68 +6,99 @@ description: Use when managing tasks, journal entries, subtasks, time logs, focu
 
 # RonDO — Terminal Productivity CLI
 
-Task management, journaling, time tracking, and focus sessions from the command line.
-Always use ` + "`--json`" + ` when you need to parse output programmatically.
+Task management, journaling, time tracking, and focus sessions from the
+command line. Everything the app can do is available here.
 
-## Global Flags
+## Agent guidelines
 
-All commands support: ` + "`--json`" + `, ` + "`--format table|json`" + `, ` + "`--quiet` / `-q`" + `, ` + "`--no-color`" + `
+- **Exit codes**: 0 success · 1 error · 3 not found. Errors are one
+  actionable line on stderr.
+- **Parsing**: add ` + "`--json`" + ` to any command — reads return data,
+  mutations return the affected object (` + "`add --json`" + ` → the created
+  task with its id).
+- **No hangs**: destructive commands never prompt when stdin is not a TTY;
+  they fail telling you to pass ` + "`--force`" + `. Always pass ` + "`--force`" + ` (or ` + "`-y`" + `)
+  on delete/reset.
+- **Ids**: ` + "`add --quiet`" + ` and ` + "`focus start --quiet`" + ` print only the new id.
+- **Idempotent done**: ` + "`done`" + ` on an already-done task is a safe no-op
+  (recurring tasks never spawn twice on retry).
+- **Dates**: every due/date field accepts ` + "`YYYY-MM-DD`" + `, ` + "`today`" + `,
+  ` + "`tomorrow`" + `, ` + "`yesterday`" + `, ` + "`+Nd`" + `, ` + "`+Nw`" + `.
+- **Sandbox**: set ` + "`RONDO_HOME=/tmp/some-dir`" + ` to run against a throwaway
+  database instead of the user's real one.
+
+## Global flags
+
+` + "`--json`" + ` · ` + "`--format table|json|plain`" + ` · ` + "`--quiet`/`-q`" + ` · ` + "`--no-color`" + ` ·
+` + "`--version`" + `. Color auto-disables when stdout is not a TTY.
 
 ## Tasks
 
 ` + "```bash" + `
-# Add a task
-rondo-opentui add "title" [--priority low|medium|high|urgent] [--due YYYY-MM-DD] \
-  [--tags t1,t2] [--desc "..."] [--meta key=value] [--blocks 2,3] [--recur daily|weekly|monthly|yearly]
+# Create (prints the task as JSON with --json; just the id with --quiet)
+rondo-opentui add "title" [--priority low|medium|high|urgent] [--due <date>] \
+  [--tags t1,t2] [--desc "..."] [--meta key=value]... [--blocks 2,3] \
+  [--recur daily|weekly|monthly|yearly]
 
-# List tasks (supports rich filtering)
-rondo-opentui list [--status pending|active|done|all] [--priority high] [--tag work] \
-  [--meta key=value] [--sort created|due|priority] [--due-before YYYY-MM-DD] \
-  [--due-after YYYY-MM-DD] [--overdue] [--search text] [--limit N] [--json]
+# List with rich filtering
+rondo-opentui list [--status pending|active|done|all] [--priority high] \
+  [--tag work]... [--meta key=value]... [--sort created|due|priority] \
+  [--due-before <date>] [--due-after <date>] [--overdue] [--search text] \
+  [--limit N] [--json]
 
-# Show task details
-rondo-opentui show <id> [--json]
+# Read one task (subtasks, notes, time logs, dependencies included)
+rondo-opentui show <id> --json
 
-# Edit task (only specified flags are updated)
-rondo-opentui edit <id> [--title "..."] [--desc "..."] [--priority ...] [--due ...] \
-  [--tags ...] [--meta key=value] [--blocks 1,2] [--clear-blocks] [--clear-due] [--recur ...]
+# Update (only the flags you pass change; --meta merges; --blocks replaces)
+rondo-opentui edit <id> [--title "..."] [--desc "..."] [--priority ...] \
+  [--due <date>] [--clear-due] [--tags ...] [--meta key=value]... \
+  [--blocks 1,2] [--clear-blocks] [--recur none|daily|weekly|monthly|yearly]
 
-# Mark done (supports multiple IDs; spawns next for recurring tasks)
+# Complete (multiple ids; recurring tasks spawn their next occurrence once)
 rondo-opentui done <id> [<id2> ...]
-
-# Delete task (--cascade if it blocks others, --force/-y to skip confirm)
-rondo-opentui delete <id> [--force] [--cascade]
 
 # Set or cycle status
 rondo-opentui status <id> [pending|active|done]
+
+# Delete (--cascade required if it blocks others; unblocks them)
+rondo-opentui delete <id> --force [--cascade]
 ` + "```" + `
+
+## Dependencies
+
+` + "```bash" + `
+rondo-opentui block <task-id> <blocker-id>     # task waits on blocker; cycles rejected
+rondo-opentui unblock <task-id> <blocker-id>
+` + "```" + `
+
+` + "`show --json`" + ` exposes ` + "`blocked_by`" + `/` + "`blocks`" + ` plus resolved
+` + "`*_detail`" + ` entries with each referenced task's title and status.
 
 ## Subtasks
 
 ` + "```bash" + `
 rondo-opentui subtask add <task-id> "title"
-rondo-opentui subtask list <task-id> [--json]
+rondo-opentui subtask list <task-id> --json
 rondo-opentui subtask done <task-id> <subtask-id>      # toggles completion
 rondo-opentui subtask edit <task-id> <subtask-id> "new title"
-rondo-opentui subtask delete <task-id> <subtask-id> [--force]
+rondo-opentui subtask delete <task-id> <subtask-id> --force
 ` + "```" + `
 
-## Task Notes
+## Task notes
 
 ` + "```bash" + `
 rondo-opentui note add <task-id> "note body"
-rondo-opentui note list <task-id> [--json]
+rondo-opentui note list <task-id> --json
 rondo-opentui note edit <task-id> <note-id> "new body"
-rondo-opentui note delete <task-id> <note-id> [--force]
+rondo-opentui note delete <task-id> <note-id> --force
 ` + "```" + `
 
-## Time Logging
+## Time logging
 
 ` + "```bash" + `
-# Duration format: 1h30m, 45m, 2h
-rondo-opentui timelog add <task-id> <duration> [--note "what I did"]
-rondo-opentui timelog list <task-id> [--json]
-rondo-opentui timelog summary [--days 7] [--json]
+rondo-opentui timelog add <task-id> <duration> [--note "what I did"]  # 1h30m, 45m, 2h
+rondo-opentui timelog list <task-id> --json
+rondo-opentui timelog summary [--days 7] --json
 ` + "```" + `
 
 ## Recurrence
@@ -80,79 +111,77 @@ rondo-opentui recur clear <id>
 ## Journal
 
 ` + "```bash" + `
-# Quick add to today (shorthand)
-rondo-opentui journal "entry text"
-
-# Add with date control
-rondo-opentui journal add "entry text" [--date today|yesterday|YYYY-MM-DD]
-
-# List notes
-rondo-opentui journal list [--date YYYY-MM-DD] [--hidden] [--json]
-
-# Show entries for a date (default: today)
-rondo-opentui journal show [today|yesterday|YYYY-MM-DD] [--json]
-
-# Edit / delete entries
+rondo-opentui journal "entry text"                 # shorthand: add to today
+rondo-opentui journal add "entry text" [--date <date>]
+rondo-opentui journal list [--date <date>] [--hidden] --json
+rondo-opentui journal show [today|yesterday|YYYY-MM-DD] --json
 rondo-opentui journal edit <entry-id> "new text"
-rondo-opentui journal delete <entry-id> [--force]
-
-# Toggle note visibility
-rondo-opentui journal hide <date>
+rondo-opentui journal delete <entry-id> --force
+rondo-opentui journal hide <date>                  # toggles note visibility
 ` + "```" + `
 
 ## Focus / Pomodoro
 
 ` + "```bash" + `
-# Record a completed focus session
+# Record a finished session ("log" is an alias that says what it does)
 rondo-opentui focus start [--task <id>] [--duration 25m]
+rondo-opentui focus log --task <id>
 
-# Today's progress
-rondo-opentui focus status [--json]
-
-# Historical stats
-rondo-opentui focus stats [--days 7] [--json]
+rondo-opentui focus status --json      # today's count, goal, streak
+rondo-opentui focus stats [--days 7] --json
 ` + "```" + `
 
-## Stats & Export
+## Stats & export
 
 ` + "```bash" + `
-rondo-opentui stats [--json]
+rondo-opentui stats --json
 rondo-opentui export [--format md|json] [--output file.md] [--journal]
 ` + "```" + `
 
-## Batch Mode
+## Batch mode
 
-Send multiple commands via stdin as newline-delimited JSON:
+One JSON object per stdin line; the result carries each command's output:
 
 ` + "```bash" + `
-echo '{"cmd":"add","args":["Deploy fix","--priority","urgent"]}
+echo '{"cmd":"add","args":["Deploy fix","--priority","urgent","--json"]}
 {"cmd":"list","args":["--status","active","--json"]}' | rondo-opentui batch
 ` + "```" + `
 
-Returns JSON array: ` + "`[{\"cmd\":\"add\",\"ok\":true}, ...]`" + `
+Returns a JSON array. Lines run with ` + "`--json`" + ` come back parsed under
+` + "`data`" + `; other output arrives as a raw ` + "`output`" + ` string:
+` + "`[{\"cmd\":\"add\",\"ok\":true,\"data\":{...}}, {\"cmd\":\"list\",\"ok\":true,\"data\":[...]}]`" + `.
+Failures are ` + "`{\"cmd\":…,\"ok\":false,\"error\":\"…\"}`" + `; batch cannot nest.
 
 ## Config
 
 ` + "```bash" + `
-rondo-opentui config list [--json]
+rondo-opentui config list --json
 rondo-opentui config get <key>
-rondo-opentui config set <key> <value>
-rondo-opentui config reset [--force]
+rondo-opentui config set <key> <value>   # keys include theme (dark|light|auto),
+                                         # panel_ratio, date_format, focus.*
+rondo-opentui config reset --force
 ` + "```" + `
 
-## Shell Completions
+## Skill & meta
 
 ` + "```bash" + `
+rondo-opentui skill install [--provider claude|codex] [--project]
+rondo-opentui skill status                # per provider/scope: missing, stale, up to date
+rondo-opentui skill uninstall [--provider claude|codex] [--project]
+rondo-opentui version
 rondo-opentui completion bash|zsh|fish
 ` + "```" + `
 
+After upgrading the binary, run ` + "`skill status`" + ` — a stale skill should be
+reinstalled with ` + "`skill install`" + `.
+
 ## Tips
 
-- Use ` + "`--json`" + ` to get structured output for parsing
-- Use ` + "`--quiet`" + ` to suppress success messages
-- Date fields accept: YYYY-MM-DD, "today", "yesterday"
-- Metadata filters use AND logic: ` + "`--meta a=1 --meta b=2`" + ` matches both
-- Tag filters use OR logic: ` + "`--tag a --tag b`" + ` matches either
-- Delete guard: tasks blocking others need ` + "`--cascade`" + ` to delete
-- Recurring tasks auto-spawn next occurrence on ` + "`done`" + `
+- Tag filters OR together (` + "`--tag a --tag b`" + ` matches either); meta filters
+  AND together (` + "`--meta a=1 --meta b=2`" + ` matches both).
+- ` + "`edit --blocks`" + ` replaces the whole list; use ` + "`block`/`unblock`" + ` for
+  incremental changes.
+- Deleting a task that blocks others requires ` + "`--cascade`" + `.
+- ` + "`export`" + ` writes Markdown or JSON to stdout unless ` + "`--output`" + ` is given;
+  ` + "`--journal`" + ` includes the journal.
 `;

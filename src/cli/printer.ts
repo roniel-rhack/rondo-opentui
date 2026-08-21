@@ -54,7 +54,7 @@ export class Printer {
   }
 
   table(headers: string[], rows: string[][]): void {
-    if (this.opts.noColor) {
+    if (this.opts.noColor || this.opts.format.toLowerCase() === "plain") {
       this.plainTable(headers, rows);
       return;
     }

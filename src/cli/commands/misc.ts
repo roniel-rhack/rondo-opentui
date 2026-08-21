@@ -210,11 +210,16 @@ export function focusCmd(ctx: CLIContext): Command {
     new Command({
       use: "start",
       short: "Record a completed focus session",
+      aliases: ["log"],
       args: noArgs,
       flags: {
         "task-id": {
           type: "int",
           usage: "Associate session with a task ID",
+        },
+        task: {
+          type: "int",
+          usage: "Alias for --task-id",
         },
         duration: {
           type: "string",
@@ -235,7 +240,9 @@ export function focusCmd(ctx: CLIContext): Command {
 
         const session: Session = {
           id: 0,
-          taskId: flags.int("task-id"),
+          taskId: flags.changed("task-id")
+            ? flags.int("task-id")
+            : flags.int("task"),
           duration: dur,
           startedAt: GoTime.utcNow(),
           completedAt: null,
@@ -327,12 +334,21 @@ interface BatchCommand {
 interface BatchResult {
   cmd: string;
   ok: boolean;
+  /** Raw stdout of the command, when it produced any non-JSON output. */
+  output?: string;
+  /** Parsed stdout, when the command ran with JSON format. */
+  data?: unknown;
   error?: string;
+}
+
+export interface NestedRun {
+  output: string;
+  json: boolean;
 }
 
 export function batchCmd(
   ctx: CLIContext,
-  runOne: (argv: string[]) => void,
+  runOne: (argv: string[]) => NestedRun,
 ): Command {
   return new Command({
     use: "batch",
@@ -370,8 +386,19 @@ Output is a JSON array of results.`,
         }
 
         try {
-          runOne([bc.cmd, ...(bc.args ?? [])]);
-          results.push({ cmd: bc.cmd, ok: true });
+          const run = runOne([bc.cmd, ...(bc.args ?? [])]);
+          const result: BatchResult = { cmd: bc.cmd, ok: true };
+          const output = run.output.trim();
+          if (run.json && output !== "") {
+            try {
+              result.data = JSON.parse(output);
+            } catch {
+              result.output = output;
+            }
+          } else if (output !== "") {
+            result.output = output;
+          }
+          results.push(result);
         } catch (err) {
           results.push({
             cmd: bc.cmd,
@@ -439,6 +466,21 @@ export function completionCmd(ctx: CLIContext): Command {
             `unsupported shell "${args[0]}": must be bash, zsh, or fish`,
           );
       }
+    },
+  });
+}
+
+export function versionCmd(ctx: CLIContext, version: string): Command {
+  return new Command({
+    use: "version",
+    short: "Print the rondo-opentui version",
+    args: noArgs,
+    run: () => {
+      if (isJSON(ctx)) {
+        printer(ctx).json({ version });
+        return;
+      }
+      ctx.stdout.write(`rondo-opentui ${version}\n`);
     },
   });
 }

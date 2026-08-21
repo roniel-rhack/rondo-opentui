@@ -4,7 +4,7 @@ import { SessionKind } from "../core/focus/focus.ts";
 import { dateTitle, type Note } from "../core/journal/journal.ts";
 import { Status, type Task } from "../core/task/task.ts";
 import { parseDuration } from "../core/task/timelog.ts";
-import { GoTime, parseDateOnly } from "../core/time.ts";
+import { GoTime, parseDueDateInput } from "../core/time.ts";
 
 export type TabId = "all" | "active" | "done" | "journal";
 
@@ -86,29 +86,9 @@ export function parseTimeLogInput(raw: string): {
   return { duration: parseDuration(durationPart), note };
 }
 
-/**
- * Due-date input: the typed forms mirror the clickable presets. Accepts
- * "today", "tomorrow", "+Nd", "+Nw", "none"/empty, or a plain YYYY-MM-DD.
- * Throws when nothing matches, like parseDateOnly does.
- */
+/** Due-date input for the form: same tokens as the CLI due flags. */
 export function parseDueInput(raw: string, now: GoTime): GoTime | null {
-  const input = raw.trim().toLowerCase();
-  if (input === "" || input === "none") return null;
-
-  let days: number | null = null;
-  if (input === "today") days = 0;
-  else if (input === "tomorrow") days = 1;
-  else {
-    const offset = /^\+(\d+)([dw])$/.exec(input);
-    if (offset) days = Number(offset[1]) * (offset[2] === "w" ? 7 : 1);
-  }
-
-  if (days !== null) {
-    // Due dates are UTC-anchored; anchor the local calendar day, like the
-    // clickable presets do.
-    return parseDateOnly(now.addDate(0, 0, days).format("2006-01-02"), "utc");
-  }
-  return parseDateOnly(raw.trim(), "utc");
+  return parseDueDateInput(raw, now);
 }
 
 /** Toast for the focus toggle, matching what actually starts or stops. */

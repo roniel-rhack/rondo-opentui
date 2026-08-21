@@ -475,3 +475,28 @@ export function sameDay(a: GoTime, b: GoTime): boolean {
   const pb = b.parts;
   return pa.year === pb.year && pa.month === pb.month && pa.day === pb.day;
 }
+
+/**
+ * Human due-date input shared by the TUI form and the CLI flags. Accepts
+ * "today", "tomorrow", "yesterday", "+Nd", "+Nw", "none"/"" (no date) or a
+ * plain YYYY-MM-DD. Relative tokens anchor the local calendar day; the
+ * result is UTC-anchored like every stored due date. Throws on anything else.
+ */
+export function parseDueDateInput(raw: string, now: GoTime): GoTime | null {
+  const input = raw.trim().toLowerCase();
+  if (input === "" || input === "none") return null;
+
+  let days: number | null = null;
+  if (input === "today") days = 0;
+  else if (input === "tomorrow") days = 1;
+  else if (input === "yesterday") days = -1;
+  else {
+    const offset = /^\+(\d+)([dw])$/.exec(input);
+    if (offset) days = Number(offset[1]) * (offset[2] === "w" ? 7 : 1);
+  }
+
+  if (days !== null) {
+    return parseDateOnly(now.addDate(0, 0, days).format(DateOnly), "utc");
+  }
+  return parseDateOnly(raw.trim(), "utc");
+}

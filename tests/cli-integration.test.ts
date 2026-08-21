@@ -339,7 +339,7 @@ describe("journal", () => {
   test("show for a missing date fails", () => {
     const cli = newTestCLI();
     expect(() => cli.run(["journal", "show", "2020-01-01"])).toThrow(
-      /no journal note found/,
+      /note 2020-01-01 not found/,
     );
   });
 });
@@ -679,7 +679,9 @@ describe("batch", () => {
     cli.run(["batch"]);
 
     const results = JSON.parse(cli.output());
-    expect(results[0]).toEqual({ cmd: "add", ok: true });
+    expect(results[0].cmd).toBe("add");
+    expect(results[0].ok).toBe(true);
+    expect(results[0].output).toContain("Created task #1");
     expect(results[1].ok).toBe(false);
     expect(results[1].error).toContain("nested");
     expect(results[2].ok).toBe(false);

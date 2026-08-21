@@ -11,7 +11,7 @@ bun install
 bun run start          # TUI
 bun run start list     # any argument dispatches to the CLI instead
 bun run dev            # TUI with --watch
-bun test               # 359 tests
+bun test               # 382 tests
 bun run typecheck      # tsc --noEmit
 bun run build          # dist/rondo-opentui (single binary, ad-hoc signed)
 ```
@@ -72,7 +72,10 @@ constrains a few things:
   `addColumnIfNotExists` migrations.
 - **CLI output is a contract**: same commands, flags, exit codes (`3` for not
   found), JSON field names and table headers. Color auto-disables when stdout
-  is not a TTY.
+  is not a TTY. TS-only additions are fine (`block`/`unblock`, `version`,
+  `skill status`, `config theme`, relative due tokens, JSON on mutations);
+  two conscious divergences: `done` is idempotent for recurring tasks, and
+  journal misses exit `3` instead of `1`.
 - **`config.json` may carry a TS-only `theme` key** ("dark" / "light"). The Go
   build ignores it on read and drops it when it rewrites the file — losing it
   is fine, inventing more keys like it needs the same care.

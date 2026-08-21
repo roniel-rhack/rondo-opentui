@@ -12,8 +12,14 @@ import {
   statusString,
   type Task,
 } from "../../core/task/task.ts";
+import { hasCycle } from "../../core/task/deps.ts";
 import { formatDuration, totalDuration } from "../../core/task/timelog.ts";
-import { DateOnly, GoTime, RFC3339, parseDateOnly } from "../../core/time.ts";
+import {
+  DateOnly,
+  GoTime,
+  RFC3339,
+  parseDueDateInput,
+} from "../../core/time.ts";
 import { theme } from "../../core/ui/colors.ts";
 import {
   Command,
@@ -82,11 +88,13 @@ export function parseBlocksFlag(s: string): number[] {
   return ids;
 }
 
-function parseDueFlag(due: string): GoTime {
+function parseDueFlag(due: string): GoTime | null {
   try {
-    return parseDateOnly(due, "utc");
+    return parseDueDateInput(due, GoTime.now());
   } catch {
-    throw new Error(`invalid due date "${due}": expected YYYY-MM-DD`);
+    throw new Error(
+      `invalid due date "${due}": expected YYYY-MM-DD, today, tomorrow, yesterday or +Nd/+Nw`,
+    );
   }
 }
 
@@ -128,6 +136,7 @@ export function addCmd(ctx: CLIContext): Command {
       const due = flags.string("due");
       if (due !== "") t.dueDate = parseDueFlag(due);
 
+
       const tags = flags.string("tags");
       if (tags !== "") t.tags = splitTags(tags);
 
@@ -154,7 +163,9 @@ export function addCmd(ctx: CLIContext): Command {
 
       if (freq !== RecurFreq.None) store.updateRecurrence(t.id, freq, 1);
 
-      if (ctx.quiet) {
+      if (isJSON(ctx)) {
+        printTaskJSON(ctx, store.getById(t.id)!);
+      } else if (ctx.quiet) {
         ctx.stdout.write(`${t.id}\n`);
       } else {
         printer(ctx).success(`Created task #${t.id}: ${t.title}`);
@@ -170,9 +181,20 @@ export function doneCmd(ctx: CLIContext): Command {
     args: minimumNArgs(1),
     run: (args) => {
       const store = requireTaskStore(ctx);
+      const results: { id: number; status: string }[] = [];
       for (const arg of args) {
         const id = parseId(arg);
         const t = getTaskOrNotFound(ctx, id);
+
+        // Retries must be safe: a task that is already done stays done and
+        // spawns nothing. (The Go build re-spawns here; divergence on purpose.)
+        if (t.status === Status.Done) {
+          results.push({ id: t.id, status: statusString(t.status) });
+          if (!isJSON(ctx)) {
+            printer(ctx).success(`Task #${t.id} already done: ${t.title}`);
+          }
+          continue;
+        }
 
         // Spawn the next occurrence before completing the current task.
         if (t.recurFreq !== RecurFreq.None) {
@@ -192,8 +214,12 @@ export function doneCmd(ctx: CLIContext): Command {
 
         t.status = Status.Done;
         store.update(t);
-        printer(ctx).success(`Marked task #${t.id} as done: ${t.title}`);
+        results.push({ id: t.id, status: statusString(t.status) });
+        if (!isJSON(ctx)) {
+          printer(ctx).success(`Marked task #${t.id} as done: ${t.title}`);
+        }
       }
+      if (isJSON(ctx)) printer(ctx).json(results);
     },
   });
 }
@@ -264,6 +290,9 @@ export function editCmd(ctx: CLIContext): Command {
         t.priority = parsePriority(flags.string("priority"));
         changed = true;
       }
+      if (flags.bool("clear-due") && flags.changed("due")) {
+        throw new Error("--clear-due and --due cannot be used together");
+      }
       if (flags.bool("clear-due")) {
         t.dueDate = null;
         changed = true;
@@ -303,6 +332,10 @@ export function editCmd(ctx: CLIContext): Command {
         store.updateRecurrence(id, freq, interval);
       }
 
+      if (isJSON(ctx)) {
+        printTaskJSON(ctx, store.getById(id)!);
+        return;
+      }
       printer(ctx).success(`Updated task #${t.id}: ${t.title}`);
     },
   });
@@ -342,6 +375,10 @@ export function deleteCmd(ctx: CLIContext): Command {
       store.delete(id);
 
       const p = printer(ctx);
+      if (isJSON(ctx)) {
+        p.json({ id, deleted: true, unblocked: blocksIds });
+        return;
+      }
       if (blocksIds.length > 0) {
         const list = blocksIds.map((b) => `#${b}`).join(", ");
         p.success(`Deleted task #${id}: ${t.title} (unblocked ${list})`);
@@ -384,7 +421,60 @@ export function statusCmd(ctx: CLIContext): Command {
       }
 
       requireTaskStore(ctx).update(t);
+      if (isJSON(ctx)) {
+        printer(ctx).json({ id: t.id, status: statusString(t.status) });
+        return;
+      }
       printer(ctx).success(`Task #${t.id} status: ${statusString(t.status)}`);
+    },
+  });
+}
+
+export function blockCmd(ctx: CLIContext): Command {
+  return new Command({
+    use: "block <task-id> <blocker-id>",
+    short: "Mark a task as blocked by another task",
+    args: exactArgs(2),
+    run: (args) => {
+      const id = parseId(args[0]!);
+      const blockerId = parseId(args[1]!, "blocker");
+      getTaskOrNotFound(ctx, id);
+      getTaskOrNotFound(ctx, blockerId);
+      const store = requireTaskStore(ctx);
+
+      if (hasCycle(id, [blockerId], (x) => store.listBlockerIds(x))) {
+        throw new Error(
+          `blocking #${id} on #${blockerId} would create a dependency cycle`,
+        );
+      }
+      store.setBlocker(id, blockerId);
+
+      if (isJSON(ctx)) {
+        printer(ctx).json({ id, blocked_by: store.listBlockerIds(id) });
+        return;
+      }
+      printer(ctx).success(`Task #${id} is now blocked by #${blockerId}`);
+    },
+  });
+}
+
+export function unblockCmd(ctx: CLIContext): Command {
+  return new Command({
+    use: "unblock <task-id> <blocker-id>",
+    short: "Remove a blocker from a task",
+    args: exactArgs(2),
+    run: (args) => {
+      const id = parseId(args[0]!);
+      const blockerId = parseId(args[1]!, "blocker");
+      getTaskOrNotFound(ctx, id);
+      const store = requireTaskStore(ctx);
+      store.removeBlocker(id, blockerId);
+
+      if (isJSON(ctx)) {
+        printer(ctx).json({ id, blocked_by: store.listBlockerIds(id) });
+        return;
+      }
+      printer(ctx).success(`Task #${id} is no longer blocked by #${blockerId}`);
     },
   });
 }
@@ -470,8 +560,10 @@ export function applyTaskFilters(
 
   if (opts.dueBefore !== "") {
     try {
-      const cutoff = parseDateOnly(opts.dueBefore, "utc");
-      out = out.filter((t) => t.dueDate !== null && !t.dueDate.after(cutoff));
+      const cutoff = parseDueDateInput(opts.dueBefore, GoTime.now());
+      if (cutoff) {
+        out = out.filter((t) => t.dueDate !== null && !t.dueDate.after(cutoff));
+      }
     } catch {
       // Go ignores unparseable cutoffs.
     }
@@ -479,8 +571,10 @@ export function applyTaskFilters(
 
   if (opts.dueAfter !== "") {
     try {
-      const cutoff = parseDateOnly(opts.dueAfter, "utc");
-      out = out.filter((t) => t.dueDate !== null && !t.dueDate.before(cutoff));
+      const cutoff = parseDueDateInput(opts.dueAfter, GoTime.now());
+      if (cutoff) {
+        out = out.filter((t) => t.dueDate !== null && !t.dueDate.before(cutoff));
+      }
     } catch {
       // Go ignores unparseable cutoffs.
     }

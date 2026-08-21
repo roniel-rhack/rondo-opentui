@@ -10,6 +10,7 @@ import {
   noArgs,
 } from "../command.ts";
 import { confirm } from "../confirm.ts";
+import { NotFoundError } from "../errors.ts";
 import {
   isJSON,
   parseId,
@@ -152,7 +153,7 @@ function journalShowCmd(ctx: CLIContext): Command {
       const dateStr = parseJournalDate(args[0] ?? "today");
       const store = requireJournalStore(ctx);
       const note = findNoteByDate(store.listNotes(true), dateStr);
-      if (!note) throw new Error(`no journal note found for ${dateStr}`);
+      if (!note) throw new NotFoundError("note", dateStr);
 
       const entries = store.listEntries(note.id);
 
@@ -228,7 +229,7 @@ function journalHideCmd(ctx: CLIContext): Command {
       const dateStr = parseJournalDate(args[0]!);
       const store = requireJournalStore(ctx);
       const note = findNoteByDate(store.listNotes(true), dateStr);
-      if (!note) throw new Error(`no journal note found for ${dateStr}`);
+      if (!note) throw new NotFoundError("note", dateStr);
 
       store.toggleHidden(note.id);
       printer(ctx).success(`Toggled hidden flag for note ${dateStr}`);

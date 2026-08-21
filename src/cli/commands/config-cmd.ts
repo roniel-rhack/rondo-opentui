@@ -49,6 +49,16 @@ function parseBool(val: string): boolean {
 }
 
 export const configKeys: Record<string, ConfigKey> = {
+  theme: {
+    description: "TUI theme: dark, light, or auto (follow the terminal)",
+    get: (c) => (c.theme === "" ? "auto" : c.theme),
+    set: (c, val) => {
+      const v = val.toLowerCase();
+      if (v === "auto") c.theme = "";
+      else if (v === "dark" || v === "light") c.theme = v;
+      else throw new Error(`theme must be dark, light or auto, got "${val}"`);
+    },
+  },
   panel_ratio: {
     description: "Panel width ratio (0.2–0.8)",
     get: (c) => c.panelRatio.toFixed(2),
@@ -186,6 +196,7 @@ export const configKeys: Record<string, ConfigKey> = {
 };
 
 export const orderedConfigKeys = [
+  "theme",
   "panel_ratio",
   "date_format",
   "time_format",
