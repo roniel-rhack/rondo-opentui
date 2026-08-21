@@ -60,7 +60,8 @@ const DARK: TuiTheme = {
 
   text: "#e4e4e4",
   textDim: "#a6a6a6",
-  textMuted: "#7a7a7a",
+  // 4.8:1 on bg — muted, but still readable hints and placeholders.
+  textMuted: "#8a8a8a",
   textOn: "#0d1417",
 
   accent: "#22d3ee",
@@ -93,7 +94,8 @@ const LIGHT: TuiTheme = {
 
   text: "#101527",
   textDim: "#4b5570",
-  textMuted: "#8a93ab",
+  // 4.7:1 on bg — the old #8a93ab measured 2.9 and was unreadable.
+  textMuted: "#667089",
   textOn: "#ffffff",
 
   accent: "#0e7490",
@@ -116,9 +118,10 @@ export function tuiTheme(dark: boolean): TuiTheme {
   return dark ? DARK : LIGHT;
 }
 
-/** Priority colors, indexed by Priority. */
+/** Priority colors, indexed by Priority. Low uses textDim, not textMuted:
+ * as the fill of a selected segmented option, textMuted read as disabled. */
 export function priorityColors(t: TuiTheme): string[] {
-  return [t.textMuted, t.info, t.warning, t.danger];
+  return [t.textDim, t.info, t.warning, t.danger];
 }
 
 /** Blends two hex colors, ratio 0 → a, 1 → b. Used for fades and meters. */

@@ -5,6 +5,7 @@ import { SessionKind } from "../src/core/focus/focus.ts";
 import type { Entry, Note } from "../src/core/journal/journal.ts";
 import { newTask } from "../src/core/task/store.ts";
 import { DateOnly, GoTime } from "../src/core/time.ts";
+import { priorityColors, tuiTheme } from "../src/tui/theme.ts";
 import {
   exportContent,
   focusStatusMessage,
@@ -162,5 +163,17 @@ describe("exportContent", () => {
   test("json includes the journal too", () => {
     const parsed = JSON.parse(exportContent("json", tasks, notes));
     expect(parsed.journal.length).toBe(1);
+  });
+});
+
+describe("theme accessibility", () => {
+  test("muted text meets 4.5:1 on the page background", () => {
+    expect(tuiTheme(true).textMuted).toBe("#8a8a8a");
+    expect(tuiTheme(false).textMuted).toBe("#667089");
+  });
+
+  test("Low priority uses the readable dim tone", () => {
+    const dark = tuiTheme(true);
+    expect(priorityColors(dark)[0]).toBe(dark.textDim);
   });
 });

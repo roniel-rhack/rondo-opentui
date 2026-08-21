@@ -233,7 +233,16 @@ function TaskRow({
             <span fg={done ? theme.textMuted : dueTone}>
               {aligned ? dueCell.padEnd(META_DUE_WIDTH) : dueCell}
             </span>
-            <span fg={done ? theme.textMuted : theme.accentDim}>
+            {/* accentDim measures under 3:1 as text; keep it for rails only. */}
+            <span
+              fg={
+                done
+                  ? theme.textMuted
+                  : theme.dark
+                    ? theme.textDim
+                    : theme.accent
+              }
+            >
               {aligned
                 ? progressCell.padEnd(META_PROGRESS_WIDTH)
                 : progressCell}

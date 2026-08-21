@@ -11,7 +11,7 @@ bun install
 bun run start          # TUI
 bun run start list     # any argument dispatches to the CLI instead
 bun run dev            # TUI with --watch
-bun test               # 353 tests
+bun test               # 359 tests
 bun run typecheck      # tsc --noEmit
 bun run build          # dist/rondo-opentui (single binary, ad-hoc signed)
 ```
@@ -127,6 +127,10 @@ Hard-won, all of them cost time once:
   `key.shift`, or `L`/`H` shortcuts silently die.
 - In `mockInput.pressKey`, arrows are named `ARROW_DOWN`/`ARROW_UP` (from
   `KeyCodes`); `"DOWN"` is typed as literal text.
+- **`useKeyboard` handlers run before a focused `<textarea>` processes the
+  same keypress.** A submit-on-enter reads the buffer pre-newline, then the
+  textarea inserts it and fires `onContentChange` — collapse newlines there,
+  and only clear validation errors when the text actually changed.
 - `<markdown>` renders nothing without a tree-sitter client — not worth it.
 - The React root re-renders itself outside `act()`; that warning is
   library-internal noise and is filtered in `tests/tui-render.test.tsx`.

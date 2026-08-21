@@ -1,6 +1,6 @@
 import { TextAttributes } from "@opentui/core";
-import type { ReactNode } from "react";
-import { meter, type TuiTheme } from "../theme.ts";
+import { useState, type ReactNode } from "react";
+import { meter, mix, type TuiTheme } from "../theme.ts";
 import { useTween } from "../hooks/useTween.ts";
 
 interface ChipProps {
@@ -37,6 +37,32 @@ export function Chip({
       >
         {label}
       </text>
+    </box>
+  );
+}
+
+interface ChipButtonProps {
+  theme: TuiTheme;
+  label: string;
+  onPress: () => void;
+}
+
+/** Keycap-styled clickable chip, used for quick presets under form fields. */
+export function ChipButton({ theme, label, onPress }: ChipButtonProps) {
+  const [hover, setHover] = useState(false);
+  return (
+    <box
+      paddingLeft={1}
+      paddingRight={1}
+      marginRight={1}
+      backgroundColor={
+        hover ? mix(theme.surfaceAlt, theme.accentSoft, 0.6) : theme.surfaceAlt
+      }
+      onMouseOver={() => setHover(true)}
+      onMouseOut={() => setHover(false)}
+      onMouseDown={onPress}
+    >
+      <text fg={theme.accent}>{label}</text>
     </box>
   );
 }
@@ -148,7 +174,7 @@ interface EmptyStateProps {
 export function EmptyState({ theme, icon, title, hint }: EmptyStateProps) {
   return (
     <box flexGrow={1} alignItems="center" justifyContent="center" flexDirection="column">
-      <text fg={theme.borderFocus}>{icon}</text>
+      <text fg={theme.accent}>{icon}</text>
       <box height={1} />
       <text fg={theme.textDim} attributes={TextAttributes.BOLD}>
         {title}
@@ -200,7 +226,7 @@ export function MarkdownText({ theme, content }: MarkdownTextProps) {
         if (line.startsWith("> ")) {
           return (
             <box key={key} flexDirection="row">
-              <text fg={theme.borderFocus}>{"▎ "}</text>
+              <text fg={theme.accent}>{"▎ "}</text>
               <text fg={theme.textMuted} wrapMode="word" flexGrow={1}>
                 {line.slice(2)}
               </text>

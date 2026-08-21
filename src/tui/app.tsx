@@ -24,6 +24,7 @@ import {
   SORT_LABELS,
   TABS,
   clampIndex,
+  collectTags,
   emptyFilters,
   exportContent,
   focusStatusMessage,
@@ -495,6 +496,10 @@ export function App({ data, onQuit }: AppProps) {
     (next: Config) => {
       data.cfg = next;
       setCfg(next);
+      // The theme row applies immediately; "auto" falls back to the terminal.
+      if (next.theme === "dark") setDark(true);
+      else if (next.theme === "light") setDark(false);
+      else setDark(isDark());
       closeModal();
       try {
         saveConfig(next);
@@ -696,7 +701,7 @@ export function App({ data, onQuit }: AppProps) {
       { id: "view.help", group: "View", label: "Show help", hint: "?", run: () => setModal({ type: "help" }) },
       { id: "focus.toggle", group: "Focus", label: "Start / stop focus timer", hint: "f", run: toggleFocus },
       { id: "app.undo", group: "App", label: "Undo last delete", hint: "u", run: undo },
-      { id: "app.settings", group: "App", label: "Focus settings", hint: "P", run: () => setModal({ type: "settings" }) },
+      { id: "app.settings", group: "App", label: "Settings", hint: "P", run: () => setModal({ type: "settings" }) },
       { id: "app.export.md", group: "App", label: "Export everything to Markdown", run: () => exportAll("md") },
       { id: "app.export.json", group: "App", label: "Export everything to JSON", run: () => exportAll("json") },
       { id: "app.quit", group: "App", label: "Quit", hint: "q", run: requestQuit },
@@ -1172,6 +1177,7 @@ export function App({ data, onQuit }: AppProps) {
           theme={theme}
           title={modal.title}
           initial={modal.initial}
+          knownTags={collectTags(tasks).map((t) => t.tag)}
           screenWidth={width}
           screenHeight={height}
           onSubmit={(values) => submitTaskForm(values, modal.taskId)}

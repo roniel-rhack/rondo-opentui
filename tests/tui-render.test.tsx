@@ -509,7 +509,7 @@ describe("TUI settings", () => {
     const { captureCharFrame, press, data, renderer } = await mount();
 
     await press("P");
-    expect(captureCharFrame()).toContain("Focus settings");
+    expect(captureCharFrame()).toContain("Settings");
     expect(captureCharFrame()).toContain("Work duration (min)");
 
     await press("l");
@@ -1030,4 +1030,54 @@ describe("TUI long titles", () => {
   function captureLines(m: { captureCharFrame: () => string }): string[] {
     return m.captureCharFrame().split("\n");
   }
+});
+
+describe("TUI review 2 fixes", () => {
+  test("editing a long subtask shows the middle of its title", async () => {
+    const m = await mount();
+    const LONG_SUB =
+      "Paso inicial de la subtarea AAA con fragmento central unico BBB y " +
+      "despues un final suficientemente largo para desplazar el texto";
+
+    await m.press("t");
+    await m.type(LONG_SUB);
+    await m.press("RETURN");
+
+    await m.press("RETURN"); // into the subtask panel
+    await m.press("e");
+
+    const frame = m.captureCharFrame();
+    expect(frame).toContain("Edit subtask");
+    // Start and middle visible at once; word wrap may split any two words.
+    expect(frame).toContain("Paso inicial");
+    expect(frame).toContain("fragmento central");
+    m.renderer.destroy();
+  });
+
+  test("the task form offers existing tags as chips", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("a");
+    expect(captureCharFrame()).toContain("#work");
+    renderer.destroy();
+  });
+
+  test("settings render booleans as toggles and expose the theme", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("P");
+    const frame = captureCharFrame();
+    expect(frame).toContain("▣ on");
+    expect(frame).toContain("▢ off");
+    expect(frame).toContain("Theme");
+    renderer.destroy();
+  });
+
+  test("the repeats control capitalizes like the priority one", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("a");
+    expect(captureCharFrame()).toContain("Week");
+    renderer.destroy();
+  });
 });

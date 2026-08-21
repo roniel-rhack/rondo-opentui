@@ -1,6 +1,6 @@
 import { TextAttributes, type KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { Config } from "../../core/config/config.ts";
 import type { TuiTheme } from "../theme.ts";
 import { Button, Overlay } from "./Overlay.tsx";
@@ -88,6 +88,10 @@ const BOOL_FIELDS: BoolField[] = [
   },
 ];
 
+/** Theme preference cycles auto → dark → light. "" means auto. */
+const THEME_VALUES = ["", "dark", "light"] as const;
+const themeLabel = (v: string) => (v === "" ? "auto" : v);
+
 /** Pomodoro settings, persisted to ~/.todo-app/config.json on save. */
 export function SettingsOverlay({
   theme,
@@ -100,7 +104,8 @@ export function SettingsOverlay({
   const [draft, setDraft] = useState<Config>(cfg);
   const [index, setIndex] = useState(0);
 
-  const total = NUMBER_FIELDS.length + BOOL_FIELDS.length;
+  const themeIndex = NUMBER_FIELDS.length + BOOL_FIELDS.length;
+  const total = themeIndex + 1;
 
   const adjust = (delta: number) => {
     if (index < NUMBER_FIELDS.length) {
@@ -112,8 +117,17 @@ export function SettingsOverlay({
       setDraft(field.set(draft, next));
       return;
     }
-    const field = BOOL_FIELDS[index - NUMBER_FIELDS.length]!;
-    setDraft(field.set(draft, !field.get(draft)));
+    if (index < themeIndex) {
+      const field = BOOL_FIELDS[index - NUMBER_FIELDS.length]!;
+      setDraft(field.set(draft, !field.get(draft)));
+      return;
+    }
+    const at = THEME_VALUES.indexOf(draft.theme as (typeof THEME_VALUES)[number]);
+    const next =
+      THEME_VALUES[
+        (Math.max(at, 0) + delta + THEME_VALUES.length) % THEME_VALUES.length
+      ]!;
+    setDraft({ ...draft, theme: next });
   };
 
   useKeyboard((key: KeyEvent) => {
@@ -151,7 +165,7 @@ export function SettingsOverlay({
   const row = (
     id: string,
     label: string,
-    value: string,
+    value: ReactNode,
     rowIndex: number,
   ) => (
     <box
@@ -166,36 +180,49 @@ export function SettingsOverlay({
       <text fg={theme.text} flexGrow={1}>
         {label}
       </text>
+      {value}
+    </box>
+  );
+
+  const stepper = (value: string) => (
+    <>
       <text fg={theme.textMuted}>{"← "}</text>
       <text fg={theme.accent} attributes={TextAttributes.BOLD}>
         {value.padStart(5)}
       </text>
       <text fg={theme.textMuted}>{" →"}</text>
-    </box>
+    </>
+  );
+
+  // Booleans read as toggles, matching the subtask checkboxes; arrows would
+  // suggest a range they do not have.
+  const toggle = (on: boolean) => (
+    <text
+      fg={on ? theme.success : theme.textMuted}
+      attributes={on ? TextAttributes.BOLD : undefined}
+    >
+      {on ? "▣ on " : "▢ off"}
+    </text>
   );
 
   return (
     <Overlay
       theme={theme}
-      title="Focus settings"
+      title="Settings"
       width={58}
       screenWidth={screenWidth}
       screenHeight={screenHeight}
-      footer="↑↓ field · ←→ change · enter save · esc cancel"
+      footer="↑↓ field · ←→ / space change · enter save · esc cancel"
       onBackdropClick={onCancel}
     >
       <box flexDirection="column" paddingTop={1}>
         {NUMBER_FIELDS.map((f, i) =>
-          row(f.id, f.label, String(f.get(draft)), i),
+          row(f.id, f.label, stepper(String(f.get(draft))), i),
         )}
         {BOOL_FIELDS.map((f, i) =>
-          row(
-            f.id,
-            f.label,
-            f.get(draft) ? "on" : "off",
-            NUMBER_FIELDS.length + i,
-          ),
+          row(f.id, f.label, toggle(f.get(draft)), NUMBER_FIELDS.length + i),
         )}
+        {row("theme", "Theme", stepper(themeLabel(draft.theme)), themeIndex)}
       </box>
       <box flexDirection="row" paddingTop={1}>
         <Button theme={theme} label="Save" primary onPress={() => onSave(draft)} />

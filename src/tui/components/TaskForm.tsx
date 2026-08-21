@@ -8,6 +8,7 @@ import { DateOnly, GoTime } from "../../core/time.ts";
 import { parseDueInput } from "../state.ts";
 import { mix, priorityColors, type TuiTheme } from "../theme.ts";
 import { Button, Overlay } from "./Overlay.tsx";
+import { ChipButton } from "./primitives.tsx";
 
 export interface TaskFormValues {
   title: string;
@@ -31,6 +32,8 @@ interface TaskFormProps {
   theme: TuiTheme;
   title: string;
   initial: TaskFormValues;
+  /** Existing tags offered as clickable chips, most used first. */
+  knownTags?: string[];
   screenWidth: number;
   screenHeight: number;
   onSubmit: (values: TaskFormValues) => void;
@@ -61,13 +64,14 @@ const RECURRENCES = [
   RecurFreq.Yearly,
 ];
 
-/** Compact labels so the segmented control fits next to Priority. */
+/** Compact labels so the segmented control fits next to Priority; cased
+ * like the priority labels so the two controls read as one system. */
 const RECUR_LABELS: Record<number, string> = {
-  [RecurFreq.None]: "none",
-  [RecurFreq.Daily]: "day",
-  [RecurFreq.Weekly]: "week",
-  [RecurFreq.Monthly]: "month",
-  [RecurFreq.Yearly]: "year",
+  [RecurFreq.None]: "None",
+  [RecurFreq.Daily]: "Day",
+  [RecurFreq.Weekly]: "Week",
+  [RecurFreq.Monthly]: "Month",
+  [RecurFreq.Yearly]: "Year",
 };
 
 /** Quick presets so a due date rarely needs typing. */
@@ -78,13 +82,23 @@ const DATE_SHORTCUTS: { label: string; days: number | null }[] = [
   { label: "none", days: null },
 ];
 
-function validate(values: TaskFormValues): string | null {
-  if (values.title.trim() === "") return "Title is required";
+interface Problem {
+  field: FieldId;
+  message: string;
+}
+
+function validate(values: TaskFormValues): Problem | null {
+  if (values.title.trim() === "") {
+    return { field: "title", message: "Title is required" };
+  }
   if (values.due.trim() !== "") {
     try {
       parseDueInput(values.due, GoTime.now());
     } catch {
-      return "Due date must be YYYY-MM-DD, today, tomorrow or +Nd/+Nw";
+      return {
+        field: "due",
+        message: "Due date must be YYYY-MM-DD, today, tomorrow or +Nd/+Nw",
+      };
     }
   }
   return null;
@@ -95,6 +109,7 @@ export function TaskForm({
   theme,
   title,
   initial,
+  knownTags = [],
   screenWidth,
   screenHeight,
   onSubmit,
@@ -104,7 +119,7 @@ export function TaskForm({
   const titleRef = useRef<TextareaRenderable | null>(null);
   const descriptionRef = useRef<TextareaRenderable | null>(null);
   const [fieldIndex, setFieldIndex] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<Problem | null>(null);
 
   const field: FieldId = FIELDS[fieldIndex] ?? "title";
   const focus = (id: FieldId) => setFieldIndex(FIELDS.indexOf(id));
@@ -131,6 +146,38 @@ export function TaskForm({
       return;
     }
     onSubmit(values2);
+  };
+
+  const clearError = () => setError(null);
+  const lastTitle = useRef(initial.title);
+
+  // The title is one line: the newline a failed enter-submit leaves behind
+  // collapses back into a space, and the error survives that non-change.
+  const handleTitleChange = () => {
+    const area = titleRef.current;
+    if (!area) return;
+    const text = area.plainText;
+    if (text.includes("\n")) {
+      const collapsed = text.replace(/\s*\n\s*/g, " ");
+      const flat = collapsed.trim() === "" ? "" : collapsed;
+      area.setText(flat);
+      area.cursorOffset = flat.length;
+      return;
+    }
+    setValues((prev) => ({ ...prev, title: text }));
+    if (text !== lastTitle.current) {
+      lastTitle.current = text;
+      clearError();
+    }
+  };
+
+  const appendTag = (tag: string) => {
+    const current = values.tags
+      .split(",")
+      .map((t) => t.trim())
+      .filter((t) => t !== "");
+    if (current.includes(tag)) return;
+    setValues({ ...values, tags: [...current, tag].join(", ") });
   };
 
   const cycle = (delta: number) => {
@@ -202,7 +249,14 @@ export function TaskForm({
     <box
       border
       borderStyle="rounded"
-      borderColor={field === id ? theme.accent : theme.border}
+      // The offending field wears the error, not just the message below.
+      borderColor={
+        error?.field === id
+          ? theme.danger
+          : field === id
+            ? theme.accent
+            : theme.border
+      }
       backgroundColor={
         field === id ? mix(theme.surfaceAlt, theme.accentSoft, 0.5) : theme.surfaceAlt
       }
@@ -226,7 +280,10 @@ export function TaskForm({
         focused={field === id}
         value={value}
         placeholder={placeholder}
-        onInput={onInput}
+        onInput={(v) => {
+          clearError();
+          onInput(v);
+        }}
         onSubmit={submit}
         backgroundColor="transparent"
         textColor={theme.text}
@@ -296,12 +353,7 @@ export function TaskForm({
           initialValue={values.title}
           placeholder="What needs doing?"
           wrapMode="word"
-          onContentChange={() =>
-            setValues((prev) => ({
-              ...prev,
-              title: titleRef.current?.plainText ?? prev.title,
-            }))
-          }
+          onContentChange={handleTitleChange}
           backgroundColor="transparent"
           textColor={theme.text}
           placeholderColor={theme.textMuted}
@@ -339,12 +391,13 @@ export function TaskForm({
           )}
           <box flexDirection="row">
             {DATE_SHORTCUTS.map((shortcut) => (
-              <box
+              <ChipButton
                 key={shortcut.label}
-                paddingLeft={1}
-                paddingRight={1}
-                onMouseDown={() => {
+                theme={theme}
+                label={shortcut.label}
+                onPress={() => {
                   focus("due");
+                  clearError();
                   setValues({
                     ...values,
                     due:
@@ -355,9 +408,7 @@ export function TaskForm({
                             .format(DateOnly),
                   });
                 }}
-              >
-                <text fg={theme.accentDim}>{shortcut.label}</text>
-              </box>
+              />
             ))}
           </box>
         </box>
@@ -367,6 +418,21 @@ export function TaskForm({
           {textInput("tags", "work, home", values.tags, (v) =>
             setValues({ ...values, tags: v }),
           )}
+          {knownTags.length > 0 ? (
+            <box flexDirection="row">
+              {knownTags.slice(0, 4).map((tag) => (
+                <ChipButton
+                  key={tag}
+                  theme={theme}
+                  label={`#${tag}`}
+                  onPress={() => {
+                    focus("tags");
+                    appendTag(tag);
+                  }}
+                />
+              ))}
+            </box>
+          ) : null}
         </box>
       </box>
 
@@ -401,7 +467,7 @@ export function TaskForm({
       {error ? (
         <box paddingTop={1}>
           <text fg={theme.danger} attributes={TextAttributes.BOLD}>
-            {`⚠ ${error}`}
+            {`⚠ ${error.message}`}
           </text>
         </box>
       ) : null}

@@ -1,6 +1,6 @@
 import { TextAttributes, type KeyEvent, type TextareaRenderable } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Status, type Task } from "../../core/task/task.ts";
 import { fuzzyScore } from "../state.ts";
 import { mix, type TuiTheme } from "../theme.ts";
@@ -83,7 +83,8 @@ interface PromptDialogProps {
   label: string;
   placeholder?: string;
   initial?: string;
-  /** Multiline prompts use a textarea; ctrl+s saves, enter adds a line. */
+  /** Multiline prompts keep enter as a new line; ctrl+s saves. Single-line
+   * prompts still wrap long text into view, but enter submits. */
   multiline?: boolean;
   screenWidth: number;
   screenHeight: number;
@@ -107,9 +108,15 @@ export function PromptDialog({
   const [value, setValue] = useState(initial);
   const [error, setError] = useState<string | null>(null);
   const areaRef = useRef<TextareaRenderable | null>(null);
+  const lastText = useRef(initial);
 
-  const currentValue = () =>
-    multiline ? (areaRef.current?.plainText ?? value) : value;
+  // Editing continues at the end, like an input would.
+  useEffect(() => {
+    const area = areaRef.current;
+    if (area) area.cursorOffset = area.plainText.length;
+  }, []);
+
+  const currentValue = () => areaRef.current?.plainText ?? value;
 
   const submit = () => {
     const text = currentValue().trim();
@@ -123,7 +130,30 @@ export function PromptDialog({
   useKeyboard((key: KeyEvent) => {
     if (key.name === "escape") onCancel();
     if (key.ctrl && key.name === "s") submit();
+    if (!multiline && key.name === "return") submit();
   });
+
+  // One-line prompts still use a textarea so long values wrap into view; the
+  // newline enter leaves behind collapses right back into a space. The error
+  // only clears when the text truly changes, so the enter that triggered it
+  // does not immediately wipe it.
+  const handleChange = () => {
+    const area = areaRef.current;
+    if (!area) return;
+    const text = area.plainText;
+    if (!multiline && text.includes("\n")) {
+      const collapsed = text.replace(/\s*\n\s*/g, " ");
+      const flat = collapsed.trim() === "" ? "" : collapsed;
+      area.setText(flat);
+      area.cursorOffset = flat.length;
+      return;
+    }
+    setValue(text);
+    if (text !== lastText.current) {
+      lastText.current = text;
+      setError(null);
+    }
+  };
 
   return (
     <Overlay
@@ -144,41 +174,22 @@ export function PromptDialog({
         <box
           border
           borderStyle="rounded"
-          borderColor={theme.accent}
+          borderColor={error ? theme.danger : theme.accent}
           backgroundColor={mix(theme.surfaceAlt, theme.accentSoft, 0.4)}
-          height={multiline ? 8 : 3}
+          height={multiline ? 8 : 5}
         >
-          {multiline ? (
-            <textarea
-              ref={areaRef}
-              focused
-              initialValue={initial}
-              placeholder={placeholder}
-              onContentChange={() => {
-                setValue(areaRef.current?.plainText ?? value);
-                setError(null);
-              }}
-              backgroundColor="transparent"
-              textColor={theme.text}
-              placeholderColor={theme.textMuted}
-              cursorColor={theme.accent}
-            />
-          ) : (
-            <input
-              focused
-              value={value}
-              placeholder={placeholder}
-              onInput={(v) => {
-                setValue(v);
-                setError(null);
-              }}
-              onSubmit={submit}
-              backgroundColor="transparent"
-              textColor={theme.text}
-              placeholderColor={theme.textMuted}
-              cursorColor={theme.accent}
-            />
-          )}
+          <textarea
+            ref={areaRef}
+            focused
+            initialValue={initial}
+            placeholder={placeholder}
+            wrapMode="word"
+            onContentChange={handleChange}
+            backgroundColor="transparent"
+            textColor={theme.text}
+            placeholderColor={theme.textMuted}
+            cursorColor={theme.accent}
+          />
         </box>
 
         {error ? (

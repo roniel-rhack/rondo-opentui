@@ -305,7 +305,7 @@ const HELP_SECTIONS: [string, [string, string][]][] = [
     "Global",
     [
       ["ctrl+k", "Command palette"],
-      ["P", "Focus settings"],
+      ["P", "Settings"],
       ["< / >, drag", "Resize panels"],
       ["F1 / F2 / F3", "Sort by created / due / priority"],
       ["f", "Start / stop focus timer"],
