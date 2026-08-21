@@ -1,13 +1,23 @@
 {
   "name": "rondo-opentui",
+  "version": "0.1.0",
+  "description": "RonDO \u2014 terminal productivity app (tasks + journal + pomodoro) built with OpenTUI and React",
   "module": "src/index.tsx",
   "type": "module",
   "private": true,
+  "bin": {
+    "rondo-opentui": "src/index.tsx"
+  },
   "scripts": {
-    "dev": "bun run --watch src/index.tsx"
+    "dev": "bun run --watch src/index.tsx",
+    "start": "bun run src/index.tsx",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build --compile --outfile dist/rondo-opentui src/index.tsx && (codesign -s - dist/rondo-opentui 2>/dev/null || true)"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/react": "^19.2.18"
   },
   "peerDependencies": {
     "typescript": "^5"
@@ -16,5 +26,10 @@
     "@opentui/core": "^0.5.4",
     "@opentui/react": "^0.5.4",
     "react": "^19.2.6"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/roniel-rhack/rondo-opentui.git"
+  },
+  "license": "MIT"
 }

@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            os: macos-latest
+          - target: darwin-amd64
+            os: macos-13
+          - target: linux-amd64
+            os: ubuntu-latest
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Test
+        run: bun test
+
+      - name: Build standalone binary
+        run: bun build --compile --outfile rondo-opentui src/index.tsx
+
+      # Unsigned binaries produced by `bun build --compile` are killed on
+      # start by macOS, so give them an ad-hoc signature.
+      - name: Sign binary (macOS)
+        if: runner.os == 'macOS'
+        run: codesign -s - rondo-opentui
+
+      - name: Package
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          tar czf "rondo-opentui-${BUILD_TARGET}.tar.gz" rondo-opentui
+          rm rondo-opentui
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rondo-opentui-${{ matrix.target }}
+          path: rondo-opentui-${{ matrix.target }}.tar.gz
+
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum *.tar.gz > checksums-sha256.txt
+          cat checksums-sha256.txt
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.tar.gz
+            artifacts/checksums-sha256.txt
+          generate_release_notes: true
+
+      - name: Trigger Homebrew formula update
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN is not set; skipping tap update."
+            exit 0
+          fi
+          curl -fsS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/roniel-rhack/homebrew-tap/dispatches" \
+            -d "{\"event_type\":\"update-rondo-opentui\",\"client_payload\":{\"version\":\"${TAG_NAME}\"}}"
