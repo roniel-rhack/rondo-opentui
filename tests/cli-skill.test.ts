@@ -30,11 +30,13 @@ describe("skill install providers", () => {
     expect(cli.output()).toContain(path);
   });
 
-  test("installs for Codex with --provider codex", () => {
+  test("installs for Codex into the .agents skills directory", () => {
     const cli = newTestCLI();
     cli.run(["skill", "install", "--provider", "codex"]);
 
-    const path = join(home, ".codex", "skills", "rondo-opentui", "SKILL.md");
+    // Codex reads skills from .agents/skills (repo, ~, /etc/codex), not
+    // from ~/.codex — see developers.openai.com/codex/skills.
+    const path = join(home, ".agents", "skills", "rondo-opentui", "SKILL.md");
     expect(existsSync(path)).toBe(true);
     expect(readFileSync(path, "utf8")).toContain("rondo-opentui");
   });
@@ -52,7 +54,7 @@ describe("skill install providers", () => {
     cli.run(["skill", "uninstall", "--provider", "codex"]);
 
     expect(
-      existsSync(join(home, ".codex", "skills", "rondo-opentui")),
+      existsSync(join(home, ".agents", "skills", "rondo-opentui")),
     ).toBe(false);
   });
 });

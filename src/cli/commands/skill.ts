@@ -28,9 +28,11 @@ function homeDir(): string {
     : homedir();
 }
 
-/** Both providers follow the Agent Skills layout: <base>/skills/<name>/SKILL.md. */
+/** Claude Code reads ~/.claude/skills; Codex reads the agent-agnostic
+ * .agents/skills tree (repo, home, /etc/codex) — not ~/.codex, which only
+ * holds its config. Layout is the same either way: <base>/skills/<name>/. */
 function skillDir(provider: Provider, project: boolean): string {
-  const base = provider === "codex" ? ".codex" : ".claude";
+  const base = provider === "codex" ? ".agents" : ".claude";
   if (project) return join(base, "skills", "rondo-opentui");
   return join(homeDir(), base, "skills", "rondo-opentui");
 }
@@ -55,8 +57,9 @@ export function skillCmd(ctx: CLIContext): Command {
 entries, subtasks, time logs, and focus sessions through this CLI.
 
 By default installs globally for Claude Code (~/.claude/skills/rondo-opentui/).
-Use --provider codex for OpenAI Codex (~/.codex/skills/) and --project to
-install into the current project instead of the home directory.`,
+Use --provider codex for OpenAI Codex (~/.agents/skills/, the open Agent
+Skills location Codex reads) and --project to install into the current
+project instead of the home directory.`,
       args: noArgs,
       flags: {
         project: {

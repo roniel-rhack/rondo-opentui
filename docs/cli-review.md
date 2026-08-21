@@ -35,7 +35,7 @@ probes against a throwaway `RONDO_HOME`.
 `rondo-opentui skill install` writes the embedded `SKILL.md` to
 `~/.claude/skills/rondo-opentui/`, `--project` targets `./.claude/skills/`,
 and `skill uninstall` removes it. **Resolved this session:** `--provider
-claude|codex` chooses the agent — Codex installs land in `~/.codex/skills/`
+claude|codex` chooses the agent — Codex installs land in `~/.agents/skills/` (the open Agent Skills tree Codex reads; `~/.codex` only holds its config)
 (same Agent Skills layout), unknown providers are rejected, and uninstall
 honors the flag. Covered by `tests/cli-skill.test.ts`.
 
