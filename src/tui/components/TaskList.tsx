@@ -1,5 +1,5 @@
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { formatDateShort, type Config } from "../../core/config/config.ts";
 import { RecurFreq } from "../../core/task/recur.ts";
 import {
@@ -10,6 +10,7 @@ import {
 } from "../../core/task/task.ts";
 import { GoTime } from "../../core/time.ts";
 import { DueLevel, dueStatus } from "../../core/ui/overdue.ts";
+import { useSmoothScrollIntoView } from "../hooks/useSmoothScroll.ts";
 import { mix, priorityColors, type TuiTheme } from "../theme.ts";
 import { EmptyState } from "./primitives.tsx";
 
@@ -309,19 +310,32 @@ function ScrollingList({
   onToggleStatus,
 }: ScrollingListProps) {
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
-  const selectedId = tasks[selected]?.id;
+  const previous = useRef(selected);
   // panel borders (2) + rail indent (4) + scrollbar gutter (2)
   const metaWidth = Math.max(width - 8, 10);
 
-  useEffect(() => {
-    if (selectedId === undefined) return;
-    scrollRef.current?.scrollChildIntoView(`task-row-${selectedId}`);
-  }, [selectedId]);
+  // Scroll the row *after* the selected one into view, so moving through the
+  // list always keeps a row of lookahead instead of pinning the cursor to the
+  // edge of the viewport.
+  const direction = Math.sign(selected - previous.current);
+  previous.current = selected;
+  const lookahead = Math.min(
+    Math.max(selected + direction, 0),
+    tasks.length - 1,
+  );
+  const anchorId = tasks[lookahead]?.id;
+
+  useSmoothScrollIntoView(
+    scrollRef,
+    anchorId === undefined ? undefined : `task-row-${anchorId}`,
+  );
 
   return (
     <scrollbox
       ref={scrollRef}
-      focused={focused}
+      // Never focused: the scrollbox would answer j/k/arrows itself and fight
+      // the cursor-driven scrolling below. Wheel and drag still work.
+      focused={false}
       flexGrow={1}
       stickyScroll={false}
       scrollX={false}
@@ -332,7 +346,9 @@ function ScrollingList({
           foregroundColor: theme.border,
         },
       }}
-      contentOptions={{ flexDirection: "column" }}
+      // A blank line between rows keeps each task's two lines reading as
+      // one block instead of a wall of text.
+      contentOptions={{ flexDirection: "column", gap: 1 }}
     >
       {tasks.map((task, index) => (
         <TaskRow

@@ -1,5 +1,5 @@
 import { TextAttributes } from "@opentui/core";
-import { useState } from "react";
+import React, { useState } from "react";
 import type { TuiTheme } from "../theme.ts";
 import { TABS, type TabCounts, type TabId } from "../state.ts";
 import { Meter } from "./primitives.tsx";
@@ -93,17 +93,22 @@ export function Header({
         </text>
         <box width={2} />
 
-        {TABS.map((tab) => (
-          <TabButton
-            key={tab.id}
-            theme={theme}
-            label={tab.label}
-            icon={tab.icon}
-            count={counts[tab.id]}
-            active={tab.id === activeTab}
-            compact={compact}
-            onPress={() => onSelectTab(tab.id)}
-          />
+        {TABS.map((tab, index) => (
+          <React.Fragment key={tab.id}>
+            {/* Tasks and the journal are separate things; keep them apart. */}
+            {index > 0 && TABS[index - 1]!.group !== tab.group ? (
+              <text fg={theme.border}>{compact ? "│" : " │ "}</text>
+            ) : null}
+            <TabButton
+              theme={theme}
+              label={tab.label}
+              icon={tab.icon}
+              count={counts[tab.id]}
+              active={tab.id === activeTab}
+              compact={compact}
+              onPress={() => onSelectTab(tab.id)}
+            />
+          </React.Fragment>
         ))}
 
         <box flexGrow={1} />

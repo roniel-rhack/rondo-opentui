@@ -12,6 +12,7 @@ import { GoTime } from "../src/core/time.ts";
 import { initTheme } from "../src/core/ui/colors.ts";
 import { App } from "../src/tui/app.tsx";
 import { RondoData } from "../src/tui/data.ts";
+import { TABS, type TabId } from "../src/tui/state.ts";
 
 initTheme(true);
 
@@ -87,6 +88,17 @@ async function mount(width = 100, height = 30) {
     await setup.flush();
   };
 
+  /**
+   * Walks to a tab with TAB, which cycles All → Active → Done → Journal. The
+   * app opens on Active, so everything is measured from there.
+   */
+  const goToTab = async (id: TabId) => {
+    const from = TABS.findIndex((t) => t.id === "active");
+    const to = TABS.findIndex((t) => t.id === id);
+    const steps = (to - from + TABS.length) % TABS.length;
+    for (let i = 0; i < steps; i++) await press("TAB");
+  };
+
   const click = async (x: number, y: number) => {
     await act(async () => {
       await setup.mockMouse.click(x, y);
@@ -94,7 +106,7 @@ async function mount(width = 100, height = 30) {
     await setup.flush();
   };
 
-  return { data, press, type, click, ...setup };
+  return { data, press, type, click, goToTab, ...setup };
 }
 
 describe("TUI rendering", () => {
@@ -149,11 +161,9 @@ describe("TUI rendering", () => {
   });
 
   test("tab switches to the journal view", async () => {
-    const { captureCharFrame, press, renderer } = await mount();
+    const { captureCharFrame, goToTab, renderer } = await mount();
 
-    await press("TAB");
-    await press("TAB");
-    await press("TAB");
+    await goToTab("journal");
 
     const frame = captureCharFrame();
     expect(frame).toContain("Journal");
@@ -229,7 +239,10 @@ describe("TUI rendering", () => {
   });
 
   test("/ filters the task list live", async () => {
-    const { captureCharFrame, press, type, renderer } = await mount();
+    const { captureCharFrame, goToTab, press, type, renderer } = await mount();
+
+    // The filter runs inside the current tab, and "milk" is a done task.
+    await goToTab("all");
 
     await press("/");
     await type("milk");
@@ -299,7 +312,10 @@ describe("TUI mouse", () => {
   });
 
   test("clicking a row selects it", async () => {
-    const { captureCharFrame, click, renderer } = await mount();
+    const { captureCharFrame, click, goToTab, renderer } = await mount();
+
+    // The list opens on Active, which hides the done task used here.
+    await goToTab("all");
 
     const lines = captureCharFrame().split("\n");
     const row = lines.findIndex((l) => l.includes("Buy oat milk"));
@@ -360,11 +376,10 @@ describe("TUI flows", () => {
   });
 
   test("a in the journal view adds an entry", async () => {
-    const { captureCharFrame, press, type, data, renderer } = await mount();
+    const { captureCharFrame, goToTab, press, type, data, renderer } =
+      await mount();
 
-    await press("TAB");
-    await press("TAB");
-    await press("TAB");
+    await goToTab("journal");
     await press("a");
     expect(captureCharFrame()).toContain("Journal entry");
 
@@ -545,10 +560,19 @@ describe("TUI scrolling", () => {
         setup.mockInput.pressKey("j");
       });
     }
+    // Scrolling is animated, so let the last hop finish before asserting.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+    });
     await setup.flush();
 
     // The cursor marker must still be on screen after scrolling far down.
-    expect(setup.captureCharFrame()).toContain("┃");
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("┃");
+    // …and the row after it, so the cursor never sits on the bottom edge.
+    const cursorRow = frame.split("\n").findIndex((l) => l.includes("┃"));
+    expect(frame.split("\n").length).toBeGreaterThan(cursorRow + 2);
+    expect(frame.split("\n")[cursorRow + 2]).toContain("Filler task");
     setup.renderer.destroy();
   });
 });
@@ -596,11 +620,10 @@ describe("TUI inputs", () => {
   });
 
   test("journal entries use a multiline prompt", async () => {
-    const { captureCharFrame, press, type, data, renderer } = await mount();
+    const { captureCharFrame, goToTab, press, type, data, renderer } =
+      await mount();
 
-    await press("TAB");
-    await press("TAB");
-    await press("TAB");
+    await goToTab("journal");
     await press("a");
     expect(captureCharFrame()).toContain("ctrl+s save · enter new line");
 
@@ -652,18 +675,18 @@ describe("TUI list density", () => {
   });
 
   test("completed tasks collapse to a single line", async () => {
-    const data = seed();
-    let setup!: Awaited<ReturnType<typeof testRender>>;
-    await act(async () => {
-      setup = await testRender(<App data={data} />, { width: 90, height: 20 });
-    });
-    await setup.flush();
+    const { captureCharFrame, goToTab, renderer } = await mount(90, 20);
 
-    const lines = setup.captureCharFrame().split("\n");
+    // The list opens on Active, which hides the done task used here.
+    await goToTab("all");
+
+    const lines = captureCharFrame().split("\n");
     const doneRow = lines.findIndex((l) => l.includes("Buy oat milk"));
-    // The next line must be another task, not metadata for the done one.
+    expect(doneRow).toBeGreaterThan(0);
+    // The row is followed by the gap, not by a metadata line of its own.
     expect(lines[doneRow + 1]).not.toContain("#");
-    setup.renderer.destroy();
+    expect(lines[doneRow + 1]).not.toContain("/");
+    renderer.destroy();
   });
 
   test("tags are trimmed with a counter instead of wrapping", async () => {

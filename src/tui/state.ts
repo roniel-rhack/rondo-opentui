@@ -2,11 +2,22 @@ import { Status, type Task } from "../core/task/task.ts";
 
 export type TabId = "all" | "active" | "done" | "journal";
 
-export const TABS: { id: TabId; label: string; icon: string }[] = [
-  { id: "all", label: "All", icon: "▤" },
-  { id: "active", label: "Active", icon: "◐" },
-  { id: "done", label: "Done", icon: "✓" },
-  { id: "journal", label: "Journal", icon: "✎" },
+export type TabGroup = "tasks" | "journal";
+
+// Active leads because it is the default view, and All closes the task group
+// as the escape hatch for when completed tasks matter. The journal is a
+// different kind of thing, so it forms its own group and the header draws a
+// divider between the two.
+export const TABS: {
+  id: TabId;
+  label: string;
+  icon: string;
+  group: TabGroup;
+}[] = [
+  { id: "active", label: "Active", icon: "◐", group: "tasks" },
+  { id: "done", label: "Done", icon: "✓", group: "tasks" },
+  { id: "all", label: "All", icon: "▤", group: "tasks" },
+  { id: "journal", label: "Journal", icon: "✎", group: "journal" },
 ];
 
 export type SortKey = "created" | "due" | "priority";

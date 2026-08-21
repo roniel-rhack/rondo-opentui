@@ -137,7 +137,7 @@ export function App({ data, onQuit }: AppProps) {
   const [notes, setNotes] = useState<Note[]>(() => data.listNotes(false));
   const [showHidden, setShowHidden] = useState(false);
 
-  const [tab, setTab] = useState<TabId>("all");
+  const [tab, setTab] = useState<TabId>("active");
   const [panel, setPanel] = useState<0 | 1>(0);
   const [taskIndex, setTaskIndex] = useState(0);
   const [subtaskIndex, setSubtaskIndex] = useState(0);
