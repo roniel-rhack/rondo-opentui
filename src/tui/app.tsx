@@ -16,6 +16,7 @@ import { SessionKind } from "../core/focus/focus.ts";
 import type { Note } from "../core/journal/journal.ts";
 import { RecurFreq, recurFreqString } from "../core/task/recur.ts";
 import { Status, statusString, type Task } from "../core/task/task.ts";
+import { formatDuration } from "../core/task/timelog.ts";
 import { DateOnly, GoTime } from "../core/time.ts";
 import { initTheme, isDark } from "../core/ui/colors.ts";
 import type { RondoData, TaskDraft, UndoAction } from "./data.ts";
@@ -173,7 +174,6 @@ export function App({ data, onQuit }: AppProps) {
   const [modal, setModal] = useState<Modal>({ type: "none" });
   const [toast, setToast] = useState<Toast | null>(null);
   const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
-  const [clock, setClock] = useState(() => GoTime.now().format("15:04"));
 
   const notify = useCallback(
     (message: string, kind: Toast["kind"] = "info") => {
@@ -199,16 +199,22 @@ export function App({ data, onQuit }: AppProps) {
     return () => clearTimeout(id);
   }, [toast]);
 
-  useEffect(() => {
-    const id = setInterval(() => setClock(GoTime.now().format("15:04")), 15_000);
-    return () => clearInterval(id);
-  }, []);
-
-  const pomodoro = usePomodoro(data, cfg, (kind) => {
-    notify(
-      kind === SessionKind.Work ? "Focus session complete" : "Break over",
-      "success",
-    );
+  const pomodoro = usePomodoro(data, cfg, (kind, taskId) => {
+    if (kind !== SessionKind.Work) {
+      notify("Break over", "success");
+    } else if (taskId > 0) {
+      // The app already measured the time; the task should not have to wait
+      // for the user to type it in again.
+      const duration = cfg.focus.workDuration * Minute;
+      data.logTime(taskId, duration, "focus session");
+      reloadTasks();
+      notify(
+        `Focus complete · ${formatDuration(duration)} logged to #${taskId}`,
+        "success",
+      );
+    } else {
+      notify("Focus session complete", "success");
+    }
     if (cfg.focus.sound) process.stdout.write("\u0007"); // terminal bell
   });
 
@@ -935,14 +941,30 @@ export function App({ data, onQuit }: AppProps) {
 
   // --------------------------------------------------------------- layout
 
-  // Truncated by hand: the renderer elides in the middle, which reads badly.
-  const focusTaskTitle = useMemo(() => {
-    if (!pomodoro.taskId) return undefined;
-    const title = tasks.find((t) => t.id === pomodoro.taskId)?.title;
-    if (!title) return undefined;
-    const cap = width >= 110 ? 28 : 14;
-    return title.length > cap ? `${title.slice(0, cap - 1)}…` : title;
-  }, [pomodoro.taskId, tasks, width]);
+  const focusTaskTitle = useMemo(
+    () =>
+      pomodoro.taskId
+        ? tasks.find((t) => t.id === pomodoro.taskId)?.title
+        : undefined,
+    [pomodoro.taskId, tasks],
+  );
+
+  // Memoized so the header only reconciles when the session itself changes;
+  // the per-second readout lives in a leaf inside it.
+  const headerFocus = useMemo(
+    () => ({
+      endAt: pomodoro.endAt,
+      durationMs: pomodoro.durationMs,
+      label: pomodoro.label,
+      color: pomodoro.kind === SessionKind.Work ? theme.warning : theme.success,
+      task: focusTaskTitle,
+      cycleDots: `${"●".repeat(pomodoro.cyclePos)}${"○".repeat(
+        Math.max(cfg.focus.longBreakInterval - pomodoro.cyclePos, 0),
+      )}`,
+      nextLabel: pomodoro.nextLabel,
+    }),
+    [pomodoro, theme, focusTaskTitle, cfg.focus.longBreakInterval],
+  );
 
   const compact = width < 72;
   const listWidth = compact
@@ -1017,18 +1039,9 @@ export function App({ data, onQuit }: AppProps) {
         activeTab={tab}
         counts={counts}
         onSelectTab={setTab}
-        timer={pomodoro.timer}
-        timerLabel={pomodoro.label}
-        timerRatio={pomodoro.progress}
-        timerColor={
-          pomodoro.kind === SessionKind.Work ? theme.warning : theme.success
-        }
-        timerTask={focusTaskTitle}
-        cycleDots={`${"●".repeat(pomodoro.cyclePos)}${"○".repeat(
-          Math.max(cfg.focus.longBreakInterval - pomodoro.cyclePos, 0),
-        )}`}
-        clock={clock}
+        focus={headerFocus}
         compact={compact}
+        width={width}
       />
 
       {tagBar && !isJournal ? (
