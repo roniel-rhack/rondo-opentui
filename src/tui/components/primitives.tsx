@@ -7,7 +7,8 @@ interface ChipProps {
   theme: TuiTheme;
   label: string;
   color?: string;
-  /** Filled chips use `color` as background, outlined ones as foreground. */
+  /** Filled chips use `color` as background; outlined ones sit on a raised
+   * surface with `color` as text, like a keycap. */
   filled?: boolean;
   bold?: boolean;
   onPress?: () => void;
@@ -26,7 +27,7 @@ export function Chip({
   return (
     <box
       flexDirection="row"
-      backgroundColor={filled ? tone : undefined}
+      backgroundColor={filled ? tone : theme.surfaceAlt}
       paddingLeft={1}
       paddingRight={1}
       onMouseDown={onPress}

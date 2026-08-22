@@ -8,7 +8,9 @@ import {
 import type { Note } from "../../core/journal/journal.ts";
 import { GoTime } from "../../core/time.ts";
 import { useSmoothScrollIntoView } from "../hooks/useSmoothScroll.ts";
-import type { TuiTheme } from "../theme.ts";
+import { plural } from "../state.ts";
+import { mix, type TuiTheme } from "../theme.ts";
+import { EmptyState, MarkdownText } from "./primitives.tsx";
 
 interface NoteListProps {
   theme: TuiTheme;
@@ -32,12 +34,15 @@ export function NoteList({
   onSelect,
 }: NoteListProps) {
   if (notes.length === 0) {
-    return (
-      <box flexGrow={1} alignItems="center" justifyContent="center" padding={2}>
-        <text fg={theme.textMuted}>
-          {emptyText ?? "No journal notes yet — press a to write"}
-        </text>
-      </box>
+    return emptyText ? (
+      <EmptyState theme={theme} icon="⌕" title="No matches" hint={emptyText} />
+    ) : (
+      <EmptyState
+        theme={theme}
+        icon="✎"
+        title="No journal notes yet"
+        hint="Press a to write about today"
+      />
     );
   }
 
@@ -122,7 +127,9 @@ function NoteRows({
               {` ${formatNoteTitle(cfg, note.date, now)}`}
             </text>
             <text flexShrink={0} fg={theme.textDim}>
-              {`${note.entries.length}${note.hidden ? " ·hidden" : ""}`}
+              {`${plural(note.entries.length, "entry", "entries")}${
+                note.hidden ? " ·hidden" : ""
+              }`}
             </text>
           </box>
         );
@@ -151,23 +158,60 @@ export function EntryList({
 }: EntryListProps) {
   if (!note) {
     return (
-      <box flexGrow={1} alignItems="center" justifyContent="center">
-        <text fg={theme.textMuted}>Select a day to read its entries</text>
-      </box>
+      <EmptyState
+        theme={theme}
+        icon="✎"
+        title="Nothing selected"
+        hint="Pick a day on the left to read its entries"
+      />
     );
   }
 
   if (note.entries.length === 0) {
     return (
-      <box flexGrow={1} alignItems="center" justifyContent="center">
-        <text fg={theme.textMuted}>No entries for this day — press a to add one</text>
-      </box>
+      <EmptyState
+        theme={theme}
+        icon="✎"
+        title="No entries for this day"
+        hint="Press A to add one"
+      />
     );
   }
 
   return (
-    <scrollbox
+    <EntryRows
+      theme={theme}
+      cfg={cfg}
+      note={note}
+      selected={selected}
       focused={focused}
+      onSelect={onSelect}
+    />
+  );
+}
+
+/** Scroll container that follows the selected entry. */
+function EntryRows({
+  theme,
+  cfg,
+  note,
+  selected,
+  focused,
+  onSelect,
+}: EntryListProps & { note: Note }) {
+  const scrollRef = useRef<ScrollBoxRenderable | null>(null);
+  const selectedId = note.entries[selected]?.id;
+
+  useSmoothScrollIntoView(
+    scrollRef,
+    selectedId === undefined ? undefined : `entry-${selectedId}`,
+  );
+
+  return (
+    <scrollbox
+      ref={scrollRef}
+      // Never focused, for the same reason as the day list.
+      focused={false}
       flexGrow={1}
       scrollX={false}
       scrollbarOptions={{
@@ -184,10 +228,12 @@ export function EntryList({
       {note.entries.map((entry, index) => (
         <EntryRow
           key={entry.id}
+          id={`entry-${entry.id}`}
           theme={theme}
           time={formatTime(cfg, entry.createdAt)}
           body={entry.body}
-          selected={focused && index === selected}
+          selected={index === selected}
+          focused={focused}
           onPress={() => onSelect(index)}
         />
       ))}
@@ -197,34 +243,54 @@ export function EntryList({
 
 interface EntryRowProps {
   theme: TuiTheme;
+  id: string;
   time: string;
   body: string;
   selected: boolean;
+  focused: boolean;
   onPress: () => void;
 }
 
 /** One journal entry: timestamp rail on the left, prose on the right. */
-function EntryRow({ theme, time, body, selected, onPress }: EntryRowProps) {
+function EntryRow({
+  theme,
+  id,
+  time,
+  body,
+  selected,
+  focused,
+  onPress,
+}: EntryRowProps) {
   const [hover, setHover] = useState(false);
+  // The selection stays visible while the day list has focus, dimmed: it is
+  // what `d` and `e` will act on, so it must never be a secret.
+  const background = selected
+    ? focused
+      ? theme.selectionBg
+      : mix(theme.selectionBg, theme.bg, 0.45)
+    : hover
+      ? theme.hoverBg
+      : undefined;
+  const active = selected && focused;
   return (
     <box
+      id={id}
       flexDirection="row"
       paddingBottom={1}
-      backgroundColor={
-        selected ? theme.selectionBg : hover ? theme.hoverBg : undefined
-      }
+      backgroundColor={background}
       onMouseOver={() => setHover(true)}
       onMouseOut={() => setHover(false)}
       onMouseDown={onPress}
     >
-      <text fg={selected ? theme.accent : theme.borderSubtle}>
+      <text
+        flexShrink={0}
+        fg={active ? theme.accent : selected ? theme.textDim : theme.borderSubtle}
+      >
         {selected ? "┃" : "│"}
       </text>
       <box flexDirection="column" flexGrow={1} paddingLeft={1}>
-        <text fg={selected ? theme.accent : theme.textMuted}>{time}</text>
-        <text fg={theme.text} wrapMode="word">
-          {body}
-        </text>
+        <text fg={active ? theme.accent : theme.textMuted}>{time}</text>
+        <MarkdownText theme={theme} content={body} />
       </box>
     </box>
   );

@@ -4,7 +4,12 @@ import { act, type ReactNode } from "react";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultConfig } from "../src/core/config/config.ts";
+import type { CapturedFrame, CapturedSpan } from "@opentui/core";
+import {
+  defaultConfig,
+  formatDate,
+  formatDateShort,
+} from "../src/core/config/config.ts";
 import { openMemory } from "../src/core/database/db.ts";
 import { Minute } from "../src/core/duration.ts";
 import { RecurFreq } from "../src/core/task/recur.ts";
@@ -20,9 +25,14 @@ import {
   TagPickerDialog,
   TaskPickerDialog,
 } from "../src/tui/components/Dialogs.tsx";
+import { EntryList, NoteList } from "../src/tui/components/JournalPanel.tsx";
+import {
+  TaskDetail,
+  type TaskDetailHandle,
+} from "../src/tui/components/TaskDetail.tsx";
 import { RondoData } from "../src/tui/data.ts";
 import { TABS, type TabId } from "../src/tui/state.ts";
-import { tuiTheme } from "../src/tui/theme.ts";
+import { mix, priorityColors, tuiTheme } from "../src/tui/theme.ts";
 
 initTheme(true);
 
@@ -70,8 +80,14 @@ function seed(cfg = defaultConfig()): RondoData {
   return data;
 }
 
-async function mount(width = 100, height = 30, cfg = defaultConfig()) {
+async function mount(
+  width = 100,
+  height = 30,
+  cfg = defaultConfig(),
+  prepare?: (data: RondoData) => void,
+) {
   const data = seed(cfg);
+  prepare?.(data);
   // Wrapping the initial mount keeps React's act() warnings out of the output.
   let setup!: Awaited<ReturnType<typeof testRender>>;
   await act(async () => {
@@ -1835,6 +1851,368 @@ describe("TUI review 3 — dialogs", () => {
     const frame = captureCharFrame();
     expect(frame).toContain("Delete this journal entry?");
     expect(frame).toContain("“Shipped the opentui port”");
+    renderer.destroy();
+  });
+});
+
+describe("TUI review 3 — detail and journal", () => {
+  /** A config pinned to dark so span colors can be compared with the theme. */
+  function darkConfig() {
+    const cfg = defaultConfig();
+    cfg.theme = "dark";
+    return cfg;
+  }
+  const theme = tuiTheme(true);
+
+  function hexOf(color: CapturedSpan["fg"]): string {
+    const [r, g, b] = color.toInts();
+    return `#${[r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("")}`;
+  }
+
+  /** First span whose text contains `needle`, searching top to bottom. */
+  function spanWith(frame: CapturedFrame, needle: string): CapturedSpan {
+    for (const line of frame.lines) {
+      const span = line.spans.find((s) => s.text.includes(needle));
+      if (span) return span;
+    }
+    throw new Error(`no span contains ${JSON.stringify(needle)}`);
+  }
+
+  function rowOf(frame: string, needle: string): number {
+    const row = frame.split("\n").findIndex((l) => l.includes(needle));
+    expect(row).toBeGreaterThan(0);
+    return row;
+  }
+
+  /** Renders a component on its own, outside the app shell. */
+  async function mountComponent(node: React.ReactNode, width = 60, height = 16) {
+    let setup!: Awaited<ReturnType<typeof testRender>>;
+    await act(async () => {
+      setup = await testRender(node, { width, height });
+    });
+    await setup.flush();
+    return setup;
+  }
+
+  const detailProps = {
+    theme,
+    cfg: defaultConfig(),
+    focused: true,
+    onSelectRow: () => {},
+    onToggleSubtask: () => {},
+    blockedByTitles: new Map<number, string>(),
+  };
+
+  const longDescription = Array.from(
+    { length: 20 },
+    (_, i) => `Line ${i + 1} of the spec`,
+  ).join("\n");
+
+  test("80×24: a bare task shows no empty sections, only affordances", async () => {
+    const { captureCharFrame, press, renderer } = await mount(80, 24);
+
+    // "Refactor the parser" has no description, steps, notes or time.
+    const bare = captureCharFrame();
+    for (const header of ["DESCRIPTION", "SUBTASKS", "NOTES", "TIME"]) {
+      expect(bare).not.toContain(header);
+    }
+    expect(bare).toContain("e  describe");
+    expect(bare).toContain("t  step");
+    expect(bare).toContain("n  note");
+    expect(bare).toContain("L  time");
+
+    await press("j");
+    await press("j");
+    const report = captureCharFrame();
+    expect(report).toContain("DESCRIPTION");
+    expect(report).toContain("SUBTASKS");
+    expect(report).not.toContain("NOTES");
+    expect(report).not.toContain("e  describe");
+    expect(report).not.toContain("t  step");
+    expect(report).toContain("n  note");
+    expect(report).toContain("L  time");
+    renderer.destroy();
+  });
+
+  test("a done task shows when it was due and finished, never OVERDUE", async () => {
+    const cfg = darkConfig();
+    const due = GoTime.now().utc().addDate(0, 0, -1).truncateDay();
+    let paidId = 0;
+    const { captureCharFrame, captureSpans, goToTab, data, renderer } =
+      await mount(100, 30, cfg, (d) => {
+        const paid = newTask({ title: "Pay the invoice", dueDate: due });
+        d.tasks.create(paid);
+        d.setStatus(paid, Status.Done);
+        paidId = paid.id;
+      });
+
+    await goToTab("done");
+    const frame = captureCharFrame();
+    expect(frame).toContain("Pay the invoice");
+    expect(frame).not.toContain("OVERDUE");
+    expect(frame).toContain(`Was due    ${formatDate(cfg, due)}`);
+
+    const paid = data.tasks.getById(paidId)!;
+    const finished = formatDateShort(cfg, paid.updatedAt, GoTime.now());
+    expect(frame).toContain(`Done · ${finished}`);
+
+    const wasDue = spanWith(captureSpans(), formatDate(cfg, due));
+    expect(hexOf(wasDue.fg)).toBe(theme.textDim);
+    renderer.destroy();
+  });
+
+  test("outlined chips sit on a raised surface", async () => {
+    const { captureSpans, renderer } = await mount(100, 30, darkConfig());
+
+    const priority = spanWith(captureSpans(), "Urgent");
+    expect(hexOf(priority.bg)).toBe(theme.surfaceAlt);
+    expect(hexOf(priority.fg)).toBe(priorityColors(theme)[Priority.Urgent]!);
+    const status = spanWith(captureSpans(), "Pending");
+    expect(hexOf(status.bg)).toBe(theme.surfaceAlt);
+    renderer.destroy();
+  });
+
+  test("clicking a subtask row selects it; only the checkbox toggles", async () => {
+    const { captureCharFrame, press, click, renderer } = await mount();
+
+    await press("j");
+    await press("j");
+    const row = rowOf(captureCharFrame(), "Draft intro");
+    const line = captureCharFrame().split("\n")[row]!;
+    const glyph = line.indexOf("▢", line.indexOf("Draft intro") - 4);
+
+    await click(glyph + 6, row);
+    const selected = captureCharFrame();
+    expect(selected).toContain("0/2");
+    expect(selected.split("\n")[row]).toContain("┃ ▢ Draft intro");
+
+    await click(glyph, row);
+    const toggled = captureCharFrame();
+    expect(toggled).toContain("1/2");
+    expect(toggled.split("\n")[row]).toContain("▣ Draft intro");
+    renderer.destroy();
+  });
+
+  test("the subtask list says how to reach it until the panel has focus", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("j");
+    await press("j");
+    expect(captureCharFrame()).toContain("→ then space to check off");
+
+    await press("RETURN");
+    expect(captureCharFrame()).not.toContain("then space to check off");
+    renderer.destroy();
+  });
+
+  test("j in the detail panel moves the cursor and brings it into view", async () => {
+    const { captureCharFrame, press, renderer, flush } = await mount(
+      80,
+      24,
+      defaultConfig(),
+      (d) => {
+        const spec = newTask({ title: "Long spec", description: longDescription });
+        d.tasks.create(spec);
+        for (const step of ["Step 1", "Step 2", "Step 3"]) {
+          d.tasks.addSubtask(spec.id, step);
+        }
+      },
+    );
+
+    // From the list the panel shows the top of the task.
+    expect(captureCharFrame()).toContain("○ Long spec");
+    expect(captureCharFrame()).not.toContain("Step 2");
+
+    await press("RETURN");
+    await press("j");
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+    });
+    await flush();
+
+    const lines = captureCharFrame().split("\n");
+    const cursor = lines.findIndex((l) => l.includes("┃ ▢"));
+    expect(cursor).toBeGreaterThan(0);
+    expect(lines[cursor]).toContain("Step 2");
+    renderer.destroy();
+  });
+
+  test("a task with nothing to select still scrolls from the keyboard", async () => {
+    const data = seed();
+    const spec = newTask({ title: "Long spec", description: longDescription });
+    data.tasks.create(spec);
+    const task = data.tasks.getById(spec.id)!;
+    const handle: { current: TaskDetailHandle | null } = { current: null };
+
+    const setup = await mountComponent(
+      <TaskDetail {...detailProps} task={task} cursor={0} ref={handle} />,
+      50,
+      12,
+    );
+    expect(setup.captureCharFrame()).toContain("○ Long spec");
+    expect(setup.captureCharFrame()).not.toContain("Line 12");
+
+    await act(async () => {
+      handle.current!.scrollBy(12);
+    });
+    await setup.flush();
+    const frame = setup.captureCharFrame();
+    expect(frame).not.toContain("○ Long spec");
+    expect(frame).toContain("Line 12");
+    setup.renderer.destroy();
+  });
+
+  test("the detail cursor walks notes and time logs after the subtasks", async () => {
+    const data = seed();
+    const spec = newTask({ title: "Ship it" });
+    data.tasks.create(spec);
+    data.tasks.addSubtask(spec.id, "Step 1");
+    data.addTaskNote(spec.id, "Talked to finance");
+    data.logTime(spec.id, 30 * Minute, "outline");
+    const task = data.tasks.getById(spec.id)!;
+
+    const onNote = await mountComponent(
+      <TaskDetail {...detailProps} task={task} cursor={1} />,
+      60,
+      20,
+    );
+    let lines = onNote.captureCharFrame().split("\n");
+    let rail = lines.findIndex((l) => l.includes("┃"));
+    expect(lines[rail + 1]).toContain("Talked to finance");
+    expect(lines.find((l) => l.includes("Step 1"))).toContain("│ ▢ Step 1");
+    onNote.renderer.destroy();
+
+    const selectRow: number[] = [];
+    const onLog = await mountComponent(
+      <TaskDetail
+        {...detailProps}
+        task={task}
+        cursor={2}
+        onSelectRow={(index) => selectRow.push(index)}
+      />,
+      60,
+      26,
+    );
+    lines = onLog.captureCharFrame().split("\n");
+    rail = lines.findIndex((l) => l.includes("┃"));
+    expect(lines[rail]).toContain("30m");
+    expect(lines[rail]).toContain("outline");
+
+    const noteRow = lines.findIndex((l) => l.includes("Talked to finance"));
+    await act(async () => {
+      await onLog.mockMouse.click(6, noteRow);
+    });
+    await onLog.flush();
+    expect(selectRow).toEqual([1]);
+    onLog.renderer.destroy();
+  });
+
+  test("the entry selection stays visible, dimmed, from the day list", async () => {
+    const { captureCharFrame, captureSpans, goToTab, press, renderer } =
+      await mount(100, 30, darkConfig());
+
+    await goToTab("journal");
+    const row = rowOf(captureCharFrame(), "Shipped the opentui port");
+    const lines = captureCharFrame().split("\n");
+    // The rail marks the entry's first line, the timestamp above the body.
+    expect(lines[row - 1]).toContain("┃");
+
+    const dimmed = spanWith(captureSpans(), "Shipped the opentui port");
+    expect(hexOf(dimmed.bg)).toBe(mix(theme.selectionBg, theme.bg, 0.45));
+
+    await press("l");
+    const focused = spanWith(captureSpans(), "Shipped the opentui port");
+    expect(hexOf(focused.bg)).toBe(theme.selectionBg);
+    renderer.destroy();
+  });
+
+  test("journal empty states use the shared placeholder", async () => {
+    const days = await mountComponent(
+      <NoteList
+        theme={theme}
+        cfg={defaultConfig()}
+        notes={[]}
+        selected={0}
+        focused
+        onSelect={() => {}}
+      />,
+    );
+    expect(days.captureCharFrame()).toContain("✎");
+    expect(days.captureCharFrame()).toContain("No journal notes yet");
+    expect(days.captureCharFrame()).toContain("Press a to write about today");
+    days.renderer.destroy();
+
+    const entries = await mountComponent(
+      <EntryList
+        theme={theme}
+        cfg={defaultConfig()}
+        note={null}
+        selected={0}
+        focused={false}
+        onSelect={() => {}}
+      />,
+    );
+    expect(entries.captureCharFrame()).toContain("✎");
+    expect(entries.captureCharFrame()).toContain("Nothing selected");
+    entries.renderer.destroy();
+  });
+
+  test("the day row counts its entries in words", async () => {
+    const one = await mount();
+    await one.goToTab("journal");
+    expect(one.captureCharFrame()).toContain("1 entry");
+    expect(one.captureCharFrame()).not.toContain("1 entries");
+    one.renderer.destroy();
+
+    const two = await mount(100, 30, defaultConfig(), (d) => {
+      d.addJournalEntry("Second entry");
+    });
+    await two.goToTab("journal");
+    expect(two.captureCharFrame()).toContain("2 entries");
+    two.renderer.destroy();
+  });
+
+  test("journal entries render markdown like descriptions do", async () => {
+    const { captureCharFrame, goToTab, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (d) => {
+        d.addJournalEntry("Read **Dune** tonight");
+      },
+    );
+
+    await goToTab("journal");
+    expect(captureCharFrame()).toContain("Read Dune tonight");
+    expect(captureCharFrame()).not.toContain("**");
+    renderer.destroy();
+  });
+
+  test("the subtask meter snaps when another task is selected", async () => {
+    const { captureCharFrame, press, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (d) => {
+        const plan = newTask({ title: "Plan it" });
+        d.tasks.create(plan);
+        d.tasks.addSubtask(plan.id, "Outline");
+        d.tasks.addSubtask(plan.id, "Review");
+        const ship = newTask({ title: "Ship it" });
+        d.tasks.create(ship);
+        d.tasks.addSubtask(ship.id, "Build");
+        d.tasks.addSubtask(ship.id, "Release");
+        for (const st of d.tasks.getById(ship.id)!.subtasks) {
+          d.toggleSubtask(st.id);
+        }
+      },
+    );
+
+    expect(captureCharFrame()).toContain("████████████████  2/2");
+
+    await press("j");
+    // No easing from the previous task's 2/2: the meter is empty at once.
+    expect(captureCharFrame()).toContain("░░░░░░░░░░░░░░░░  0/2");
     renderer.destroy();
   });
 });
