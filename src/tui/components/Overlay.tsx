@@ -15,6 +15,9 @@ interface OverlayProps {
   accent?: string;
   footer?: string;
   onBackdropClick?: () => void;
+  /** The ✕ button; falls back to onBackdropClick so plain dialogs stay
+   * one-handler. Forms pass both so the scrim can be stricter than ✕. */
+  onClose?: () => void;
   children?: ReactNode;
 }
 
@@ -34,6 +37,7 @@ export function Overlay({
   accent,
   footer,
   onBackdropClick,
+  onClose,
   children,
 }: OverlayProps) {
   const entrance = useEntrance();
@@ -95,7 +99,7 @@ export function Overlay({
           ) : (
             <box flexGrow={1} />
           )}
-          <box onMouseDown={onBackdropClick} paddingLeft={1}>
+          <box onMouseDown={onClose ?? onBackdropClick} paddingLeft={1}>
             <text fg={theme.textMuted}>✕</text>
           </box>
         </box>
@@ -116,7 +120,7 @@ export function Overlay({
             paddingRight={2}
             backgroundColor={theme.surfaceAlt}
           >
-            <text fg={theme.textMuted} truncate>
+            <text fg={theme.textMuted} wrapMode="none" truncate>
               {footer}
             </text>
           </box>

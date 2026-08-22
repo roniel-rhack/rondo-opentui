@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { defaultConfig } from "../src/core/config/config.ts";
 import { openMemory } from "../src/core/database/db.ts";
 import { Minute } from "../src/core/duration.ts";
+import { RecurFreq } from "../src/core/task/recur.ts";
 import { newTask } from "../src/core/task/store.ts";
 import { Priority, Status } from "../src/core/task/task.ts";
 import { GoTime } from "../src/core/time.ts";
@@ -1194,6 +1195,271 @@ describe("TUI review 3 — header and focus", () => {
 
     await press("f");
     expect(captureCharFrame().split("\n")[0]).toContain("next: Focus 0m");
+    renderer.destroy();
+  });
+});
+
+describe("TUI review 3 — task form and settings", () => {
+  const DUE_PREVIEW = "Mon, Jan 02";
+
+  /** Rows of the frame from the overlay title down to its footer line. */
+  function overlayRows(frame: string): string[] {
+    const lines = frame.split("\n");
+    const top = lines.findIndex((l) => l.includes("New task"));
+    const bottom = lines.findIndex((l, i) => i > top && l.includes("esc cancel"));
+    expect(top).toBeGreaterThan(0);
+    expect(bottom).toBeGreaterThan(top);
+    return lines.slice(top, bottom + 1);
+  }
+
+  test("80×24: the compact form keeps every field, chip and the footer", async () => {
+    const { captureCharFrame, press, renderer } = await mount(80, 24);
+
+    await press("a");
+    const frame = captureCharFrame();
+    const rows = overlayRows(frame);
+    const text = rows.join("\n");
+    for (const label of ["Title", "Description", "Due date", "Tags", "Priority", "Repeats"]) {
+      expect(text).toContain(label);
+    }
+    for (const chip of ["today", "tomorrow", "+1w", "#work"]) {
+      expect(text).toContain(chip);
+    }
+    for (const option of ["Low", "Medium", "High", "Urgent", "None", "Week"]) {
+      expect(text).toContain(option);
+    }
+    // The footer already says how to save, so the buttons row is gone.
+    expect(text).not.toContain("Save");
+    expect(text).toContain("enter (title) / ctrl+s save · tab field · esc cancel");
+    // The overlay ends above the status bar: nothing runs off-screen.
+    const bottom = frame.split("\n").findIndex((l) => l.includes("esc cancel"));
+    expect(bottom).toBeLessThan(23);
+    // Priority and Repeats share a row, each in its own frame.
+    const priorityRow = rows.findIndex((l) => l.includes("Priority"));
+    expect(rows[priorityRow]).toContain("Repeats");
+    renderer.destroy();
+  });
+
+  test("60×20: the compact form still fits with an error shown", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount(60, 20);
+
+    await press("a");
+    await type("Tiny");
+    await press("TAB");
+    await press("TAB");
+    await type("31/12/2026");
+    await press("s", { ctrl: true });
+
+    const frame = captureCharFrame();
+    const text = overlayRows(frame).join("\n");
+    expect(text).toContain("Due date must be");
+    for (const label of ["Title", "Description", "Due date", "Tags", "Priority", "Repeats"]) {
+      expect(text).toContain(label);
+    }
+    expect(text).toContain("tomorrow");
+    expect(text).toContain("◂ Low ▸");
+    expect(text).toContain("◂ None ▸");
+    renderer.destroy();
+  });
+
+  test("below 80 columns the segmented controls become clickable steppers", async () => {
+    const { captureCharFrame, press, type, click, data, renderer } = await mount(70, 24);
+
+    await press("a");
+    await type("Stepped");
+    const lines = captureCharFrame().split("\n");
+    const row = lines.findIndex((l) => l.includes("◂ Low ▸"));
+    expect(row).toBeGreaterThan(0);
+    const left = lines[row]!.indexOf("◂ Low");
+    const right = lines[row]!.indexOf("▸", left);
+
+    await click(right, row);
+    expect(captureCharFrame()).toContain("◂ Medium ▸");
+
+    await click(left, row);
+    expect(captureCharFrame()).toContain("◂ Low ▸");
+
+    await click(right, row);
+    await press("s", { ctrl: true });
+    const created = data.listTasks().find((t) => t.title === "Stepped")!;
+    expect(created.priority).toBe(Priority.Medium);
+    renderer.destroy();
+  });
+
+  test("wide terminals keep the segmented controls on one row", async () => {
+    const { captureCharFrame, press, renderer } = await mount(100, 30);
+
+    await press("a");
+    const lines = captureCharFrame().split("\n");
+    const row = lines.find((l) => l.includes("Urgent"));
+    expect(row).toBeDefined();
+    for (const option of ["Low", "Medium", "High", "Urgent", "None", "Day", "Week", "Month", "Year"]) {
+      expect(row).toContain(option);
+    }
+    expect(captureCharFrame()).not.toContain("◂");
+    renderer.destroy();
+  });
+
+  test("a click on the scrim closes a pristine form but keeps a typed one", async () => {
+    const { captureCharFrame, press, type, click, data, renderer } = await mount(100, 30);
+
+    await press("a");
+    expect(captureCharFrame()).toContain("New task");
+    await click(1, 5);
+    expect(captureCharFrame()).not.toContain("New task");
+
+    await press("a");
+    await type("Half typed");
+    await click(1, 5);
+    expect(captureCharFrame()).toContain("New task");
+    expect(captureCharFrame()).toContain("Half typed");
+
+    // The close button and escape still discard.
+    const lines = captureCharFrame().split("\n");
+    const titleRow = lines.findIndex((l) => l.includes("New task"));
+    await click(lines[titleRow]!.indexOf("✕"), titleRow);
+    expect(captureCharFrame()).not.toContain("New task");
+
+    await press("a");
+    await type("Half typed again");
+    await press("ESCAPE");
+    expect(captureCharFrame()).not.toContain("New task");
+    expect(data.listTasks().some((t) => t.title.startsWith("Half typed"))).toBe(false);
+    renderer.destroy();
+  });
+
+  test("a click on the scrim closes pristine settings but keeps changed ones", async () => {
+    const previousHome = process.env.RONDO_HOME;
+    process.env.RONDO_HOME = mkdtempSync(join(tmpdir(), "rondo-settings-"));
+    const { captureCharFrame, press, click, data, renderer } = await mount(100, 30);
+
+    await press("P");
+    expect(captureCharFrame()).toContain("Work duration (min)");
+    await click(1, 5);
+    expect(captureCharFrame()).not.toContain("Work duration (min)");
+
+    await press("P");
+    await press("l");
+    await click(1, 5);
+    expect(captureCharFrame()).toContain("Work duration (min)");
+
+    await press("ESCAPE");
+    expect(captureCharFrame()).not.toContain("Work duration (min)");
+    expect(data.cfg.focus.workDuration).toBe(25);
+
+    renderer.destroy();
+    if (previousHome === undefined) delete process.env.RONDO_HOME;
+    else process.env.RONDO_HOME = previousHome;
+  });
+
+  test("ctrl+s saves the settings like enter does", async () => {
+    const previousHome = process.env.RONDO_HOME;
+    process.env.RONDO_HOME = mkdtempSync(join(tmpdir(), "rondo-settings-"));
+    const { captureCharFrame, press, data, renderer } = await mount(100, 30);
+
+    await press("P");
+    expect(captureCharFrame()).toContain(
+      "↑↓ field · ←→ / space change · enter / ctrl+s save · esc cancel",
+    );
+    await press("l");
+    await press("s", { ctrl: true });
+
+    expect(data.cfg.focus.workDuration).toBe(26);
+    expect(captureCharFrame()).toContain("Settings saved");
+
+    renderer.destroy();
+    if (previousHome === undefined) delete process.env.RONDO_HOME;
+    else process.env.RONDO_HOME = previousHome;
+  });
+
+  test("the task form names its save keys once, in the footer", async () => {
+    const { captureCharFrame, press, renderer } = await mount(100, 30);
+
+    await press("a");
+    const frame = captureCharFrame();
+    expect(frame).toContain("enter (title) / ctrl+s save · tab field · esc cancel");
+    expect(frame).not.toContain("tab move");
+    expect(frame.split("ctrl+s save")).toHaveLength(2);
+    renderer.destroy();
+  });
+
+  test("the due field previews the parsed date while typing", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount(100, 30);
+
+    await press("a");
+    await type("Preview me");
+    await press("TAB");
+    await press("TAB");
+    await type("tomorrow");
+    const tomorrow = GoTime.now().addDate(0, 0, 1).format(DUE_PREVIEW);
+    expect(captureCharFrame()).toContain(`→ ${tomorrow}`);
+
+    for (let i = 0; i < "tomorrow".length; i++) await press("BACKSPACE");
+    await type("31/12");
+    expect(captureCharFrame()).toContain("→ invalid");
+    expect(captureCharFrame()).not.toContain("Due date must be");
+    renderer.destroy();
+  });
+
+  test("the compact form previews the due date in the frame title", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount(80, 24);
+
+    await press("a");
+    await press("TAB");
+    await press("TAB");
+    await type("+1w");
+    const week = GoTime.now().addDate(0, 0, 7).format(DUE_PREVIEW);
+    expect(captureCharFrame()).toContain(`Due date → ${week}`);
+    renderer.destroy();
+  });
+
+  test("quick-add tokens in the title preview and then fill the fields", async () => {
+    const { captureCharFrame, press, type, data, renderer } = await mount(100, 30);
+
+    await press("a");
+    expect(captureCharFrame()).toContain("What needs doing?  #tag @tomorrow !3 ~w");
+    await type("Ship it #infra @tomorrow !3 ~w");
+    const tomorrow = GoTime.now().addDate(0, 0, 1);
+    expect(captureCharFrame()).toContain(
+      `→ #infra · ${tomorrow.format(DUE_PREVIEW)} · High · weekly`,
+    );
+
+    await press("RETURN");
+    const created = data.listTasks().find((t) => t.title === "Ship it")!;
+    expect(created).toBeDefined();
+    expect(created.tags).toEqual(["infra"]);
+    expect(created.priority).toBe(Priority.High);
+    expect(created.recurFreq).toBe(RecurFreq.Weekly);
+    expect(created.dueDate?.format("2006-01-02")).toBe(tomorrow.format("2006-01-02"));
+    expect(captureCharFrame()).not.toContain("#infra @tomorrow");
+    renderer.destroy();
+  });
+
+  test("quick-add tags merge with the tag field and existing tags when editing", async () => {
+    const { captureCharFrame, press, type, data, renderer } = await mount(100, 30);
+
+    // Second row is "Write the report", which already carries #work.
+    await press("j");
+    await press("e");
+    expect(captureCharFrame()).toContain("Edit task");
+    expect(captureCharFrame()).toContain("Write the report");
+    await type(" #infra #work");
+    await press("s", { ctrl: true });
+
+    const task = data.listTasks().find((t) => t.title === "Write the report")!;
+    expect(task.tags).toEqual(["work", "infra"]);
+    expect(task.priority).toBe(Priority.High);
+    renderer.destroy();
+  });
+
+  test("a title made only of tokens is still rejected as empty", async () => {
+    const { captureCharFrame, press, type, data, renderer } = await mount(100, 30);
+
+    await press("a");
+    await type("#infra !2");
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("Title is required");
+    expect(data.listTasks().some((t) => t.tags.includes("infra"))).toBe(false);
     renderer.destroy();
   });
 });
