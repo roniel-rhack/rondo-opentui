@@ -130,7 +130,14 @@ export function SettingsOverlay({
     setDraft({ ...draft, theme: next });
   };
 
+  // A stray click on the scrim only closes the dialog while nothing changed.
+  const pristine = JSON.stringify(draft) === JSON.stringify(cfg);
+
   useKeyboard((key: KeyEvent) => {
+    if (key.ctrl && key.name === "s") {
+      onSave(draft);
+      return;
+    }
     switch (key.name) {
       case "escape":
         onCancel();
@@ -209,11 +216,12 @@ export function SettingsOverlay({
     <Overlay
       theme={theme}
       title="Settings"
-      width={58}
+      width={70}
       screenWidth={screenWidth}
       screenHeight={screenHeight}
-      footer="↑↓ field · ←→ / space change · enter save · esc cancel"
-      onBackdropClick={onCancel}
+      footer="↑↓ field · ←→ / space change · enter / ctrl+s save · esc cancel"
+      onBackdropClick={pristine ? onCancel : undefined}
+      onClose={onCancel}
     >
       <box flexDirection="column" paddingTop={1}>
         {NUMBER_FIELDS.map((f, i) =>
