@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { RGBA } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +14,9 @@ import { GoTime } from "../src/core/time.ts";
 import { initTheme } from "../src/core/ui/colors.ts";
 import { App } from "../src/tui/app.tsx";
 import { RondoData } from "../src/tui/data.ts";
-import { TABS, type TabId } from "../src/tui/state.ts";
+import { StatusBar, TagBar } from "../src/tui/components/Panels.tsx";
+import { TABS, type Hint, type TabId } from "../src/tui/state.ts";
+import { mix, tuiTheme } from "../src/tui/theme.ts";
 
 initTheme(true);
 
@@ -61,8 +64,12 @@ function seed(cfg = defaultConfig()): RondoData {
   return data;
 }
 
-async function mount(width = 100, height = 30, cfg = defaultConfig()) {
-  const data = seed(cfg);
+async function mount(
+  width = 100,
+  height = 30,
+  cfg = defaultConfig(),
+  data = seed(cfg),
+) {
   // Wrapping the initial mount keeps React's act() warnings out of the output.
   let setup!: Awaited<ReturnType<typeof testRender>>;
   await act(async () => {
@@ -183,8 +190,9 @@ describe("TUI rendering", () => {
 
     const frame = captureCharFrame();
     expect(frame).toContain("Keyboard & mouse");
+    // Global keys come first, so the palette is visible before any scrolling.
+    expect(frame).toContain("Command palette");
     expect(frame).toContain("Move selection");
-    expect(frame).toContain("Add subtask");
     renderer.destroy();
   });
 
@@ -1194,6 +1202,327 @@ describe("TUI review 3 — header and focus", () => {
 
     await press("f");
     expect(captureCharFrame().split("\n")[0]).toContain("next: Focus 0m");
+    renderer.destroy();
+  });
+});
+
+describe("TUI review 3 — panels", () => {
+  const theme = tuiTheme(true);
+
+  function seedMany(count: number, cfg = defaultConfig()): RondoData {
+    const data = seed(cfg);
+    for (let i = 0; i < count; i++) {
+      data.tasks.create(newTask({ title: `Filler task ${i}` }));
+    }
+    return data;
+  }
+
+  function seedTags(): RondoData {
+    const data = new RondoData(openMemory(), defaultConfig());
+    const names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"];
+    for (const tag of names) {
+      data.tasks.create(newTask({ title: `Tagged ${tag}`, tags: [tag] }));
+    }
+    return data;
+  }
+
+  async function mountComponent(node: ReactNode, width: number, height: number) {
+    let setup!: Awaited<ReturnType<typeof testRender>>;
+    await act(async () => {
+      setup = await testRender(node, { width, height });
+    });
+    await setup.flush();
+    return setup;
+  }
+
+  const ints = (hex: string) => RGBA.fromHex(hex).toInts();
+
+  /** The chrome every task tab shows: brand, help hint and the toast hairline. */
+  function expectChrome(frame: string, width: number, height: number) {
+    const lines = frame.split("\n");
+    expect(lines[0]).toContain("RonDO");
+    expect(lines[height - 2]).toContain(" ?  help ");
+    expect(lines[height - 1]).toBe("▁".repeat(width));
+  }
+
+  /** The hint row sits right above the toast hairline. */
+  const statusRow = (frame: string, height: number) => frame.split("\n")[height - 2]!;
+
+  test("1.1: 40 tasks keep the header, hints and hairline at 80×24 and 100×30", async () => {
+    for (const [w, h] of [[80, 24], [100, 30]] as const) {
+      const { captureCharFrame, renderer } = await mount(w, h, defaultConfig(), seedMany(40));
+      expectChrome(captureCharFrame(), w, h);
+      renderer.destroy();
+    }
+  });
+
+  test("1.1: / and # at 60×20 keep tabs and clock with 12 tasks", async () => {
+    const { captureCharFrame, press, renderer } = await mount(60, 20, defaultConfig(), seedMany(12));
+
+    // 60 columns is the compact header: brand glyph, text tabs and the clock.
+    await press("#");
+    let header = captureCharFrame().split("\n")[0]!;
+    expect(header).toContain("◆");
+    expect(header).toContain("Active");
+    expect(header).toContain("Journal");
+    expect(header).toMatch(/\d\d:\d\d\s*$/);
+    expect(captureCharFrame()).toContain("tags ");
+
+    await press("/");
+    header = captureCharFrame().split("\n")[0]!;
+    expect(header).toContain("◆");
+    expect(header).toContain("Active");
+    expect(header).toContain("Journal");
+    expect(header).toMatch(/\d\d:\d\d\s*$/);
+    expect(captureCharFrame()).toContain("⌕");
+    renderer.destroy();
+  });
+
+  test("1.4: the status bar never garbles and keeps ? and ^k", async () => {
+    for (const w of [80, 84, 90, 50]) {
+      const { captureCharFrame, renderer } = await mount(w, 24);
+      const status = statusRow(captureCharFrame(), 24);
+      expect(status).toContain(" ?  help ");
+      expect(status).toContain(" ^k  ");
+      expect(status).toContain(" ⇅ Created");
+      expect(status).not.toMatch(/[a-z]⇅/);
+      expect(status).not.toContain("spacestatus");
+      expect(status.length).toBeLessThanOrEqual(w);
+      renderer.destroy();
+    }
+  });
+
+  test("1.4: 80 columns still show the primary hints with labels", async () => {
+    const { captureCharFrame, renderer } = await mount(80, 24);
+    const status = statusRow(captureCharFrame(), 24);
+    expect(status).toContain(" a  add ");
+    expect(status).toContain(" space  status ");
+    expect(status).toContain(" ^k  palette ");
+    renderer.destroy();
+  });
+
+  test("1.9: eight tags fit at 60 and 80 columns with a +N chip", async () => {
+    const data = seedTags();
+    const tasks = data.tasks.list();
+    const cases: [number, string[], number][] = [
+      [80, ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"], 2],
+      [60, ["alpha", "bravo", "charlie", "delta"], 4],
+    ];
+    for (const [w, shown, hidden] of cases) {
+      let more = 0;
+      const setup = await mountComponent(
+        <TagBar
+          theme={theme}
+          tasks={tasks}
+          activeTag={null}
+          width={w}
+          onSelect={() => {}}
+          onMore={() => more++}
+        />,
+        w,
+        3,
+      );
+      const row = setup.captureCharFrame().split("\n")[0]!;
+      expect(row).toContain("tags ");
+      expect(row).toContain(" all ");
+      for (const tag of shown) expect(row).toContain(` #${tag} 1 `);
+      expect(row).not.toContain("golf");
+      expect(row).not.toContain("hotel");
+      expect(row).toContain(` +${hidden} `);
+      expect(row.length).toBeLessThanOrEqual(w);
+
+      await act(async () => {
+        await setup.mockMouse.click(row.indexOf(`+${hidden}`), 0);
+      });
+      await setup.flush();
+      expect(more).toBe(1);
+      setup.renderer.destroy();
+    }
+  });
+
+  test("1.9: a trimmed active tag moves to the front instead of vanishing", async () => {
+    const setup = await mountComponent(
+      <TagBar
+        theme={theme}
+        tasks={seedTags().tasks.list()}
+        activeTag="hotel"
+        width={60}
+        onSelect={() => {}}
+      />,
+      60,
+      3,
+    );
+    const row = setup.captureCharFrame().split("\n")[0]!;
+    expect(row).toContain(" all  #hotel 1  #alpha 1 ");
+    expect(row).toContain(" +4 ");
+    setup.renderer.destroy();
+  });
+
+  test("5.7: the tag bar sits on the surface color", async () => {
+    const setup = await mountComponent(
+      <TagBar
+        theme={theme}
+        tasks={seedTags().tasks.list()}
+        activeTag={null}
+        width={80}
+        onSelect={() => {}}
+      />,
+      80,
+      3,
+    );
+    const spans = setup.captureSpans().lines[0]!.spans;
+    const prefix = spans.find((s) => s.text.includes("tags"));
+    expect(prefix).toBeDefined();
+    expect(prefix!.bg.toInts()).toEqual(ints(theme.surface));
+    setup.renderer.destroy();
+  });
+
+  test("5.4: status-bar keycaps and the sort segment are clickable", async () => {
+    const calls: string[] = [];
+    const hints: Hint[] = [
+      { key: "a", label: "add", run: () => calls.push("add") },
+      { key: "?", label: "help", run: () => calls.push("help") },
+    ];
+    const setup = await mountComponent(
+      <StatusBar
+        theme={theme}
+        hints={hints}
+        message={null}
+        messageKind="info"
+        messageId={0}
+        messageMs={3000}
+        sort="created"
+        width={80}
+        onCycleSort={() => calls.push("sort")}
+      />,
+      80,
+      3,
+    );
+    const row = setup.captureCharFrame().split("\n")[0]!;
+
+    await act(async () => {
+      await setup.mockMouse.click(row.indexOf(" a ") + 1, 0);
+    });
+    await setup.flush();
+    expect(calls).toEqual(["add"]);
+
+    await act(async () => {
+      await setup.mockMouse.click(row.indexOf("⇅ Created") + 2, 0);
+    });
+    await setup.flush();
+    expect(calls).toEqual(["add", "sort"]);
+    setup.renderer.destroy();
+  });
+
+  test("5.4: a hovered keycap lights up", async () => {
+    const setup = await mountComponent(
+      <StatusBar
+        theme={theme}
+        hints={[{ key: "a", label: "add", run: () => {} }]}
+        message={null}
+        messageKind="info"
+        messageId={0}
+        messageMs={3000}
+        width={40}
+      />,
+      40,
+      3,
+    );
+    const keycap = () =>
+      setup.captureSpans().lines[0]!.spans.find((s) => s.text.trim() === "a")!;
+    expect(keycap().bg.toInts()).toEqual(ints(theme.surfaceAlt));
+
+    const row = setup.captureCharFrame().split("\n")[0]!;
+    await act(async () => {
+      await setup.mockMouse.moveTo(row.indexOf(" a ") + 1, 0);
+    });
+    await setup.flush();
+    expect(keycap().bg.toInts()).toEqual(
+      ints(mix(theme.surfaceAlt, theme.accentSoft, 0.5)),
+    );
+    setup.renderer.destroy();
+  });
+
+  test("5.16: help lists the final key map with GLOBAL first and a scroll footer", async () => {
+    const { captureCharFrame, press, renderer } = await mount(80, 24);
+    await press("?");
+    const frame = captureCharFrame();
+    expect(frame.indexOf("GLOBAL")).toBeGreaterThan(-1);
+    expect(frame.indexOf("GLOBAL")).toBeLessThan(frame.indexOf("NAVIGATION"));
+    expect(frame).toContain("↑↓ / j k scroll · esc close");
+    expect(frame).not.toContain("Cycle status");
+
+    // The tail is below the fold at 24 rows; j scrolls down to it.
+    expect(frame).not.toContain("Clear filter");
+    for (let i = 0; i < 40; i++) await press("j");
+    const scrolled = captureCharFrame();
+    expect(scrolled).toContain("VIEWS & FILTERS");
+    expect(scrolled).toContain("Clear filter");
+    renderer.destroy();
+  });
+
+  test("5.16: wide terminals show the help in two columns", async () => {
+    const { captureCharFrame, press, renderer } = await mount(120, 40);
+    await press("?");
+    const frame = captureCharFrame();
+    const lines = frame.split("\n");
+    const global = lines.find((l) => l.includes("GLOBAL"))!;
+    expect(global).toContain("TASKS");
+    for (const label of [
+      "Mark done / reopen",
+      "Start / stop",
+      "Add entry to today",
+      "Add entry to selected day",
+      "Tag picker",
+      "Cycle view",
+      "Toggle subtask",
+      "Block on",
+      "Undo",
+      "Reload",
+      "Density",
+    ]) {
+      expect(frame).toContain(label);
+    }
+    renderer.destroy();
+  });
+
+  test("5.19: statistics break logged time down by today and the last week", async () => {
+    const data = seed();
+    const task = data.tasks.list()[0]!;
+    data.logTime(task.id, 30 * Minute, "");
+    const now = GoTime.utcNow();
+    data.tasks.restoreTimeLog(task.id, 60 * Minute, "", now.addDate(0, 0, -3));
+    data.tasks.restoreTimeLog(task.id, 120 * Minute, "", now.addDate(0, 0, -30));
+
+    const { captureCharFrame, press, renderer } = await mount(100, 30, defaultConfig(), data);
+    await press("S");
+    expect(captureCharFrame()).toMatch(/logged\s+3h 30m · today 30m · 7d 1h 30m/);
+    renderer.destroy();
+  });
+
+  test("1.8: statistics clamp to the screen and scroll", async () => {
+    const { captureCharFrame, press, renderer } = await mount(60, 20);
+    await press("S");
+    const lines = captureCharFrame().split("\n");
+    const footer = lines.findIndex((l) => l.includes("esc close"));
+    expect(footer).toBeGreaterThan(0);
+    expect(footer).toBeLessThan(19);
+    expect(lines[footer + 1]).toContain("╰");
+    expect(lines[2]).toContain("Statistics");
+    renderer.destroy();
+  });
+
+  test("A3: statistics meters fill in after opening", async () => {
+    const { captureCharFrame, press, renderer } = await mount(100, 30);
+    await press("S");
+    const doneRow = () =>
+      captureCharFrame().split("\n").find((l) => l.includes("done "))!;
+    const before = (doneRow().match(/█/g) ?? []).length;
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    const after = (doneRow().match(/█/g) ?? []).length;
+    expect(after).toBeGreaterThan(before);
     renderer.destroy();
   });
 });

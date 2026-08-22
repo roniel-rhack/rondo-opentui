@@ -1049,13 +1049,14 @@ export function App({ data, onQuit }: AppProps) {
           theme={theme}
           tasks={tasks}
           activeTag={filters.tag}
+          width={width}
           onSelect={(tag) => setFilters((f) => ({ ...f, tag }))}
         />
       ) : null}
 
-      <box flexGrow={1} flexDirection="row">
+      <box flexGrow={1} flexDirection="row" minHeight={0}>
         {compact && panel === 1 ? null : (
-        <box width={compact ? undefined : listWidth} flexGrow={compact ? 1 : 0} flexDirection="column">
+        <box width={compact ? undefined : listWidth} flexGrow={compact ? 1 : 0} flexDirection="column" minHeight={0}>
           <Panel
             theme={theme}
             title={isJournal ? "Journal" : "Tasks"}
@@ -1134,7 +1135,7 @@ export function App({ data, onQuit }: AppProps) {
         )}
 
         {compact && panel === 0 ? null : (
-          <box flexGrow={1} flexDirection="column">
+          <box flexGrow={1} flexDirection="column" minHeight={0}>
             <Panel
               theme={theme}
               title={detailTitle}
@@ -1176,12 +1177,13 @@ export function App({ data, onQuit }: AppProps) {
 
       <StatusBar
         theme={theme}
-        hints={hints}
+        hints={hints.map(([key, label]) => ({ key, label }))}
         message={toast?.message ?? null}
         messageKind={toast?.kind ?? "info"}
         messageId={toast?.id ?? 0}
         messageMs={toastDuration(toast?.kind ?? "info")}
         sort={isJournal ? undefined : sort}
+        onCycleSort={isJournal ? undefined : cycleSort}
         width={width}
       />
 

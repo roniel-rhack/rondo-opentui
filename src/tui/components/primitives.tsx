@@ -163,14 +163,31 @@ interface KeyHintProps {
 
 /** Keycap + action pair shown in the status bar and overlay footers. */
 export function KeyHint({ theme, keyLabel, action, onPress }: KeyHintProps) {
+  const [hover, setHover] = useState(false);
+  const lit = hover && onPress !== undefined;
   return (
-    <box flexDirection="row" paddingRight={1} onMouseDown={onPress}>
-      <box backgroundColor={theme.surfaceAlt} paddingLeft={1} paddingRight={1}>
+    <box
+      flexDirection="row"
+      flexShrink={0}
+      paddingRight={1}
+      onMouseOver={() => setHover(true)}
+      onMouseOut={() => setHover(false)}
+      onMouseDown={onPress}
+    >
+      <box
+        backgroundColor={
+          lit ? mix(theme.surfaceAlt, theme.accentSoft, 0.5) : theme.surfaceAlt
+        }
+        paddingLeft={1}
+        paddingRight={1}
+      >
         <text fg={theme.accent} attributes={TextAttributes.BOLD}>
           {keyLabel}
         </text>
       </box>
-      <text fg={theme.textMuted}>{` ${action}`}</text>
+      {action !== "" ? (
+        <text fg={lit ? theme.text : theme.textMuted}>{` ${action}`}</text>
+      ) : null}
     </box>
   );
 }
