@@ -3,8 +3,17 @@ import { useKeyboard } from "@opentui/react";
 import { useState, type ReactNode } from "react";
 import { Status, type Task } from "../../core/task/task.ts";
 import { formatDuration, totalDuration } from "../../core/task/timelog.ts";
+import { GoTime } from "../../core/time.ts";
 import { computeStreak } from "../../core/ui/stats.ts";
-import { collectTags, SORT_LABELS, type SortKey } from "../state.ts";
+import {
+  collectTags,
+  fitHints,
+  fitTags,
+  loggedSince,
+  SORT_LABELS,
+  type Hint,
+  type SortKey,
+} from "../state.ts";
 import { mix, priorityColors, type TuiTheme } from "../theme.ts";
 import { useCountdown } from "../hooks/useTween.ts";
 import { Overlay } from "./Overlay.tsx";
@@ -50,7 +59,10 @@ interface TagBarProps {
   theme: TuiTheme;
   tasks: readonly Task[];
   activeTag: string | null;
+  width: number;
   onSelect: (tag: string | null) => void;
+  /** Pressed on the "+N" chip when not every tag fits; opens the tag picker. */
+  onMore?: () => void;
 }
 
 function TagChip({
@@ -67,6 +79,7 @@ function TagChip({
   const [hover, setHover] = useState(false);
   return (
     <box
+      flexShrink={0}
       paddingLeft={1}
       paddingRight={1}
       backgroundColor={
@@ -79,6 +92,7 @@ function TagChip({
       <text
         fg={active ? theme.textOn : hover ? theme.text : theme.textDim}
         attributes={active ? TextAttributes.BOLD : undefined}
+        wrapMode="none"
       >
         {label}
       </text>
@@ -87,26 +101,48 @@ function TagChip({
 }
 
 /** Horizontal, clickable tag filter chips. */
-export function TagBar({ theme, tasks, activeTag, onSelect }: TagBarProps) {
+export function TagBar({
+  theme,
+  tasks,
+  activeTag,
+  width,
+  onSelect,
+  onMore,
+}: TagBarProps) {
   const tags = collectTags(tasks);
   if (tags.length === 0) return null;
+
+  const available = width - 2;
+  let { shown, hidden } = fitTags(tags, available);
+  // An active tag that got trimmed would be a filter the user cannot see or
+  // clear, so only then does it move to the front.
+  const active = tags.find((t) => t.tag === activeTag);
+  if (active && !shown.includes(active)) {
+    ({ shown, hidden } = fitTags(
+      [active, ...tags.filter((t) => t !== active)],
+      available,
+    ));
+  }
 
   return (
     <box
       flexDirection="row"
+      flexShrink={0}
       height={1}
       paddingLeft={1}
       paddingRight={1}
-      backgroundColor={mix(theme.surface, theme.bg, 0.4)}
+      backgroundColor={theme.surface}
     >
-      <text fg={theme.textMuted}>{"tags "}</text>
+      <text fg={theme.textMuted} flexShrink={0}>
+        {"tags "}
+      </text>
       <TagChip
         theme={theme}
         label="all"
         active={activeTag === null}
         onPress={() => onSelect(null)}
       />
-      {tags.slice(0, 12).map(({ tag, count }) => (
+      {shown.map(({ tag, count }) => (
         <TagChip
           key={tag}
           theme={theme}
@@ -115,6 +151,14 @@ export function TagBar({ theme, tasks, activeTag, onSelect }: TagBarProps) {
           onPress={() => onSelect(activeTag === tag ? null : tag)}
         />
       ))}
+      {hidden > 0 ? (
+        <TagChip
+          theme={theme}
+          label={`+${hidden}`}
+          active={false}
+          onPress={() => onMore?.()}
+        />
+      ) : null}
     </box>
   );
 }
@@ -173,7 +217,7 @@ export function SearchBar({
 
 interface StatusBarProps {
   theme: TuiTheme;
-  hints: [string, string][];
+  hints: readonly Hint[];
   message: string | null;
   messageKind: "info" | "success" | "error";
   /** Changes whenever a new message arrives, restarting the timer bar. */
@@ -182,7 +226,35 @@ interface StatusBarProps {
   messageMs: number;
   /** Omitted where sorting does not apply, e.g. the journal. */
   sort?: SortKey;
+  /** Clicking the sort segment cycles the order, like `o`. */
+  onCycleSort?: () => void;
   width: number;
+}
+
+function SortSegment({
+  theme,
+  label,
+  onPress,
+}: {
+  theme: TuiTheme;
+  label: string;
+  onPress?: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  const lit = hover && onPress !== undefined;
+  return (
+    <box
+      flexShrink={0}
+      paddingLeft={1}
+      onMouseOver={() => setHover(true)}
+      onMouseOut={() => setHover(false)}
+      onMouseDown={onPress}
+    >
+      <text fg={lit ? theme.text : theme.textMuted} wrapMode="none">
+        {label}
+      </text>
+    </box>
+  );
 }
 
 /** Bottom bar: key hints, or the active toast with a draining timer bar. */
@@ -194,6 +266,7 @@ export function StatusBar({
   messageId,
   messageMs,
   sort,
+  onCycleSort,
   width,
 }: StatusBarProps) {
   const remaining = useCountdown(message ? messageId : null, messageMs, width);
@@ -208,10 +281,13 @@ export function StatusBar({
   const icon =
     messageKind === "error" ? "✕" : messageKind === "success" ? "✓" : "•";
 
-  const shown = width < 84 ? hints.slice(0, 4) : hints;
+  const sortLabel = sort ? `⇅ ${SORT_LABELS[sort]}` : "";
+  // Horizontal padding, then the sort segment and its leading gap.
+  const available = width - 2 - (sort ? sortLabel.length + 1 : 0);
+  const shown = fitHints(hints, available);
 
   return (
-    <box flexDirection="column">
+    <box flexDirection="column" flexShrink={0}>
       <box
         flexDirection="row"
         height={1}
@@ -220,8 +296,8 @@ export function StatusBar({
         backgroundColor={theme.surface}
       >
         {message ? (
-          <box flexDirection="row" flexGrow={1}>
-            <text fg={tone} attributes={TextAttributes.BOLD}>
+          <box flexDirection="row" flexGrow={1} minWidth={0}>
+            <text fg={tone} attributes={TextAttributes.BOLD} flexShrink={0}>
               {`${icon} `}
             </text>
             <text fg={theme.text} flexGrow={1} wrapMode="none" truncate>
@@ -229,14 +305,20 @@ export function StatusBar({
             </text>
           </box>
         ) : (
-          <box flexDirection="row" flexGrow={1}>
-            {shown.map(([key, label]) => (
-              <KeyHint key={key} theme={theme} keyLabel={key} action={label} />
+          <box flexDirection="row" flexGrow={1} minWidth={0}>
+            {shown.map((hint) => (
+              <KeyHint
+                key={hint.key}
+                theme={theme}
+                keyLabel={hint.key}
+                action={hint.label}
+                onPress={hint.run}
+              />
             ))}
           </box>
         )}
         {sort ? (
-          <text fg={theme.textMuted}>{`⇅ ${SORT_LABELS[sort]}`}</text>
+          <SortSegment theme={theme} label={sortLabel} onPress={onCycleSort} />
         ) : null}
       </box>
 
@@ -263,16 +345,48 @@ interface HelpOverlayProps {
   onClose: () => void;
 }
 
-const HELP_SECTIONS: [string, [string, string][]][] = [
+type HelpSection = [string, [string, string][]];
+
+// Global first: a first-time user at 80×24 sees help, palette and quit
+// without scrolling. The rows describe the key map the app routes.
+const HELP_SECTIONS: HelpSection[] = [
+  [
+    "Global",
+    [
+      ["?", "This help"],
+      ["^k", "Command palette"],
+      ["1 2 3 4", "Active / Done / All / Journal"],
+      ["u", "Undo"],
+      ["R", "Reload from disk"],
+      ["T", "Light / dark theme"],
+      ["P", "Settings"],
+      ["S", "Statistics"],
+      ["f", "Start / stop focus"],
+      ["z", "Density"],
+      ["< >, drag", "Resize panels"],
+      ["q, ctrl+c", "Quit (asks while focus runs)"],
+    ],
+  ],
   [
     "Navigation",
     [
-      ["j / k, ↑ / ↓", "Move selection"],
-      ["h / l, 1 / 2", "Switch panel"],
-      ["tab / shift+tab", "Switch view"],
-      ["g / G", "Jump to first / last"],
-      ["click", "Select row, toggle status glyph"],
-      ["wheel", "Scroll lists"],
+      ["j k ↑ ↓", "Move selection"],
+      ["g G Home End", "First / last"],
+      ["PgUp PgDn ^u ^d", "Page up / down"],
+      ["h l ← →", "Switch panel"],
+      ["enter", "Open detail / edit row"],
+      ["esc", "Back to list, then clear filter"],
+      ["click, wheel", "Select row, scroll"],
+    ],
+  ],
+  [
+    "Detail panel",
+    [
+      ["space", "Toggle subtask"],
+      ["enter, e", "Edit subtask, note or log"],
+      ["d", "Delete row"],
+      ["t n L", "Add subtask / note / log"],
+      ["h, esc", "Back to list"],
     ],
   ],
   [
@@ -280,43 +394,82 @@ const HELP_SECTIONS: [string, [string, string][]][] = [
     [
       ["a", "Add task"],
       ["e", "Edit task"],
-      ["d", "Delete task"],
-      ["space / s", "Cycle status"],
+      ["d", "Delete (undo with u)"],
+      ["space", "Mark done / reopen"],
+      ["s", "Start / stop"],
+      ["+ -", "Priority up / down"],
+      ["@", "Due date"],
+      ["#", "Tag picker"],
       ["t", "Add subtask"],
       ["n", "Add note"],
       ["L", "Log time (\"45m note\")"],
-      ["o", "Cycle sort order"],
-      ["/", "Filter tasks"],
-      ["#", "Toggle tag bar"],
+      ["b B", "Block on… / remove blocker…"],
+      ["m", "Mark for bulk action"],
+      ["o, F1 F2 F3", "Sort: cycle, created, due, priority"],
     ],
   ],
   [
     "Journal",
     [
       ["a", "Add entry to today"],
+      ["A", "Add entry to selected day"],
       ["e", "Edit entry"],
       ["d", "Delete entry"],
+      ["x", "Hide note"],
+      ["H", "Show hidden"],
       ["/", "Search entries"],
-      ["H", "Show hidden notes"],
-      ["x", "Hide / restore note"],
     ],
   ],
   [
-    "Global",
+    "Views & filters",
     [
-      ["ctrl+k", "Command palette"],
-      ["P", "Settings"],
-      ["< / >, drag", "Resize panels"],
-      ["F1 / F2 / F3", "Sort by created / due / priority"],
-      ["f", "Start / stop focus timer"],
-      ["S", "Statistics"],
-      ["u", "Undo last delete"],
-      ["T", "Toggle light / dark"],
-      ["?", "This help"],
-      ["q", "Quit"],
+      ["/", "Filter: text, #tag, !high,"],
+      ["", "due:today, is:blocked"],
+      ["v", "Cycle view: all, today, overdue,"],
+      ["", "week, blocked"],
+      ["#", "Tag picker"],
+      ["esc", "Clear filter"],
     ],
   ],
 ];
+
+// Balanced for the wide layout: 29 and 32 rows.
+const HELP_COLUMNS: [HelpSection[], HelpSection[]] = [
+  [HELP_SECTIONS[0]!, HELP_SECTIONS[1]!, HELP_SECTIONS[5]!],
+  [HELP_SECTIONS[3]!, HELP_SECTIONS[2]!, HELP_SECTIONS[4]!],
+];
+
+function HelpColumn({
+  theme,
+  sections,
+  keyWidth,
+}: {
+  theme: TuiTheme;
+  sections: readonly HelpSection[];
+  keyWidth: number;
+}) {
+  return (
+    <box flexDirection="column" minWidth={0}>
+      {sections.map(([section, rows]) => (
+        <box key={section} flexDirection="column" paddingBottom={1}>
+          <text fg={theme.accent} attributes={TextAttributes.BOLD}>
+            {section.toUpperCase()}
+          </text>
+          {rows.map(([key, label], i) => (
+            <box key={`${i}-${key}`} flexDirection="row">
+              <text fg={theme.text} flexShrink={0}>
+                {key.padEnd(keyWidth)}
+              </text>
+              <text fg={theme.textDim} wrapMode="none" truncate>
+                {label}
+              </text>
+            </box>
+          ))}
+        </box>
+      ))}
+    </box>
+  );
+}
 
 export function HelpOverlay({
   theme,
@@ -330,32 +483,34 @@ export function HelpOverlay({
     }
   });
 
+  const twoColumns = screenWidth >= 110;
+
   return (
     <Overlay
       theme={theme}
       title="Keyboard & mouse"
       subtitle="everything is clickable too"
-      width={74}
-      height={Math.min(screenHeight - 2, 30)}
+      width={twoColumns ? 104 : 74}
+      height={Math.min(screenHeight - 2, twoColumns ? 36 : 30)}
       screenWidth={screenWidth}
       screenHeight={screenHeight}
-      footer="esc close"
+      footer="↑↓ / j k scroll · esc close"
       onBackdropClick={onClose}
     >
       <scrollbox focused flexGrow={1} contentOptions={{ flexDirection: "column" }}>
-        {HELP_SECTIONS.map(([section, rows]) => (
-          <box key={section} flexDirection="column" paddingBottom={1}>
-            <text fg={theme.accent} attributes={TextAttributes.BOLD}>
-              {section.toUpperCase()}
-            </text>
-            {rows.map(([key, label]) => (
-              <box key={key} flexDirection="row">
-                <text fg={theme.text}>{key.padEnd(18)}</text>
-                <text fg={theme.textDim}>{label}</text>
-              </box>
-            ))}
+        {twoColumns ? (
+          <box flexDirection="row">
+            <box flexGrow={1} flexBasis={0} minWidth={0}>
+              <HelpColumn theme={theme} sections={HELP_COLUMNS[0]} keyWidth={16} />
+            </box>
+            <box width={2} flexShrink={0} />
+            <box flexGrow={1} flexBasis={0} minWidth={0}>
+              <HelpColumn theme={theme} sections={HELP_COLUMNS[1]} keyWidth={13} />
+            </box>
           </box>
-        ))}
+        ) : (
+          <HelpColumn theme={theme} sections={HELP_SECTIONS} keyWidth={17} />
+        )}
       </scrollbox>
     </Overlay>
   );
@@ -391,7 +546,7 @@ function StatRow({
   return (
     <box flexDirection="row">
       <text fg={theme.textDim}>{label.padEnd(12)}</text>
-      <AnimatedMeter theme={theme} ratio={ratio} width={width} color={color} />
+      <AnimatedMeter theme={theme} ratio={ratio} width={width} color={color} animateIn />
       <text fg={theme.text}>{` ${value}`}</text>
     </box>
   );
@@ -425,6 +580,14 @@ export function StatsOverlay({
   const maxPriority = Math.max(...byPriority, 1);
   const logged = tasks.reduce((sum, t) => sum + totalDuration(t.timeLogs), 0);
 
+  // Same windows as `timelog summary --days`: today since local midnight,
+  // the week as a rolling seven days.
+  const now = GoTime.now();
+  const { year, month, day } = now.parts;
+  const midnight = GoTime.date(year, month, day, 0, 0, 0, 0, "local");
+  const loggedToday = loggedSince(tasks, midnight);
+  const loggedWeek = loggedSince(tasks, now.addDate(0, 0, -7));
+
   const { current, longest, data } = computeStreak(completionsByDay, 30);
   const maxDay = Math.max(...data, 1);
   const spark = data
@@ -437,12 +600,17 @@ export function StatsOverlay({
       title="Statistics"
       subtitle={`${total} tasks · ${formatDuration(logged)} logged`}
       width={66}
+      height={Math.min(screenHeight - 2, 24)}
       screenWidth={screenWidth}
       screenHeight={screenHeight}
       footer="esc close"
       onBackdropClick={onClose}
     >
-      <box flexDirection="column" paddingTop={1}>
+      <scrollbox
+        focused
+        flexGrow={1}
+        contentOptions={{ flexDirection: "column", paddingTop: 1 }}
+      >
         <text fg={theme.accent} attributes={TextAttributes.BOLD}>
           TASKS
         </text>
@@ -478,9 +646,13 @@ export function StatsOverlay({
         />
         <box flexDirection="row">
           <text fg={theme.textDim}>{"streak      "}</text>
-          <text fg={theme.text}>{`${streakDays} days`}</text>
-          <text fg={theme.textDim}>{"    logged  "}</text>
-          <text fg={theme.text}>{formatDuration(logged)}</text>
+          <text fg={theme.text}>{`${streakDays} ${streakDays === 1 ? "day" : "days"}`}</text>
+        </box>
+        <box flexDirection="row">
+          <text fg={theme.textDim}>{"logged      "}</text>
+          <text fg={theme.text}>
+            {`${formatDuration(logged)} · today ${formatDuration(loggedToday)} · 7d ${formatDuration(loggedWeek)}`}
+          </text>
         </box>
 
         <box height={1} />
@@ -488,7 +660,7 @@ export function StatsOverlay({
         <text fg={theme.textMuted}>
           {`last 30 days · current ${current}d · longest ${longest}d`}
         </text>
-      </box>
+      </scrollbox>
     </Overlay>
   );
 }

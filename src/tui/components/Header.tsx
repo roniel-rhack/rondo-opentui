@@ -215,7 +215,7 @@ export const Header = memo(function Header({
   const showIdle = spare >= idle.length + 1;
 
   return (
-    <box flexDirection="column">
+    <box flexDirection="column" flexShrink={0}>
       <box
         flexDirection="row"
         alignItems="center"
