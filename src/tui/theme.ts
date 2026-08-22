@@ -108,7 +108,8 @@ const LIGHT: TuiTheme = {
   danger: "#be123c",
   info: "#1d4ed8",
 
-  selectionBg: "#dde7f5",
+  // 1.27:1 on bg and 1.16 against hover; #dde7f5 measured 1.18 and 1.07.
+  selectionBg: "#d3dff2",
   hoverBg: "#eaeef7",
   scrim: "#c9cfdd",
   track: "#dde2ec",

@@ -24,6 +24,7 @@ import { usePomodoro } from "./hooks/usePomodoro.ts";
 import {
   SORT_LABELS,
   TABS,
+  blockedIds,
   clampIndex,
   collectTags,
   emptyFilters,
@@ -1021,6 +1022,9 @@ export function App({ data, onQuit }: AppProps) {
     : "Details";
 
   // The panel footer carries the identity, so the body never repeats it.
+  // Blockers may sit on another tab, so the set comes from every task.
+  const blocked = useMemo(() => blockedIds(tasks), [tasks]);
+
   const detailSubtitle =
     !isJournal && selectedTask
       ? `#${selectedTask.id} · updated ${formatDateTime(cfg, selectedTask.updatedAt)}`
@@ -1103,6 +1107,12 @@ export function App({ data, onQuit }: AppProps) {
                 selected={taskIndex}
                 focused={panel === 0}
                 width={listWidth}
+                height={height}
+                dense={height < 30}
+                sort={sort}
+                now={GoTime.now()}
+                blocked={blocked}
+                marked={undefined}
                 onSelect={setTaskIndex}
                 onActivate={() => setPanel(0)}
                 onToggleStatus={(index) => cycleStatus(shown[index] ?? null)}
