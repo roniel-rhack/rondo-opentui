@@ -277,10 +277,14 @@ export function formatDetailDate(cfg: Config, t: GoTime): string {
   return t.format(`Mon, ${cfg.dateFormat}`);
 }
 
+/** Directory holding config.json (~/.todo-app unless RONDO_HOME is set). */
+export function configDir(): string {
+  return process.env.RONDO_HOME ?? join(homedir(), ".todo-app");
+}
+
 /** Absolute path to the config file (~/.todo-app/config.json by default). */
 export function configPath(): string {
-  const dir = process.env.RONDO_HOME ?? join(homedir(), ".todo-app");
-  return join(dir, "config.json");
+  return join(configDir(), "config.json");
 }
 
 export function toJSON(cfg: Config): ConfigJSON {

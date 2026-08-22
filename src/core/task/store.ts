@@ -457,6 +457,22 @@ export class TaskStore {
     );
   }
 
+  deleteTimeLog(id: number): void {
+    this.db.run(`DELETE FROM time_logs WHERE id = ?`, [id]);
+  }
+
+  restoreTimeLog(
+    taskId: number,
+    duration: Duration,
+    note: string,
+    loggedAt: GoTime,
+  ): void {
+    this.db.run(
+      `INSERT INTO time_logs (task_id, duration, note, logged_at) VALUES (?,?,?,?)`,
+      [taskId, duration, note, loggedAt.format(RFC3339)],
+    );
+  }
+
   listTimeLogs(taskId: number): TimeLog[] {
     const rows = this.db
       .query(
@@ -587,13 +603,18 @@ export class TaskStore {
     );
   }
 
-  /** Re-inserts a previously deleted task with its tags and subtasks. */
+  /**
+   * Re-inserts a deleted task under its original id with everything the
+   * cascade removed: tags, subtasks, notes, time logs and both dependency
+   * directions. Dependencies whose other task is gone are skipped.
+   */
   restore(t: Task): void {
     const dueStr = t.dueDate ? t.dueDate.format(DateOnly) : null;
     this.db.transaction(() => {
-      const res = this.db.run(
-        `INSERT INTO tasks (title, description, status, priority, due_date, created_at, updated_at, recur_freq, recur_interval, metadata) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      this.db.run(
+        `INSERT INTO tasks (id, title, description, status, priority, due_date, created_at, updated_at, recur_freq, recur_interval, metadata) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
         [
+          t.id,
           t.title,
           t.description,
           t.status,
@@ -606,7 +627,6 @@ export class TaskStore {
           marshalMetadata(t.metadata),
         ],
       );
-      t.id = Number(res.lastInsertRowid);
       this.saveTags(t.id, t.tags);
       for (const st of t.subtasks) {
         this.db.run(
@@ -614,7 +634,23 @@ export class TaskStore {
           [t.id, st.title, st.completed ? 1 : 0, st.position],
         );
       }
+      for (const n of t.notes) this.restoreNote(t.id, n.body, n.createdAt);
+      for (const l of t.timeLogs) {
+        this.restoreTimeLog(t.id, l.duration, l.note, l.loggedAt);
+      }
+      for (const bid of t.blockedByIds) {
+        if (this.exists(bid)) this.setBlocker(t.id, bid);
+      }
+      for (const tid of t.blocksIds) {
+        if (this.exists(tid)) this.setBlocker(tid, t.id);
+      }
     })();
+  }
+
+  private exists(id: number): boolean {
+    return (
+      this.db.query(`SELECT 1 FROM tasks WHERE id = ?`).get(id) !== null
+    );
   }
 
   restoreSubtask(
