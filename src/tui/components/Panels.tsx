@@ -196,7 +196,7 @@ export function StatusBar({
   sort,
   width,
 }: StatusBarProps) {
-  const remaining = useCountdown(message ? messageId : null, messageMs);
+  const remaining = useCountdown(message ? messageId : null, messageMs, width);
 
   const tone =
     messageKind === "error"

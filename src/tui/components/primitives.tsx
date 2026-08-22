@@ -1,7 +1,7 @@
 import { TextAttributes } from "@opentui/core";
 import { useState, type ReactNode } from "react";
 import { meter, mix, type TuiTheme } from "../theme.ts";
-import { useTween } from "../hooks/useTween.ts";
+import { useEntrance, useTween } from "../hooks/useTween.ts";
 
 interface ChipProps {
   theme: TuiTheme;
@@ -107,10 +107,22 @@ export function Meter({
   );
 }
 
+interface AnimatedMeterProps extends MeterProps {
+  /** Fill from empty on mount, for meters that appear with an overlay. */
+  animateIn?: boolean;
+  /** When this changes the meter snaps instead of easing from the old value. */
+  resetKey?: unknown;
+}
+
 /** Meter that eases towards its target, so progress changes read as motion. */
-export function AnimatedMeter(props: MeterProps) {
-  const ratio = useTween(props.ratio, 260);
-  return <Meter {...props} ratio={ratio} />;
+export function AnimatedMeter({
+  animateIn = false,
+  resetKey,
+  ...props
+}: AnimatedMeterProps) {
+  const ratio = useTween(props.ratio, 260, resetKey);
+  const entrance = useEntrance(animateIn ? 260 : 0);
+  return <Meter {...props} ratio={ratio * entrance} />;
 }
 
 interface SectionProps {

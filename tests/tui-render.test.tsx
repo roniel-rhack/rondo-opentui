@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../src/core/config/config.ts";
 import { openMemory } from "../src/core/database/db.ts";
+import { Minute } from "../src/core/duration.ts";
 import { newTask } from "../src/core/task/store.ts";
 import { Priority, Status } from "../src/core/task/task.ts";
 import { GoTime } from "../src/core/time.ts";
@@ -30,8 +31,8 @@ console.error = (...args: unknown[]) => {
   consoleError(...args);
 };
 
-function seed(): RondoData {
-  const data = new RondoData(openMemory(), defaultConfig());
+function seed(cfg = defaultConfig()): RondoData {
+  const data = new RondoData(openMemory(), cfg);
 
   const write = newTask({
     title: "Write the report",
@@ -60,8 +61,8 @@ function seed(): RondoData {
   return data;
 }
 
-async function mount(width = 100, height = 30) {
-  const data = seed();
+async function mount(width = 100, height = 30, cfg = defaultConfig()) {
+  const data = seed(cfg);
   // Wrapping the initial mount keeps React's act() warnings out of the output.
   let setup!: Awaited<ReturnType<typeof testRender>>;
   await act(async () => {
@@ -903,10 +904,10 @@ describe("TUI review fixes", () => {
   });
 
   test("the header names the task under focus", async () => {
-    const { captureCharFrame, press, renderer } = await mount();
+    const { captureCharFrame, press, renderer } = await mount(120);
 
     await press("f");
-    expect(captureCharFrame().split("\n")[0]).toContain("Refactor");
+    expect(captureCharFrame().split("\n")[0]).toContain("Refactor the parser");
     renderer.destroy();
   });
 
@@ -1078,6 +1079,121 @@ describe("TUI review 2 fixes", () => {
 
     await press("a");
     expect(captureCharFrame()).toContain("Week");
+    renderer.destroy();
+  });
+});
+
+describe("TUI review 3 — header and focus", () => {
+  const TAB_LABELS = TABS.map((t) => t.label);
+
+  /** A header row is intact when nothing in it was squeezed or clipped. */
+  function expectIntact(header: string) {
+    expect(header).toContain("RonDO");
+    for (const label of TAB_LABELS) expect(header).toContain(label);
+    expect(header).toMatch(/\d\d:\d\d\s*$/);
+  }
+
+  /** A 60 ms work session; breaks keep their real length so they outlive a test. */
+  function fastFocus() {
+    const cfg = defaultConfig();
+    cfg.focus.workDuration = 0.001;
+    cfg.focus.sound = false;
+    return cfg;
+  }
+
+  test("80 columns: the header keeps brand, tabs and timer during a session", async () => {
+    const { captureCharFrame, press, renderer } = await mount(80, 24);
+
+    expectIntact(captureCharFrame().split("\n")[0]!);
+
+    await press("f");
+    const header = captureCharFrame().split("\n")[0]!;
+    expectIntact(header);
+    expect(header).toMatch(/Focus \d\d:\d\d/);
+    expect(header.length).toBeLessThanOrEqual(80);
+    renderer.destroy();
+  });
+
+  test("digit keycaps sit before each tab label", async () => {
+    const { captureCharFrame, renderer } = await mount();
+    const header = captureCharFrame().split("\n")[0]!;
+
+    TABS.forEach((tab, index) => {
+      expect(header).toContain(`${index + 1} ${tab.label}`);
+    });
+    renderer.destroy();
+  });
+
+  test("compact header keeps text labels and drops the icons", async () => {
+    const { captureCharFrame, renderer } = await mount(60, 20);
+    const header = captureCharFrame().split("\n")[0]!;
+
+    expect(header).toContain("Active 2");
+    expect(header).toContain("Done 1");
+    expect(header).toContain("All 3");
+    expect(header).toContain("Journal 1");
+    expect(header).not.toContain("◐");
+    expect(header).not.toContain("▤");
+    expect(header).not.toContain("1 Active");
+    renderer.destroy();
+  });
+
+  test("idle header shows what f would start", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    expect(captureCharFrame().split("\n")[0]).toContain("next: Focus 25m");
+
+    await press("f");
+    const running = captureCharFrame().split("\n")[0]!;
+    expect(running).not.toContain("next:");
+    expect(running).toMatch(/Focus (25:00|24:59)/);
+    renderer.destroy();
+  });
+
+  test("a finished focus session is logged to its task", async () => {
+    const { captureCharFrame, press, data, renderer, flush } = await mount(
+      100,
+      30,
+      fastFocus(),
+    );
+
+    await press("f");
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 150));
+    });
+    await flush();
+
+    const frame = captureCharFrame();
+    expect(frame).toContain("Focus complete");
+    expect(frame).toContain("logged to #3");
+    const logs = data.tasks.getById(3)!.timeLogs;
+    expect(logs).toHaveLength(1);
+    expect(logs[0]!.note).toBe("focus session");
+    expect(logs[0]!.duration).toBe(0.001 * Minute);
+    // The detail panel picked the log up without a manual reload.
+    expect(frame).toContain("focus session");
+    renderer.destroy();
+  });
+
+  test("stopping a queued break re-arms focus, not another break", async () => {
+    const { captureCharFrame, press, renderer, flush } = await mount(
+      100,
+      30,
+      fastFocus(),
+    );
+
+    await press("f");
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 150));
+    });
+    await flush();
+    expect(captureCharFrame().split("\n")[0]).toContain("next: Break 5m");
+
+    await press("f");
+    expect(captureCharFrame().split("\n")[0]).toMatch(/Break 0(5:00|4:59)/);
+
+    await press("f");
+    expect(captureCharFrame().split("\n")[0]).toContain("next: Focus 0m");
     renderer.destroy();
   });
 });
