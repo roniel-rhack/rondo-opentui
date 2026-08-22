@@ -15,10 +15,24 @@ interface OverlayProps {
   accent?: string;
   footer?: string;
   onBackdropClick?: () => void;
-  /** The ✕ button; falls back to onBackdropClick so plain dialogs stay
-   * one-handler. Forms pass both so the scrim can be stricter than ✕. */
+  /** Handler for the ✕ button; defaults to `onBackdropClick`. Data-entry
+   * overlays keep ✕ working while the backdrop stops closing them. */
   onClose?: () => void;
   children?: ReactNode;
+}
+
+/** Status bar rows an auto-height overlay must never paint over. */
+const STATUS_BAR_ROWS = 2;
+
+/** Row where an auto-height overlay starts. */
+export function overlayTop(screenHeight: number): number {
+  return Math.max(Math.floor(screenHeight / 8), 1);
+}
+
+/** Rows available to the body of an auto-height overlay (border, title and
+ * footer already taken out), so list dialogs can size their window. */
+export function overlayBodyRows(screenHeight: number): number {
+  return screenHeight - overlayTop(screenHeight) - STATUS_BAR_ROWS - 4;
 }
 
 /**
@@ -37,7 +51,7 @@ export function Overlay({
   accent,
   footer,
   onBackdropClick,
-  onClose,
+  onClose = onBackdropClick,
   children,
 }: OverlayProps) {
   const entrance = useEntrance();
@@ -50,7 +64,12 @@ export function Overlay({
     : undefined;
   const top = boxHeight
     ? Math.max(Math.floor((screenHeight - boxHeight) / 2), 0)
-    : Math.max(Math.floor(screenHeight / 8), 1);
+    : overlayTop(screenHeight);
+  // Auto-height overlays grow with their content; the clamp keeps a long one
+  // from running past the status bar instead of painting over it.
+  const maxHeight = boxHeight
+    ? undefined
+    : Math.max(screenHeight - top - STATUS_BAR_ROWS, 4);
 
   return (
     <>
@@ -74,6 +93,8 @@ export function Overlay({
         top={top}
         width={boxWidth}
         height={boxHeight}
+        maxHeight={maxHeight}
+        overflow="hidden"
         zIndex={101}
         border
         borderStyle="rounded"
@@ -99,7 +120,7 @@ export function Overlay({
           ) : (
             <box flexGrow={1} />
           )}
-          <box onMouseDown={onClose ?? onBackdropClick} paddingLeft={1}>
+          <box onMouseDown={onClose} paddingLeft={1}>
             <text fg={theme.textMuted}>✕</text>
           </box>
         </box>

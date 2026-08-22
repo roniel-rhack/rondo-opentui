@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,12 +9,20 @@ import { openMemory } from "../src/core/database/db.ts";
 import { Minute } from "../src/core/duration.ts";
 import { RecurFreq } from "../src/core/task/recur.ts";
 import { newTask } from "../src/core/task/store.ts";
-import { Priority, Status } from "../src/core/task/task.ts";
+import { Priority, Status, type Task } from "../src/core/task/task.ts";
 import { GoTime } from "../src/core/time.ts";
 import { initTheme } from "../src/core/ui/colors.ts";
 import { App } from "../src/tui/app.tsx";
+import {
+  CommandPalette,
+  ConfirmDialog,
+  PromptDialog,
+  TagPickerDialog,
+  TaskPickerDialog,
+} from "../src/tui/components/Dialogs.tsx";
 import { RondoData } from "../src/tui/data.ts";
 import { TABS, type TabId } from "../src/tui/state.ts";
+import { tuiTheme } from "../src/tui/theme.ts";
 
 initTheme(true);
 
@@ -1460,6 +1468,373 @@ describe("TUI review 3 — task form and settings", () => {
     await press("RETURN");
     expect(captureCharFrame()).toContain("Title is required");
     expect(data.listTasks().some((t) => t.tags.includes("infra"))).toBe(false);
+    renderer.destroy();
+  });
+});
+
+describe("TUI review 3 — dialogs", () => {
+  const theme = tuiTheme(true);
+
+  /** Mounts a single component, for dialogs whose wiring lands in the app
+   * later than the component itself. */
+  async function mountNode(node: ReactNode, width = 80, height = 24) {
+    let setup!: Awaited<ReturnType<typeof testRender>>;
+    await act(async () => {
+      setup = await testRender(node, { width, height });
+    });
+    await setup.flush();
+
+    const press = async (key: string, modifiers?: { ctrl?: boolean }) => {
+      await act(async () => {
+        setup.mockInput.pressKey(key, modifiers);
+        if (key === "ESCAPE") await new Promise((r) => setTimeout(r, 120));
+      });
+      await setup.flush();
+    };
+    const type = async (text: string) => {
+      await act(async () => {
+        await setup.mockInput.typeText(text);
+      });
+      await setup.flush();
+    };
+    const click = async (x: number, y: number) => {
+      await act(async () => {
+        await setup.mockMouse.click(x, y);
+      });
+      await setup.flush();
+    };
+    return { press, type, click, ...setup };
+  }
+
+  /** Line index and column of the first occurrence of `needle`. */
+  function locate(frame: string, needle: string): { x: number; y: number } {
+    const lines = frame.split("\n");
+    const y = lines.findIndex((l) => l.includes(needle));
+    expect(y).toBeGreaterThanOrEqual(0);
+    return { x: lines[y]!.indexOf(needle), y };
+  }
+
+  function manyTasks(n: number): Task[] {
+    const data = new RondoData(openMemory(), defaultConfig());
+    for (let i = 1; i <= n; i++) {
+      data.tasks.create(newTask({ title: `Task number ${i}` }));
+    }
+    return data.listTasks();
+  }
+
+  test("60×20: the palette stops above the status bar", async () => {
+    const { captureCharFrame, press, renderer } = await mount(60, 20);
+
+    await press("k", { ctrl: true });
+    const lines = captureCharFrame().split("\n");
+
+    expect(lines.join("\n")).toContain("↑↓ move · enter run · esc close");
+    const bottom = lines.findIndex((l) => l.includes("╰"));
+    expect(bottom).toBeLessThanOrEqual(17);
+    expect(lines[18]).not.toMatch(/[│╰╯]/);
+    expect(lines[18]).toContain("add");
+    renderer.destroy();
+  });
+
+  test("60×20: the task picker sizes its window to the screen", async () => {
+    const onPick = mock((_id: number) => {});
+    const { captureCharFrame, press, renderer } = await mountNode(
+      <TaskPickerDialog
+        theme={theme}
+        title="Block on"
+        tasks={manyTasks(40)}
+        screenWidth={60}
+        screenHeight={20}
+        onPick={onPick}
+        onClose={() => {}}
+      />,
+      60,
+      20,
+    );
+
+    let lines = captureCharFrame().split("\n");
+    expect(lines.join("\n")).toContain("↑↓ move · enter pick · esc close");
+    // 20 rows: the overlay starts on row 2 and leaves the two status bar rows,
+    // so 12 body rows remain and the field with its padding takes 5 of them.
+    expect(lines.filter((l) => l.includes("Task number")).length).toBe(7);
+    expect(lines[18]).not.toMatch(/[│╰╯]/);
+
+    for (let i = 0; i < 39; i++) await press("n", { ctrl: true });
+    lines = captureCharFrame().split("\n");
+    expect(lines.join("\n")).toContain("Task number 40");
+    expect(lines.join("\n")).toContain("↑↓ move · enter pick · esc close");
+
+    await press("RETURN");
+    expect(onPick).toHaveBeenCalledWith(40);
+    renderer.destroy();
+  });
+
+  test("a prompt shows the error its callback returns", async () => {
+    const { captureCharFrame, press, type, renderer } = await mountNode(
+      <PromptDialog
+        theme={theme}
+        title="Log time"
+        label="Duration"
+        screenWidth={80}
+        screenHeight={24}
+        onSubmit={(value) =>
+          value === "45m" ? undefined : "Invalid duration — try 45m or 1h30m"
+        }
+        onCancel={() => {}}
+      />,
+    );
+
+    await type("later");
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("⚠ Invalid duration — try 45m");
+
+    await type("!");
+    expect(captureCharFrame()).not.toContain("Invalid duration");
+    renderer.destroy();
+  });
+
+  test("a stay-open prompt counts what it added and clears the field", async () => {
+    const submitted: string[] = [];
+    const onCancel = mock(() => {});
+    const { captureCharFrame, press, type, renderer } = await mountNode(
+      <PromptDialog
+        theme={theme}
+        title="New subtask"
+        label="Subtask for #3"
+        stayOpen
+        screenWidth={80}
+        screenHeight={24}
+        onSubmit={(value) => {
+          submitted.push(value);
+        }}
+        onCancel={onCancel}
+      />,
+    );
+
+    expect(captureCharFrame()).toContain("enter add · esc done");
+
+    await type("Collect numbers");
+    await press("RETURN");
+    let frame = captureCharFrame();
+    expect(frame).toContain("1 added · esc done");
+    expect(frame).not.toContain("Collect numbers");
+
+    await type("Draft intro");
+    await press("RETURN");
+    frame = captureCharFrame();
+    expect(frame).toContain("2 added · esc done");
+    expect(submitted).toEqual(["Collect numbers", "Draft intro"]);
+
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("Cannot be empty");
+
+    await press("ESCAPE");
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    renderer.destroy();
+  });
+
+  test("prompt chips answer a key while the field is empty, and clicks", async () => {
+    const submitted: string[] = [];
+    const { captureCharFrame, press, type, click, renderer } = await mountNode(
+      <PromptDialog
+        theme={theme}
+        title="Due date"
+        label="Due for #1"
+        stayOpen
+        chips={[
+          { key: "t", label: "today", value: "today" },
+          { key: "n", label: "none", value: "" },
+        ]}
+        screenWidth={80}
+        screenHeight={24}
+        onSubmit={(value) => {
+          submitted.push(value);
+        }}
+        onCancel={() => {}}
+      />,
+    );
+
+    let frame = captureCharFrame();
+    expect(frame).toContain("t today");
+    expect(frame).toContain("n none");
+
+    await press("t");
+    expect(submitted).toEqual(["today"]);
+    expect(captureCharFrame()).toContain("1 added");
+
+    await type("+3d");
+    await press("t");
+    expect(submitted).toEqual(["today"]);
+    await press("RETURN");
+    expect(submitted).toEqual(["today", "+3dt"]);
+
+    frame = captureCharFrame();
+    const chip = locate(frame, "n none");
+    await click(chip.x + 1, chip.y);
+    expect(submitted).toEqual(["today", "+3dt", ""]);
+    renderer.destroy();
+  });
+
+  test("a stray click on the scrim keeps a half-typed prompt", async () => {
+    const { captureCharFrame, press, type, click, renderer } = await mount();
+
+    await press("t");
+    await type("Half typed");
+    await click(1, 1);
+    let frame = captureCharFrame();
+    expect(frame).toContain("New subtask");
+    expect(frame).toContain("Half typed");
+
+    const cross = locate(frame, "✕");
+    await click(cross.x, cross.y);
+    expect(captureCharFrame()).not.toContain("New subtask");
+
+    await press("t");
+    await click(1, 1);
+    expect(captureCharFrame()).not.toContain("New subtask");
+    renderer.destroy();
+  });
+
+  test("the tag picker lists every tag plus all, and fuzzy-filters", async () => {
+    const onPick = mock((_tag: string | null) => {});
+    const { captureCharFrame, press, type, renderer } = await mountNode(
+      <TagPickerDialog
+        theme={theme}
+        tags={[
+          { tag: "infra", count: 3 },
+          { tag: "work", count: 2 },
+        ]}
+        screenWidth={80}
+        screenHeight={24}
+        onPick={onPick}
+        onClose={() => {}}
+      />,
+    );
+
+    let frame = captureCharFrame();
+    expect(frame).toContain("Filter by tag");
+    expect(frame).toMatch(/┃ all\s+clear filter/);
+    expect(frame).toMatch(/#infra\s+3/);
+    expect(frame).toMatch(/#work\s+2/);
+
+    await press("RETURN");
+    expect(onPick).toHaveBeenLastCalledWith(null);
+
+    await type("wo");
+    frame = captureCharFrame();
+    expect(frame).toContain("#work");
+    expect(frame).not.toContain("#infra");
+    expect(frame).not.toContain("all");
+    await press("RETURN");
+    expect(onPick).toHaveBeenLastCalledWith("work");
+
+    await press("BACKSPACE");
+    await press("BACKSPACE");
+    await press("n", { ctrl: true });
+    await press("n", { ctrl: true });
+    await press("RETURN");
+    expect(onPick).toHaveBeenLastCalledWith("work");
+    renderer.destroy();
+  });
+
+  test("the palette lists matching tasks after the actions", async () => {
+    const onPickTask = mock((_id: number) => {});
+    const onClose = mock(() => {});
+    const ran = mock(() => {});
+    const tasks = seed().listTasks();
+    const { captureCharFrame, press, type, renderer } = await mountNode(
+      <CommandPalette
+        theme={theme}
+        actions={[
+          { id: "task.add", group: "Task", label: "New task", hint: "a", run: ran },
+          { id: "view.sort", group: "View", label: "Cycle sort order", run: ran },
+        ]}
+        tasks={tasks}
+        screenWidth={80}
+        screenHeight={24}
+        onPickTask={onPickTask}
+        onClose={onClose}
+      />,
+    );
+
+    expect(captureCharFrame()).not.toContain("Refactor the parser");
+
+    await type("re");
+    const lines = captureCharFrame().split("\n");
+    const action = lines.findIndex((l) => l.includes("Cycle sort order"));
+    const task = lines.findIndex((l) => l.includes("Refactor the parser"));
+    expect(action).toBeGreaterThanOrEqual(0);
+    expect(task).toBeGreaterThan(action);
+    expect(lines[task]).toMatch(/│ Task\s+#3\s+Refactor the parser/);
+
+    await press("n", { ctrl: true });
+    await press("RETURN");
+    expect(onPickTask).toHaveBeenCalledWith(3);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(ran).not.toHaveBeenCalled();
+    renderer.destroy();
+  });
+
+  test("#id alone finds a task in the palette", async () => {
+    const onPickTask = mock((_id: number) => {});
+    const { captureCharFrame, press, type, renderer } = await mountNode(
+      <CommandPalette
+        theme={theme}
+        actions={[]}
+        tasks={seed().listTasks()}
+        screenWidth={80}
+        screenHeight={24}
+        onPickTask={onPickTask}
+        onClose={() => {}}
+      />,
+    );
+
+    await type("#2");
+    expect(captureCharFrame()).toContain("Buy oat milk");
+    await press("RETURN");
+    expect(onPickTask).toHaveBeenCalledWith(2);
+    renderer.destroy();
+  });
+
+  test("the palette groups actions under headers until a query interleaves them", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
+
+    await press("k", { ctrl: true });
+    let frame = captureCharFrame();
+    expect(frame).toMatch(/│  TASK\s+│/);
+    expect(frame).toMatch(/│  VIEW\s+│/);
+    expect(frame).toMatch(/│    ┃ New task\s+a/);
+    expect(frame).not.toContain("Task     New task");
+
+    for (let i = 0; i < 25; i++) await press("n", { ctrl: true });
+    frame = captureCharFrame();
+    expect(frame).toMatch(/│  APP\s+│/);
+    expect(frame).toContain("Quit");
+
+    await type("sort");
+    frame = captureCharFrame();
+    expect(frame).toMatch(/[│┃] View\s+Cycle sort order/);
+    expect(frame).not.toMatch(/│  VIEW\s+│/);
+    renderer.destroy();
+  });
+
+  test("a confirmation quotes the entry it is about to delete", async () => {
+    const { captureCharFrame, renderer } = await mountNode(
+      <ConfirmDialog
+        theme={theme}
+        title="Delete entry"
+        message="Delete this journal entry?"
+        excerpt="Shipped the opentui port"
+        screenWidth={80}
+        screenHeight={24}
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    const frame = captureCharFrame();
+    expect(frame).toContain("Delete this journal entry?");
+    expect(frame).toContain("“Shipped the opentui port”");
     renderer.destroy();
   });
 });
