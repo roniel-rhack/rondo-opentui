@@ -1,14 +1,18 @@
-import { TextAttributes } from "@opentui/core";
-import { useState } from "react";
+import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
+import {
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type Ref,
+} from "react";
 import {
   formatDate,
+  formatDateShort,
   formatDateTime,
   type Config,
 } from "../../core/config/config.ts";
-import { recurFreqString } from "../../core/task/recur.ts";
-import {
-  RecurFreq,
-} from "../../core/task/recur.ts";
+import { RecurFreq, recurFreqString } from "../../core/task/recur.ts";
 import {
   Status,
   completedSubtasks,
@@ -19,24 +23,36 @@ import {
 import { formatDuration, totalDuration } from "../../core/task/timelog.ts";
 import { GoTime } from "../../core/time.ts";
 import { DueLevel, dueBadge, dueStatus } from "../../core/ui/overdue.ts";
+import { useSmoothScrollIntoView } from "../hooks/useSmoothScroll.ts";
+import { detailRows, type DetailRow } from "../state.ts";
 import { priorityColors, type TuiTheme } from "../theme.ts";
 import {
   AnimatedMeter,
   Chip,
   EmptyState,
+  KeyHint,
   MarkdownText,
   Section,
 } from "./primitives.tsx";
+
+/** Keyboard access to the panel when no row can carry the cursor. */
+export interface TaskDetailHandle {
+  /** Scrolls the panel by `lines`; negative scrolls up. */
+  scrollBy: (lines: number) => void;
+}
 
 interface TaskDetailProps {
   theme: TuiTheme;
   cfg: Config;
   task: Task | null;
   focused: boolean;
-  subtaskIndex: number;
-  onSelectSubtask: (index: number) => void;
-  onToggleSubtask: (index: number) => void;
+  /** Position in `detailRows(task)`: subtasks, then notes, then time logs. */
+  cursor: number;
+  onSelectRow: (index: number) => void;
+  /** Index inside `task.subtasks`, not the unified cursor. */
+  onToggleSubtask: (subIndex: number) => void;
   blockedByTitles: Map<number, string>;
+  ref?: Ref<TaskDetailHandle>;
 }
 
 function Field({
@@ -60,38 +76,71 @@ function Field({
   );
 }
 
+function useRowBackground(theme: TuiTheme, selected: boolean) {
+  const [hover, setHover] = useState(false);
+  return {
+    background: selected
+      ? theme.selectionBg
+      : hover
+        ? theme.hoverBg
+        : undefined,
+    onMouseOver: () => setHover(true),
+    onMouseOut: () => setHover(false),
+  };
+}
+
+function Rail({ theme, selected }: { theme: TuiTheme; selected: boolean }) {
+  return (
+    <text flexShrink={0} fg={selected ? theme.accent : theme.borderSubtle}>
+      {selected ? "┃" : "│"}
+    </text>
+  );
+}
+
 interface SubtaskRowProps {
   theme: TuiTheme;
+  id: string;
   title: string;
   completed: boolean;
   selected: boolean;
-  onPress: () => void;
+  onSelect: () => void;
+  onToggle: () => void;
 }
 
+/** Like a task row: the row selects, only the checkbox toggles. */
 function SubtaskRow({
   theme,
+  id,
   title,
   completed,
   selected,
-  onPress,
+  onSelect,
+  onToggle,
 }: SubtaskRowProps) {
-  const [hover, setHover] = useState(false);
+  const row = useRowBackground(theme, selected);
   return (
     <box
+      id={id}
       flexDirection="row"
-      backgroundColor={
-        selected ? theme.selectionBg : hover ? theme.hoverBg : undefined
-      }
-      onMouseOver={() => setHover(true)}
-      onMouseOut={() => setHover(false)}
-      onMouseDown={onPress}
+      backgroundColor={row.background}
+      onMouseOver={row.onMouseOver}
+      onMouseOut={row.onMouseOut}
+      onMouseDown={onSelect}
     >
-      <text flexShrink={0} fg={selected ? theme.accent : theme.borderSubtle}>
-        {selected ? "┃" : "│"}
-      </text>
-      <text flexShrink={0} fg={completed ? theme.success : theme.textMuted}>
-        {completed ? " ▣ " : " ▢ "}
-      </text>
+      <Rail theme={theme} selected={selected} />
+      <box
+        flexShrink={0}
+        paddingLeft={1}
+        paddingRight={1}
+        onMouseDown={(event) => {
+          event.stopPropagation();
+          onToggle();
+        }}
+      >
+        <text fg={completed ? theme.success : theme.textMuted}>
+          {completed ? "▣" : "▢"}
+        </text>
+      </box>
       <text
         fg={completed ? theme.textMuted : theme.text}
         attributes={completed ? TextAttributes.STRIKETHROUGH : undefined}
@@ -105,30 +154,142 @@ function SubtaskRow({
   );
 }
 
-/** Right panel: everything known about the selected task. */
-export function TaskDetail({
+interface NoteRowProps {
+  theme: TuiTheme;
+  id: string;
+  stamp: string;
+  body: string;
+  selected: boolean;
+  onSelect: () => void;
+}
+
+function NoteRow({ theme, id, stamp, body, selected, onSelect }: NoteRowProps) {
+  const row = useRowBackground(theme, selected);
+  return (
+    <box
+      id={id}
+      flexDirection="row"
+      paddingBottom={1}
+      backgroundColor={row.background}
+      onMouseOver={row.onMouseOver}
+      onMouseOut={row.onMouseOut}
+      onMouseDown={onSelect}
+    >
+      <Rail theme={theme} selected={selected} />
+      <box flexDirection="column" flexGrow={1} paddingLeft={1}>
+        <text fg={selected ? theme.accent : theme.textMuted}>{stamp}</text>
+        <text fg={theme.text} wrapMode="word">
+          {body}
+        </text>
+      </box>
+    </box>
+  );
+}
+
+interface TimeLogRowProps {
+  theme: TuiTheme;
+  id: string;
+  date: string;
+  duration: string;
+  note: string;
+  selected: boolean;
+  onSelect: () => void;
+}
+
+function TimeLogRow({
   theme,
-  cfg,
-  task,
-  focused,
-  subtaskIndex,
-  onSelectSubtask,
-  onToggleSubtask,
-  blockedByTitles,
-}: TaskDetailProps) {
+  id,
+  date,
+  duration,
+  note,
+  selected,
+  onSelect,
+}: TimeLogRowProps) {
+  const row = useRowBackground(theme, selected);
+  return (
+    <box
+      id={id}
+      flexDirection="row"
+      backgroundColor={row.background}
+      onMouseOver={row.onMouseOver}
+      onMouseOut={row.onMouseOut}
+      onMouseDown={onSelect}
+    >
+      <Rail theme={theme} selected={selected} />
+      <text flexShrink={0} fg={theme.textMuted}>{` ${date.padEnd(14)}`}</text>
+      <text flexShrink={0} fg={theme.accent}>
+        {duration}
+      </text>
+      {note !== "" ? (
+        <text fg={theme.textDim} wrapMode="none" truncate>
+          {`  ${note}`}
+        </text>
+      ) : null}
+    </box>
+  );
+}
+
+/** Renderable id of a detail row, the target of the cursor scroll. */
+export function detailRowId(row: DetailRow): string {
+  return `${row.kind}-${row.id}`;
+}
+
+/** Right panel: everything known about the selected task. */
+export function TaskDetail({ task, ref, ...props }: TaskDetailProps) {
   if (!task) {
     return (
       <EmptyState
-        theme={theme}
+        theme={props.theme}
         icon="◇"
         title="Nothing selected"
         hint="Pick a task on the left to see its details"
       />
     );
   }
+  return <TaskBody {...props} task={task} ref={ref} />;
+}
+
+function TaskBody({
+  theme,
+  cfg,
+  task,
+  focused,
+  cursor,
+  onSelectRow,
+  onToggleSubtask,
+  blockedByTitles,
+  ref,
+}: Omit<TaskDetailProps, "task"> & { task: Task }) {
+  const scrollRef = useRef<ScrollBoxRenderable | null>(null);
+  const rows = detailRows(task);
+  const current = rows[cursor];
+  const isSelected = (row: DetailRow) =>
+    focused && current !== undefined && detailRowId(row) === detailRowId(current);
+
+  // Another task starts at its title; the cursor row remembered from the
+  // previous one must not leave the panel scrolled to the bottom.
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [task.id]);
+
+  useSmoothScrollIntoView(
+    scrollRef,
+    focused && current ? detailRowId(current) : undefined,
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      scrollBy: (lines) => scrollRef.current?.scrollBy({ x: 0, y: lines }),
+    }),
+    [],
+  );
 
   const now = GoTime.now();
-  const level = task.dueDate ? dueStatus(task.dueDate, now) : DueLevel.None;
+  const done = task.status === Status.Done;
+  // A finished task is never overdue, whatever its date says.
+  const level =
+    task.dueDate && !done ? dueStatus(task.dueDate, now) : DueLevel.None;
   const dueColor =
     level === DueLevel.Overdue
       ? theme.danger
@@ -136,7 +297,6 @@ export function TaskDetail({
         ? theme.warning
         : theme.text;
   const logged = totalDuration(task.timeLogs);
-  const done = task.status === Status.Done;
   const subtaskRatio =
     task.subtasks.length > 0
       ? completedSubtasks(task) / task.subtasks.length
@@ -148,9 +308,23 @@ export function TaskDetail({
       ? theme.accent
       : theme.textDim;
 
+  const hasDescription = task.description !== "";
+  const hasSubtasks = task.subtasks.length > 0;
+  const hasNotes = task.notes.length > 0;
+  const hasLogs = task.timeLogs.length > 0;
+  const affordances: [string, string][] = [];
+  if (!hasDescription) affordances.push(["e", "describe"]);
+  if (!hasSubtasks) affordances.push(["t", "step"]);
+  if (!hasNotes) affordances.push(["n", "note"]);
+  if (!hasLogs) affordances.push(["L", "time"]);
+
   return (
     <scrollbox
-      focused={focused}
+      ref={scrollRef}
+      // Never focused: a focused scrollbox answers j/k itself and would move
+      // the viewport on top of the cursor. The cursor row is scrolled into
+      // view instead, and `scrollBy` covers tasks with no rows at all.
+      focused={false}
       flexGrow={1}
       scrollX={false}
       scrollbarOptions={{
@@ -179,13 +353,20 @@ export function TaskDetail({
       </box>
 
       <box flexDirection="row" paddingTop={1}>
-        <Chip
-          theme={theme}
-          label={statusString(task.status)}
-          color={statusColor}
-          filled={done}
-          bold
-        />
+        <box flexDirection="row" flexShrink={0}>
+          <Chip
+            theme={theme}
+            label={statusString(task.status)}
+            color={statusColor}
+            filled={done}
+            bold
+          />
+          {done ? (
+            <text fg={theme.textMuted}>
+              {`· ${formatDateShort(cfg, task.updatedAt, now)}`}
+            </text>
+          ) : null}
+        </box>
         <box width={1} />
         <Chip
           theme={theme}
@@ -212,14 +393,23 @@ export function TaskDetail({
 
       <box paddingTop={1} flexDirection="column">
         {task.dueDate ? (
-          <Field
-            theme={theme}
-            label="Due"
-            value={`${formatDate(cfg, task.dueDate)}${
-              dueBadge(level) ? `  ${dueBadge(level)}` : ""
-            }`}
-            color={dueColor}
-          />
+          done ? (
+            <Field
+              theme={theme}
+              label="Was due"
+              value={formatDate(cfg, task.dueDate)}
+              color={theme.textDim}
+            />
+          ) : (
+            <Field
+              theme={theme}
+              label="Due"
+              value={`${formatDate(cfg, task.dueDate)}${
+                dueBadge(level) ? `  ${dueBadge(level)}` : ""
+              }`}
+              color={dueColor}
+            />
+          )
         ) : null}
         <Field
           theme={theme}
@@ -270,87 +460,97 @@ export function TaskDetail({
         ) : null}
       </box>
 
-      {task.description !== "" ? (
+      {affordances.length > 0 ? (
+        <box flexDirection="row" flexWrap="wrap" paddingTop={1}>
+          {affordances.map(([key, action]) => (
+            <KeyHint key={key} theme={theme} keyLabel={key} action={action} />
+          ))}
+        </box>
+      ) : null}
+
+      {hasDescription ? (
         <Section theme={theme} title="Description">
           <MarkdownText theme={theme} content={task.description} />
         </Section>
-      ) : (
-        <Section theme={theme} title="Description">
-          <text fg={theme.textMuted}>press e to describe this task</text>
-        </Section>
-      )}
+      ) : null}
 
-      {task.subtasks.length === 0 ? (
+      {hasSubtasks ? (
         <Section theme={theme} title="Subtasks">
-          <text fg={theme.textMuted}>press t to add a step</text>
-        </Section>
-      ) : (
-        <Section theme={theme} title="Subtasks">
-          <box flexDirection="row" paddingBottom={1}>
+          <box flexDirection="row">
             <AnimatedMeter
               theme={theme}
               ratio={subtaskRatio}
               width={16}
               color={subtaskRatio === 1 ? theme.success : theme.accent}
+              resetKey={task.id}
             />
             <text fg={theme.textMuted}>
               {`  ${completedSubtasks(task)}/${task.subtasks.length}`}
             </text>
           </box>
-          {task.subtasks.map((st, index) => (
-            <SubtaskRow
-              key={st.id}
-              theme={theme}
-              title={st.title}
-              completed={st.completed}
-              selected={focused && index === subtaskIndex}
-              onPress={() => {
-                onSelectSubtask(index);
-                onToggleSubtask(index);
-              }}
-            />
-          ))}
+          {focused ? (
+            <box height={1} />
+          ) : (
+            <text fg={theme.textMuted}>→ then space to check off</text>
+          )}
+          {task.subtasks.map((st, index) => {
+            const row = rows[index]!;
+            return (
+              <SubtaskRow
+                key={st.id}
+                id={detailRowId(row)}
+                theme={theme}
+                title={st.title}
+                completed={st.completed}
+                selected={isSelected(row)}
+                onSelect={() => onSelectRow(index)}
+                onToggle={() => onToggleSubtask(index)}
+              />
+            );
+          })}
         </Section>
-      )}
+      ) : null}
 
-      {task.notes.length === 0 ? (
+      {hasNotes ? (
         <Section theme={theme} title="Notes">
-          <text fg={theme.textMuted}>press n to write one</text>
+          {task.notes.map((n, index) => {
+            const at = task.subtasks.length + index;
+            const row = rows[at]!;
+            return (
+              <NoteRow
+                key={n.id}
+                id={detailRowId(row)}
+                theme={theme}
+                stamp={formatDateTime(cfg, n.createdAt)}
+                body={n.body}
+                selected={isSelected(row)}
+                onSelect={() => onSelectRow(at)}
+              />
+            );
+          })}
         </Section>
-      ) : (
-        <Section theme={theme} title="Notes">
-          {task.notes.map((n) => (
-            <box key={n.id} flexDirection="column" paddingBottom={1}>
-              <text fg={theme.textMuted}>
-                {`▪ ${formatDateTime(cfg, n.createdAt)}`}
-              </text>
-              <text fg={theme.text} wrapMode="word" paddingLeft={2}>
-                {n.body}
-              </text>
-            </box>
-          ))}
-        </Section>
-      )}
+      ) : null}
 
-      {task.timeLogs.length === 0 ? (
+      {hasLogs ? (
         <Section theme={theme} title="Time">
-          <text fg={theme.textMuted}>press L to log time</text>
+          {task.timeLogs.map((tl, index) => {
+            const at = task.subtasks.length + task.notes.length + index;
+            const row = rows[at]!;
+            return (
+              <TimeLogRow
+                key={tl.id}
+                id={detailRowId(row)}
+                theme={theme}
+                date={formatDate(cfg, tl.loggedAt)}
+                duration={formatDuration(tl.duration)}
+                note={tl.note}
+                selected={isSelected(row)}
+                onSelect={() => onSelectRow(at)}
+              />
+            );
+          })}
         </Section>
-      ) : (
-        <Section theme={theme} title="Time">
-          {task.timeLogs.map((tl) => (
-            <box key={tl.id} flexDirection="row">
-              <text fg={theme.textMuted}>
-                {`${formatDate(cfg, tl.loggedAt).padEnd(14)}`}
-              </text>
-              <text fg={theme.accent}>{formatDuration(tl.duration)}</text>
-              {tl.note !== "" ? (
-                <text fg={theme.textDim}>{`  ${tl.note}`}</text>
-              ) : null}
-            </box>
-          ))}
-        </Section>
-      )}
+      ) : null}
 
       <box height={1} />
     </scrollbox>

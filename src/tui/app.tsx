@@ -1160,8 +1160,8 @@ export function App({ data, onQuit }: AppProps) {
                   cfg={cfg}
                   task={selectedTask}
                   focused={panel === 1}
-                  subtaskIndex={subtaskIndex}
-                  onSelectSubtask={(i) => {
+                  cursor={subtaskIndex}
+                  onSelectRow={(i) => {
                     setSubtaskIndex(i);
                     setPanel(1);
                   }}
