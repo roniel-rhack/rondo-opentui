@@ -33,6 +33,7 @@ import {
 import { RondoData } from "../src/tui/data.ts";
 import { TABS, type TabId } from "../src/tui/state.ts";
 import { mix, priorityColors, tuiTheme } from "../src/tui/theme.ts";
+import { TaskList } from "../src/tui/components/TaskList.tsx";
 
 initTheme(true);
 
@@ -600,9 +601,10 @@ describe("TUI scrolling", () => {
     const frame = setup.captureCharFrame();
     expect(frame).toContain("┃");
     // …and the row after it, so the cursor never sits on the bottom edge.
+    // Short terminals pack one-line rows without a gap, so it is adjacent.
     const cursorRow = frame.split("\n").findIndex((l) => l.includes("┃"));
-    expect(frame.split("\n").length).toBeGreaterThan(cursorRow + 2);
-    expect(frame.split("\n")[cursorRow + 2]).toContain("Filler task");
+    expect(frame.split("\n").length).toBeGreaterThan(cursorRow + 1);
+    expect(frame.split("\n")[cursorRow + 1]).toContain("Filler task");
     setup.renderer.destroy();
   });
 });
@@ -700,12 +702,12 @@ describe("TUI list density", () => {
 
     expect(listColumn).toContain("Late task");
     expect(listColumn).not.toContain("OVERDUE");
-    expect(listColumn).toContain("!");
+    expect(listColumn).toContain("30d late");
     setup.renderer.destroy();
   });
 
-  test("completed tasks collapse to a single line", async () => {
-    const { captureCharFrame, goToTab, renderer } = await mount(90, 20);
+  test("completed tasks show their completion date instead of metadata", async () => {
+    const { captureCharFrame, data, goToTab, renderer } = await mount(90, 20);
 
     // The list opens on Active, which hides the done task used here.
     await goToTab("all");
@@ -713,7 +715,8 @@ describe("TUI list density", () => {
     const lines = captureCharFrame().split("\n");
     const doneRow = lines.findIndex((l) => l.includes("Buy oat milk"));
     expect(doneRow).toBeGreaterThan(0);
-    // The row is followed by the gap, not by a metadata line of its own.
+    const milk = data.listTasks().find((t) => t.title === "Buy oat milk")!;
+    expect(lines[doneRow + 1]).toContain(`✓ ${formatDate(data.cfg, milk.updatedAt)}`);
     expect(lines[doneRow + 1]).not.toContain("#");
     expect(lines[doneRow + 1]).not.toContain("/");
     renderer.destroy();
@@ -2214,5 +2217,317 @@ describe("TUI review 3 — detail and journal", () => {
     // No easing from the previous task's 2/2: the meter is empty at once.
     expect(captureCharFrame()).toContain("░░░░░░░░░░░░░░░░  0/2");
     renderer.destroy();
+  });
+});
+
+describe("TUI review 3 — task list", () => {
+  /** Only the list panel: the detail panel repeats titles and dates. */
+  function listLines(frame: string): string[] {
+    return frame.split("\n").map((line) => {
+      const end = line.indexOf("│ │");
+      return end < 0 ? line : line.slice(0, end + 1);
+    });
+  }
+
+  function hex(color: { toInts(): [number, number, number, number] }): string {
+    const [r, g, b] = color.toInts();
+    return `#${[r, g, b].map((c) => c.toString(16).padStart(2, "0")).join("")}`;
+  }
+
+  /** Forty long-titled tasks across every priority, enough to overflow. */
+  function backlog(data: RondoData, count = 40) {
+    for (let i = 0; i < count; i++) {
+      data.tasks.create(
+        newTask({
+          title: `Filler task ${i} with a title long enough to overflow`,
+          priority: (i % 4) as Priority,
+          tags: i % 3 === 0 ? ["infra", "backend"] : [],
+        }),
+      );
+    }
+  }
+
+  async function mountWith(
+    prepare: (data: RondoData) => void,
+    width: number,
+    height: number,
+    cfg = defaultConfig(),
+  ) {
+    const data = seed(cfg);
+    prepare(data);
+    let setup!: Awaited<ReturnType<typeof testRender>>;
+    await act(async () => {
+      setup = await testRender(<App data={data} />, { width, height });
+    });
+    await setup.flush();
+    const press = async (key: string) => {
+      await act(async () => {
+        setup.mockInput.pressKey(key);
+      });
+      await setup.flush();
+    };
+    // Scrolling is animated; let the last hop finish before asserting.
+    const settle = async () => {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 300));
+      });
+      await setup.flush();
+    };
+    return { data, press, settle, ...setup };
+  }
+
+  test("80 columns: titles trim at the tail and the priority glyph keeps its gap", async () => {
+    const m = await mountWith(backlog, 80, 24);
+
+    const rows = listLines(m.captureCharFrame()).filter((l) =>
+      l.includes("Filler task"),
+    );
+    expect(rows.length).toBeGreaterThan(5);
+    for (const row of rows) {
+      expect(row).not.toContain("...");
+      expect(row).not.toMatch(/URG|HIGH|MED/);
+      // A glyph never touches the title: "…◆" was the old overflow bug.
+      if (/[◆▲△]/.test(row)) expect(row).toMatch(/\S…? [◆▲△] /);
+    }
+    // Every priority above Low is marked; Low is not.
+    const frame = m.captureCharFrame();
+    expect(frame).toMatch(/Filler task 39 with a… ◆/);
+    expect(frame).toMatch(/Filler task 38 with a… ▲/);
+    expect(frame).toMatch(/Filler task 37 with a… △/);
+    expect(frame).toMatch(/Filler task 36 with a t…  │/);
+    m.renderer.destroy();
+  });
+
+  test("short terminals drop the blank line between rows", async () => {
+    const m = await mountWith(backlog, 80, 24);
+
+    const rows = listLines(m.captureCharFrame()).filter((l) =>
+      l.includes("Filler task"),
+    );
+    // Two-line rows with a gap showed seven tasks at this size.
+    expect(rows.length).toBeGreaterThanOrEqual(10);
+    m.renderer.destroy();
+  });
+
+  test("tall terminals keep a blank line between rows", async () => {
+    const m = await mountWith(() => {}, 120, 40);
+
+    const lines = listLines(m.captureCharFrame());
+    const row = lines.findIndex((l) => l.includes("Refactor the parser"));
+    expect(row).toBeGreaterThan(0);
+    expect(lines[row + 1]).toContain("#code");
+    expect(lines[row + 2]).toMatch(/^│ +│$/);
+    m.renderer.destroy();
+  });
+
+  test("wide, short terminals collapse rows to one line", async () => {
+    const m = await mountWith(
+      (data) => {
+        const t = newTask({
+          title: "One line task",
+          priority: Priority.High,
+          tags: ["ops", "later"],
+          dueDate: GoTime.now().addDate(0, 0, 1),
+        });
+        data.tasks.create(t);
+        data.tasks.addSubtask(t.id, "step");
+      },
+      160,
+      24,
+    );
+
+    const lines = listLines(m.captureCharFrame());
+    const row = lines.find((l) => l.includes("One line task"))!;
+    expect(row).toMatch(/One line task +tomorrow +○○○○ 0\/1 +#ops +▲/);
+    // Nothing of that row spilled onto the next line.
+    expect(
+      lines.filter((l) => l.includes("tomorrow") || l.includes("#ops")),
+    ).toHaveLength(1);
+    m.renderer.destroy();
+  });
+
+  test("a sort change keeps the selection on screen", async () => {
+    const m = await mountWith(backlog, 80, 24);
+
+    await m.press("G");
+    await m.settle();
+    expect(m.captureCharFrame()).toContain("┃");
+
+    await m.press("F3");
+    await m.settle();
+    const frame = m.captureCharFrame();
+    expect(frame).toContain("⇅ Priority");
+    expect(frame).toContain("┃");
+    m.renderer.destroy();
+  });
+
+  test("sorting by due groups rows under section headers with a flat cursor", async () => {
+    const m = await mountWith(
+      (data) => {
+        const now = GoTime.now();
+        data.tasks.create(
+          newTask({ title: "Late one", dueDate: now.addDate(0, 0, -2) }),
+        );
+        data.tasks.create(newTask({ title: "Today one", dueDate: now }));
+        data.tasks.create(
+          newTask({ title: "Later one", dueDate: now.addDate(0, 0, 10) }),
+        );
+      },
+      100,
+      30,
+    );
+
+    await m.press("F2");
+    await m.settle();
+    const lines = listLines(m.captureCharFrame());
+    const text = lines.join("\n");
+    expect(text).toContain("OVERDUE  1");
+    expect(text).toContain("TODAY  1");
+    // The seed adds one far-off due date and one undated task.
+    expect(text).toContain("LATER  2");
+    expect(text).toContain("NO DATE  1");
+    expect(text).toContain("2d late");
+    expect(text).toContain("today");
+    expect(text).toContain("in 10d");
+    // Headers come before their rows and the cursor sits on a task.
+    expect(lines.findIndex((l) => l.includes("OVERDUE"))).toBeLessThan(
+      lines.findIndex((l) => l.includes("Late one")),
+    );
+    expect(lines.find((l) => l.includes("┃"))).toContain("Late one");
+
+    await m.press("j");
+    await m.settle();
+    expect(
+      listLines(m.captureCharFrame()).find((l) => l.includes("┃ ○")),
+    ).toContain("Today one");
+    m.renderer.destroy();
+  });
+
+  test("an empty due cell does not hold its column", async () => {
+    const m = await mountWith(
+      (data) => {
+        data.tasks.create(newTask({ title: "Tagged only", tags: ["alpha"] }));
+      },
+      100,
+      30,
+    );
+
+    const lines = listLines(m.captureCharFrame());
+    const row = lines.findIndex((l) => l.includes("Tagged only"));
+    expect(lines[row + 1]).toMatch(/^│┃ {3}#alpha/);
+    m.renderer.destroy();
+  });
+
+  test("the selection keeps its fill when the list loses focus", async () => {
+    const cfg = defaultConfig();
+    cfg.theme = "dark";
+    const m = await mountWith(() => {}, 100, 30, cfg);
+    const theme = tuiTheme(true);
+
+    const rowSpans = () => {
+      const frame = m.captureSpans();
+      const line = frame.lines.find((l) =>
+        l.spans.some((s) => s.text.includes("Refactor the parser")),
+      )!;
+      return line.spans;
+    };
+
+    const focusedSpans = rowSpans();
+    const title = focusedSpans.find((s) => s.text.includes("Refactor"))!;
+    expect(hex(title.bg)).toBe(theme.selectionBg);
+    expect(hex(focusedSpans.find((s) => s.text.includes("┃"))!.fg)).toBe(
+      theme.accent,
+    );
+
+    await m.press("l");
+    const blurredSpans = rowSpans();
+    const blurredTitle = blurredSpans.find((s) => s.text.includes("Refactor"))!;
+    expect(hex(blurredTitle.bg)).toBe(theme.selectionBg);
+    expect(hex(blurredSpans.find((s) => s.text.includes("┃"))!.fg)).toBe(
+      theme.border,
+    );
+    m.renderer.destroy();
+  });
+
+  test("done rows hide their tags behind the completion date", async () => {
+    const m = await mountWith(
+      (data) => {
+        const old = newTask({ title: "Archived chore", tags: ["old"] });
+        data.tasks.create(old);
+        data.setStatus(old, Status.Done);
+      },
+      100,
+      30,
+    );
+
+    await m.press("TAB");
+    const lines = listLines(m.captureCharFrame());
+    const row = lines.findIndex((l) => l.includes("Archived chore"));
+    expect(row).toBeGreaterThan(0);
+    const chore = m.data.listTasks().find((t) => t.title === "Archived chore")!;
+    expect(lines[row + 1]).toContain(
+      `✓ ${formatDate(m.data.cfg, chore.updatedAt)}`,
+    );
+    expect(lines.join("\n")).not.toContain("#old");
+    m.renderer.destroy();
+  });
+
+  test("blocked rows carry a marker before the title", async () => {
+    const m = await mountWith(
+      (data) => {
+        const blocker = newTask({ title: "Blocker task" });
+        const blocked = newTask({ title: "Waiting task" });
+        data.tasks.create(blocker);
+        data.tasks.create(blocked);
+        data.addDependency(blocked.id, blocker.id);
+      },
+      100,
+      30,
+    );
+
+    const lines = listLines(m.captureCharFrame());
+    expect(lines.find((l) => l.includes("Waiting task"))).toContain(
+      "⊘ Waiting task",
+    );
+    expect(lines.find((l) => l.includes("Blocker task"))).not.toContain("⊘");
+    m.renderer.destroy();
+  });
+
+  test("marked rows show a rail of their own", async () => {
+    const data = seed();
+    const tasks = data.listTasks().filter((t) => t.status !== Status.Done);
+    const marked = new Set([tasks[1]!.id]);
+
+    let setup!: Awaited<ReturnType<typeof testRender>>;
+    await act(async () => {
+      setup = await testRender(
+        <TaskList
+          theme={tuiTheme(true)}
+          cfg={data.cfg}
+          tasks={tasks}
+          selected={0}
+          focused
+          width={60}
+          height={20}
+          dense={false}
+          sort="created"
+          now={GoTime.now()}
+          blocked={new Set()}
+          marked={marked}
+          onSelect={() => {}}
+          onActivate={() => {}}
+          onToggleStatus={() => {}}
+          emptyIcon="✦"
+          emptyTitle="No tasks"
+        />,
+        { width: 60, height: 20 },
+      );
+    });
+    await setup.flush();
+
+    const lines = setup.captureCharFrame().split("\n");
+    expect(lines.find((l) => l.includes(tasks[0]!.title))).toMatch(/^┃/);
+    expect(lines.find((l) => l.includes(tasks[1]!.title))).toMatch(/^▌/);
+    setup.renderer.destroy();
   });
 });
