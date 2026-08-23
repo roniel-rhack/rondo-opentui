@@ -13,6 +13,64 @@ claims were reproduced through the real OpenTUI test renderer at 60×20, 70×24,
 earlier reviews resolved (`tui-review.md`, `tui-review-2.md`) are not repeated
 unless the fix turned out incomplete — those are marked **(incomplete fix)**.
 
+> **Resolution status (2026-08-23):** all 75 findings are implemented on
+> `feat/tui-review-3`, across 13 feature/fix commits (`git log
+> main..feat/tui-review-3`), with these conscious deviations from the fix
+> notes as written:
+>
+> - **1.5 priority glyph** — Urgent renders `◆`, not the suggested `‼`:
+>   `‼` (U+203C) measures two terminal columns, which broke the fixed-width
+>   glyph cell the row layout depends on; `◆` is one column and already used
+>   for the brand mark.
+> - **1.7 segmented controls** — below 80 columns Priority and Repeats
+>   become `◂ Medium ▸` steppers with clickable arrows instead of reflowing
+>   the two columns.
+> - **1.8 / TaskForm overlay clamping** — `overflow="hidden"` is
+>   deliberately not used anywhere in TaskForm or Overlay: OpenTUI clips
+>   with a scissor rect that also blocks mouse hits, so children inside an
+>   `overflow="hidden"` box stop receiving clicks. Fixed-height boxes clamp
+>   the layout instead.
+> - **3.3 due prompt chips** — `t`/`m`/`w`/`n` answer with a single key only
+>   while the field still holds the value the prompt opened with; once the
+>   user types, the chips stop intercepting keystrokes.
+> - **5.13 Settings width** — widened to 70 columns so the `ctrl+s save`
+>   footer fits without wrapping.
+> - **2.7 selection tracking** — kept by `selectedTaskId` (and the
+>   journal's selected day), looked up again whenever the shown list
+>   changes, rather than an id-to-index cache.
+> - **4.1 session file** — `~/.todo-app/tui-state.json`, written 400 ms
+>   after the last change and flushed on quit; `config.json` is untouched.
+> - **1.6 density** — `z` cycles auto / dense / comfortable; "auto" reads
+>   list width as well as height, and a session-only override survives
+>   until the next `z`.
+> - **3.15 marks** — `m` marks rows; `space` / `+` / `-` / `@` / `d` then
+>   act on every marked task as one grouped `UndoAction`, as specified.
+>
+> Two items were checked against the branch tip during the fix-verification
+> pass and skipped without changes because the code they describe was
+> already correct (related to 3.4 and 1.6 respectively):
+>
+> - "Bulk delete already routes through the confirm. `src/tui/app.tsx`
+>   `bulkDelete` gathers `data.blockedBy` across `markedTasks`, excludes
+>   blockers that are themselves being deleted, and opens the same confirm
+>   dialog with 'They block #N — they will be unblocked.' before calling
+>   `bulk()`; the immediate path is kept only when nothing is blocked.
+>   `tests/tui-render.test.tsx` already covers it ('review: a bulk delete
+>   asks when a marked task blocks another'). The finding describes code
+>   that is no longer on the branch."
+> - "Dense one-line rows already reserve their trailing glyph cells.
+>   `TaskList.tsx` renders the recur slot as `{recurring ? " ↻" : "  "}`
+>   and the priority slot as a constant-width box whenever the row is
+>   one-line (`dense || …`), and extras is the constant `TRAILING_GLYPHS =
+>   4` in that layout, which is exactly the suggested fix. 'TUI review 3 —
+>   follow-ups > 1.6: one-line rows line up whether or not a row has a
+>   priority' asserts the alignment. Note the prop named `dense` on
+>   TaskRow is the one-line flag (TaskList passes `oneLine` into it), which
+>   is probably what made the finding read the conditionals as still live."
+>
+> 664 tests pass, `tsc --noEmit` and `tsc --noEmit --noUnusedLocals` are
+> both clean.
+
 Priorities: **P1** = broken or traps the user, **P2** = clear UX gap, **P3** =
 polish. Each item also carries its effect on *speed* (time to perform an
 action): high / medium / low. Key counts exclude typed text.

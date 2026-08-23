@@ -11,7 +11,7 @@ bun install
 bun run start          # TUI
 bun run start list     # any argument dispatches to the CLI instead
 bun run dev            # TUI with --watch
-bun test               # 644 tests
+bun test               # 664 tests
 bun run typecheck      # tsc --noEmit
 bun run build          # dist/rondo-opentui (single binary, ad-hoc signed)
 ```
@@ -116,13 +116,34 @@ Hard-won, all of them cost time once:
 - **Overflowing no-wrap text shrinks its flex siblings.** A `wrapMode="none"`
   title wider than the row squeezes the glyph box's padding away (`○Title`).
   Put `flexShrink={0}` on every fixed-width cell in the row.
+- **A scrollbox's content height leaks into its ancestors' flex basis.** A
+  long task list reports its full content height upward through yoga, so
+  without protection the header and status bar shrink away as the list
+  grows. Give every fixed-height row `flexShrink={0}` and the main row
+  `minHeight={0}`.
+- **`overflow="hidden"` also clips the mouse hit grid.** OpenTUI clips with a
+  scissor rect that blocks pointer events along with paint, so children
+  inside stop receiving clicks. Clip with fixed heights instead of
+  `overflow="hidden"` wherever the content still needs to be clickable.
+- **`‼` (U+203C) measures two columns.** It breaks a fixed-width one-column
+  glyph cell; prefer a single-width glyph (`◆`, `▲`) for anything laid out
+  next to fixed-width neighbors.
+- **`contentOptions` gap is the only gap that works on a `<scrollbox>`.**
+  `gap` on the outer `<scrollbox>`/`<box>` props is not wired through; pass
+  it inside `contentOptions={{ gap }}` instead.
 - **`opacity` applies to the whole subtree.** A dialog nested inside a
   translucent backdrop inherits it and turns unreadable — keep them siblings.
 - **Nothing repaints unless it is dirty.** After a palette switch, call
   `renderer.setBackgroundColor()` + `requestRender()` or the old colors linger.
 - **Scrollboxes do not follow the cursor.** Give rows an `id` and scroll to it
   when the selection changes — `useSmoothScrollIntoView` does that with an
-  animated offset.
+  animated offset, resolving nested ids via `findDescendantById` (falling
+  back to walking `getChildren`) so a row nested under section headers is
+  still found.
+- **A fresh scrollbox cannot scroll on its first layout pass.** The very
+  first `scrollTo`/`scrollChildIntoView` after mount is a no-op because yoga
+  has not measured content height yet; retry after the next layout pass
+  instead of assuming the first call took effect.
 - **A focused `<scrollbox>` answers `j`/`k`/arrows itself**, so a list that
   also scrolls from its own cursor scrolls twice per keypress. Pass
   `focused={false}` when the app routes those keys.
@@ -135,7 +156,10 @@ Hard-won, all of them cost time once:
   swallows them before any `key.sequence` switch runs — guard with
   `key.shift`, or `L`/`H` shortcuts silently die.
 - In `mockInput.pressKey`, arrows are named `ARROW_DOWN`/`ARROW_UP` (from
-  `KeyCodes`); `"DOWN"` is typed as literal text.
+  `KeyCodes`); `"DOWN"` is typed as literal text. A shifted letter needs
+  `{ name: "l", shift: true, sequence: "L" }`, and a few keys have no
+  `KeyCodes` name at all — tests type the raw escape sequence instead
+  (`PageDown` is the string `"\u001b[6~"`, `PageUp` is `"\u001b[5~"`).
 - **`useKeyboard` handlers run before a focused `<textarea>` processes the
   same keypress.** A submit-on-enter reads the buffer pre-newline, then the
   textarea inserts it and fires `onContentChange` — collapse newlines there,
@@ -153,6 +177,17 @@ Hard-won, all of them cost time once:
 - Modals own their keyboard handling; `app.tsx` returns early while one is
   open. The `searching` state does the same for the filter bar.
 - Rows keep hover state locally so hovering never re-renders the whole list.
+- Selection is kept by id (`selectedTaskId`, and the journal's selected day),
+  not by row index — it is looked up again whenever the shown list changes,
+  so a sort, filter or create never leaves the cursor on the wrong task.
+- Every mutation pushes an `UndoAction`; `u` pops the stack in `useUndo.ts`.
+  A new mutation kind needs its own `UndoAction` case, not a silent gap.
+- Status-bar hints come from `hintSpecs` in `state.ts` and must match
+  `HELP_SECTIONS` in `Panels.tsx` — `hintKeysMissingFromHelp()` fails a test
+  when a hint has no help row.
+- `tui-state.json` is written debounced (400 ms) through the `RondoData`-free
+  helpers in `core/config/tui-state.ts`, flushed on quit; it never touches
+  `config.json`.
 
 ## Releases
 
