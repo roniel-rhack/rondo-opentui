@@ -20,6 +20,14 @@ import {
   fuzzyScore,
   groupTasks,
   indexOfId,
+  indexOfNoteDate,
+  isDense,
+  cycleDensity,
+  clampRatio,
+  listWidthFor,
+  openFirst,
+  excerptOf,
+  hintSpecs,
   loggedSince,
   pageSize,
   parseFilterQuery,
@@ -574,5 +582,131 @@ describe("helpers", () => {
     expect(clampIndex(9, 5)).toBe(4);
     expect(clampIndex(2, 5)).toBe(2);
     expect(clampIndex(2, 0)).toBe(0);
+  });
+});
+
+describe("indexOfNoteDate (2.7)", () => {
+  const note = (id: number, date: string) => ({
+    id,
+    date: parseDateOnly(date),
+    hidden: false,
+    createdAt: now,
+    updatedAt: now,
+    entries: [],
+  });
+  const notes = [note(3, "2026-08-22"), note(2, "2026-08-21"), note(1, "2026-08-10")];
+
+  test("finds the day", () => {
+    expect(indexOfNoteDate(notes, "2026-08-21", 0)).toBe(1);
+  });
+
+  test("falls back to the clamped index", () => {
+    expect(indexOfNoteDate(notes, "2026-01-01", 1)).toBe(1);
+    expect(indexOfNoteDate(notes, null, 9)).toBe(2);
+    expect(indexOfNoteDate([], "2026-08-21", 2)).toBe(0);
+  });
+});
+
+describe("clampRatio / listWidthFor (1.10)", () => {
+  test("keeps both panels above their minimum width", () => {
+    expect(clampRatio(0.8, 80)).toBeCloseTo(0.5);
+    expect(clampRatio(0.2, 80)).toBeCloseTo(34 / 80);
+    expect(clampRatio(0.4, 100)).toBe(0.4);
+    expect(listWidthFor(0.8, 80)).toBe(40);
+    expect(listWidthFor(0.2, 80)).toBe(34);
+    expect(listWidthFor(0.4, 100)).toBe(40);
+  });
+
+  test("a terminal too narrow for both panels gives the list its minimum", () => {
+    expect(listWidthFor(0.5, 72)).toBe(34);
+    expect(listWidthFor(0.1, 72)).toBe(34);
+  });
+});
+
+describe("density (1.6)", () => {
+  test("auto follows the height, the others are explicit", () => {
+    expect(isDense("auto", 24)).toBe(true);
+    expect(isDense("auto", 30)).toBe(false);
+    expect(isDense("dense", 50)).toBe(true);
+    expect(isDense("comfortable", 20)).toBe(false);
+  });
+
+  test("z cycles auto, dense, comfortable", () => {
+    expect(cycleDensity("auto")).toBe("dense");
+    expect(cycleDensity("dense")).toBe("comfortable");
+    expect(cycleDensity("comfortable")).toBe("auto");
+  });
+});
+
+describe("openFirst (3.11)", () => {
+  test("done tasks move behind open ones, order otherwise kept", () => {
+    const tasks = [
+      task({ id: 1, status: Status.Done }),
+      task({ id: 2, status: Status.Pending }),
+      task({ id: 3, status: Status.Done }),
+      task({ id: 4, status: Status.InProgress }),
+    ];
+    expect(openFirst(tasks).map((t) => t.id)).toEqual([2, 4, 1, 3]);
+  });
+});
+
+describe("excerptOf (2.6)", () => {
+  test("flattens whitespace and trims to one line with an ellipsis", () => {
+    expect(excerptOf("Shipped the\nopentui  port")).toBe("Shipped the opentui port");
+    const long = "x".repeat(60);
+    expect(excerptOf(long)).toHaveLength(48);
+    expect(excerptOf(long).endsWith("…")).toBe(true);
+    expect(excerptOf("short", 10)).toBe("short");
+  });
+});
+
+describe("hintSpecs (5.4)", () => {
+  const keys = (specs: ReturnType<typeof hintSpecs>) => specs.map((h) => h.key);
+
+  test("every list ends with the palette and help", () => {
+    for (const tab of ["active", "journal"] as const) {
+      for (const panel of [0, 1] as const) {
+        for (const searching of [false, true]) {
+          const specs = hintSpecs({ tab, panel, compact: false, searching });
+          expect(keys(specs).slice(-2)).toEqual(["^k", "?"]);
+        }
+      }
+    }
+  });
+
+  test("searching explains the filter keys", () => {
+    const specs = hintSpecs({ tab: "active", panel: 1, compact: false, searching: true });
+    expect(specs.map((h) => `${h.key} ${h.label}`)).toEqual([
+      "↑↓ move",
+      "enter keep",
+      "esc clear",
+      "^k palette",
+      "? help",
+    ]);
+  });
+
+  test("compact lists lead with the key that reaches the other panel", () => {
+    expect(keys(hintSpecs({ tab: "active", panel: 0, compact: true, searching: false }))[0]).toBe("l");
+    expect(keys(hintSpecs({ tab: "active", panel: 0, compact: false, searching: false }))[0]).toBe("a");
+    expect(keys(hintSpecs({ tab: "journal", panel: 0, compact: true, searching: false }))[0]).toBe("l");
+  });
+
+  test("the journal day list does not offer edit or delete; its entries do", () => {
+    const days = keys(hintSpecs({ tab: "journal", panel: 0, compact: false, searching: false }));
+    expect(days).not.toContain("e");
+    expect(days).not.toContain("d");
+    expect(days).toContain("a");
+    expect(days).toContain("A");
+    const entries = keys(hintSpecs({ tab: "journal", panel: 1, compact: false, searching: false }));
+    expect(entries).toContain("e");
+    expect(entries).toContain("d");
+  });
+
+  test("the task list offers the block picker; the detail panel edits rows", () => {
+    const list = hintSpecs({ tab: "active", panel: 0, compact: false, searching: false });
+    expect(list.find((h) => h.key === "b")?.action).toBe("block");
+    const detail = hintSpecs({ tab: "active", panel: 1, compact: false, searching: false });
+    expect(detail.find((h) => h.key === "enter")?.label).toBe("edit");
+    expect(detail.find((h) => h.key === "space")?.label).toBe("toggle");
   });
 });

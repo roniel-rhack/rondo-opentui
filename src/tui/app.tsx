@@ -11,6 +11,7 @@ import {
   save as saveConfig,
   type Config,
 } from "../core/config/config.ts";
+import type { Density } from "../core/config/tui-state.ts";
 import { Minute } from "../core/duration.ts";
 import { SessionKind } from "../core/focus/focus.ts";
 import type { Note } from "../core/journal/journal.ts";
@@ -26,17 +27,32 @@ import {
   TABS,
   blockedIds,
   clampIndex,
+  clampRatio,
   collectTags,
+  cycleDensity,
+  detailRows,
+  doneToday,
   emptyFilters,
+  excerptOf,
   exportContent,
   focusStatusMessage,
+  hintSpecs,
+  indexOfId,
+  indexOfNoteDate,
+  isDense,
+  listWidthFor,
+  openFirst,
+  pageSize,
   parseDueInput,
   parseTimeLogInput,
+  plural,
   tabCounts,
   toastDuration,
   visibleNotes,
   visibleTasks,
   type Filters,
+  type Hint,
+  type HintAction,
   type SortKey,
   type TabId,
 } from "./state.ts";
@@ -46,13 +62,14 @@ import { EntryList, NoteList } from "./components/JournalPanel.tsx";
 import {
   HelpOverlay,
   Panel,
+  PanelDivider,
   SearchBar,
   StatsOverlay,
   StatusBar,
   TagBar,
 } from "./components/Panels.tsx";
-import { TaskDetail } from "./components/TaskDetail.tsx";
-import { TaskList } from "./components/TaskList.tsx";
+import { TaskDetail, type TaskDetailHandle } from "./components/TaskDetail.tsx";
+import { TaskList, isOneLine } from "./components/TaskList.tsx";
 import {
   CommandPalette,
   ConfirmDialog,
@@ -72,6 +89,7 @@ type Modal =
       type: "confirm";
       title: string;
       message: string;
+      excerpt?: string;
       detail?: string;
       confirmLabel?: string;
       onConfirm: () => void;
@@ -83,7 +101,7 @@ type Modal =
       placeholder?: string;
       initial?: string;
       multiline?: boolean;
-      onSubmit: (value: string) => void;
+      onSubmit: (value: string) => string | void;
     }
   | {
       type: "task-pick";
@@ -107,6 +125,15 @@ export interface AppProps {
   data: RondoData;
   onQuit?: () => void;
 }
+
+/** Rows the chrome around the list always takes: header, panel borders and
+ * the two status-bar rows. The tag and search bars add one each. */
+const LIST_CHROME = 5;
+/** Rows the detail panel's chrome takes: header, borders, status bar. */
+const DETAIL_CHROME = 5;
+/** Milliseconds the panel ratio waits before it is written to config.json,
+ * so a drag or a run of `<` presses ends in one write. */
+const RATIO_SAVE_MS = 400;
 
 function toDraft(values: TaskFormValues): TaskDraft {
   return {
@@ -162,19 +189,25 @@ export function App({ data, onQuit }: AppProps) {
   const [tab, setTab] = useState<TabId>("active");
   const [panel, setPanel] = useState<0 | 1>(0);
   const [taskIndex, setTaskIndex] = useState(0);
-  const [subtaskIndex, setSubtaskIndex] = useState(0);
+  const [detailIndex, setDetailIndex] = useState(0);
   const [noteIndex, setNoteIndex] = useState(0);
   const [entryIndex, setEntryIndex] = useState(0);
+  // The selection is remembered by identity, not row number: a re-sort, a
+  // filter, a create or a reload looks the task (or the day) up again.
+  const selectedTaskId = useRef<number | null>(null);
+  const selectedNoteDate = useRef<string | null>(null);
 
-  const [sort, setSort] = useState<SortKey>("created");
+  const [sort, setSort] = useState<SortKey>("due");
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [searching, setSearching] = useState(false);
   const [tagBar, setTagBar] = useState(false);
   const [ratio, setRatio] = useState(cfg.panelRatio);
+  const [density, setDensity] = useState<Density>("auto");
 
   const [modal, setModal] = useState<Modal>({ type: "none" });
   const [toast, setToast] = useState<Toast | null>(null);
   const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
+  const detailRef = useRef<TaskDetailHandle | null>(null);
 
   const notify = useCallback(
     (message: string, kind: Toast["kind"] = "info") => {
@@ -238,35 +271,101 @@ export function App({ data, onQuit }: AppProps) {
   const selectedNote =
     shownNotes[clampIndex(noteIndex, shownNotes.length)] ?? null;
 
+  // Cursors are clamped where they are read, so a delete under the cursor
+  // leaves it on the last row rather than on nothing.
+  const rows = useMemo(
+    () => (selectedTask ? detailRows(selectedTask) : []),
+    [selectedTask],
+  );
+  const detailCursor = clampIndex(detailIndex, rows.length);
+  const detailRow = rows[detailCursor];
+  const entryCount = selectedNote?.entries.length ?? 0;
+  const entryCursor = clampIndex(entryIndex, entryCount);
+
   const taskTitles = useMemo(
     () => new Map(tasks.map((t) => [t.id, `#${t.id} ${t.title}`])),
     [tasks],
   );
 
+  // A new query, tag or view ranks the list afresh, so the cursor lands on
+  // the best match. Clearing the filter is different: the task found under
+  // it stays selected, and the mount keeps whatever the caller restored.
+  const filtersSeen = useRef(false);
   useEffect(() => {
-    setTaskIndex((i) => clampIndex(i, shown.length));
-  }, [shown.length]);
+    if (!filtersSeen.current) {
+      filtersSeen.current = true;
+      return;
+    }
+    const cleared =
+      filters.query === "" && filters.tag === null && filters.view === "all";
+    if (cleared) return;
+    selectedTaskId.current = null;
+    setTaskIndex(0);
+    setDetailIndex(0);
+    selectedNoteDate.current = null;
+    setNoteIndex(0);
+    setEntryIndex(0);
+  }, [filters.query, filters.tag, filters.view]);
 
   useEffect(() => {
-    setNoteIndex((i) => clampIndex(i, shownNotes.length));
-  }, [shownNotes.length]);
+    setTaskIndex((i) => {
+      const next = indexOfId(shown, selectedTaskId.current, i);
+      selectedTaskId.current = shown[next]?.id ?? null;
+      return next;
+    });
+  }, [shown]);
 
   useEffect(() => {
-    setSubtaskIndex(0);
+    setNoteIndex((i) => {
+      const next = indexOfNoteDate(shownNotes, selectedNoteDate.current, i);
+      selectedNoteDate.current =
+        shownNotes[next]?.date.format(DateOnly) ?? null;
+      return next;
+    });
+  }, [shownNotes]);
+
+  useEffect(() => {
+    setDetailIndex(0);
   }, [selectedTask?.id]);
+
+  const selectTaskAt = useCallback(
+    (index: number) => {
+      const i = clampIndex(index, shown.length);
+      selectedTaskId.current = shown[i]?.id ?? null;
+      setTaskIndex(i);
+    },
+    [shown],
+  );
+
+  const selectNoteAt = useCallback(
+    (index: number) => {
+      const i = clampIndex(index, shownNotes.length);
+      const next = shownNotes[i]?.date.format(DateOnly) ?? null;
+      if (next !== selectedNoteDate.current) setEntryIndex(0);
+      selectedNoteDate.current = next;
+      setNoteIndex(i);
+    },
+    [shownNotes],
+  );
 
   const closeModal = useCallback(() => setModal({ type: "none" }), []);
 
   // ---------------------------------------------------------------- actions
 
   const openAddTask = useCallback(() => {
+    // A task created inside a filter belongs to it, or it would vanish from
+    // the list the moment it is saved.
     setModal({
       type: "task-form",
       title: "New task",
-      initial: emptyTaskForm,
+      initial: {
+        ...emptyTaskForm,
+        tags: filters.tag ?? "",
+        due: filters.view === "today" ? "today" : "",
+      },
       taskId: null,
     });
-  }, []);
+  }, [filters.tag, filters.view]);
 
   const openEditTask = useCallback(() => {
     if (!selectedTask) return;
@@ -283,6 +382,7 @@ export function App({ data, onQuit }: AppProps) {
       const draft = toDraft(values);
       if (taskId === null) {
         const created = data.createTask(draft);
+        selectedTaskId.current = created.id;
         notify(`Created "${created.title}"`, "success");
       } else {
         const task = data.tasks.getById(taskId);
@@ -359,39 +459,93 @@ export function App({ data, onQuit }: AppProps) {
     [data, reloadTasks, selectedTask],
   );
 
-  const editSubtask = useCallback(() => {
-    const subtask = selectedTask?.subtasks[subtaskIndex];
-    if (!subtask) return;
-    setModal({
-      type: "prompt",
-      title: "Edit subtask",
-      label: "New title",
-      initial: subtask.title,
-      onSubmit: (value) => {
-        data.editSubtask(subtask.id, value);
-        closeModal();
-        reloadTasks();
-        notify("Subtask updated", "success");
-      },
-    });
-  }, [closeModal, data, notify, reloadTasks, selectedTask, subtaskIndex]);
+  const toggleDetailRow = useCallback(() => {
+    if (detailRow?.kind === "subtask") toggleSubtaskAt(detailRow.index);
+  }, [detailRow, toggleSubtaskAt]);
 
-  const deleteSubtask = useCallback(() => {
+  const editDetailRow = useCallback(() => {
     const task = selectedTask;
-    const subtask = task?.subtasks[subtaskIndex];
-    if (!task || !subtask) return;
+    if (!task || !detailRow) return;
+    if (detailRow.kind === "subtask") {
+      const subtask = task.subtasks[detailRow.index];
+      if (!subtask) return;
+      setModal({
+        type: "prompt",
+        title: "Edit subtask",
+        label: "New title",
+        initial: subtask.title,
+        onSubmit: (value) => {
+          data.editSubtask(subtask.id, value);
+          closeModal();
+          reloadTasks();
+          notify("Subtask updated", "success");
+        },
+      });
+      return;
+    }
+    if (detailRow.kind === "note") {
+      const note = task.notes[detailRow.index];
+      if (!note) return;
+      setModal({
+        type: "prompt",
+        title: "Edit note",
+        label: `Note for #${task.id}`,
+        initial: note.body,
+        multiline: true,
+        onSubmit: (value) => {
+          data.editTaskNote(note.id, value);
+          closeModal();
+          reloadTasks();
+          notify("Note updated", "success");
+        },
+      });
+      return;
+    }
+    notify("Time logs cannot be edited — d removes one, L logs again", "info");
+  }, [closeModal, data, detailRow, notify, reloadTasks, selectedTask]);
+
+  const deleteDetailRow = useCallback(() => {
+    const task = selectedTask;
+    if (!task || !detailRow) return;
+    const done = (action: UndoAction, what: string) => {
+      pushUndo(action);
+      closeModal();
+      reloadTasks();
+      notify(`${what} deleted · press u to undo`, "success");
+    };
+    if (detailRow.kind === "subtask") {
+      const subtask = task.subtasks[detailRow.index];
+      if (!subtask) return;
+      setModal({
+        type: "confirm",
+        title: "Delete subtask",
+        message: `Delete "${subtask.title}"?`,
+        onConfirm: () => done(data.deleteSubtask(task.id, subtask), "Subtask"),
+      });
+      return;
+    }
+    if (detailRow.kind === "note") {
+      const note = task.notes[detailRow.index];
+      if (!note) return;
+      setModal({
+        type: "confirm",
+        title: "Delete note",
+        message: "Delete this note?",
+        excerpt: excerptOf(note.body),
+        onConfirm: () => done(data.deleteTaskNote(task.id, note), "Note"),
+      });
+      return;
+    }
+    const log = task.timeLogs[detailRow.index];
+    if (!log) return;
     setModal({
       type: "confirm",
-      title: "Delete subtask",
-      message: `Delete "${subtask.title}"?`,
-      onConfirm: () => {
-        pushUndo(data.deleteSubtask(task.id, subtask));
-        closeModal();
-        reloadTasks();
-        notify("Subtask deleted · press u to undo", "success");
-      },
+      title: "Delete time log",
+      message: `Delete the ${formatDuration(log.duration)} entry?`,
+      excerpt: log.note ? excerptOf(log.note) : undefined,
+      onConfirm: () => done(data.deleteTimeLog(task.id, log), "Time log"),
     });
-  }, [closeModal, data, notify, pushUndo, reloadTasks, selectedTask, subtaskIndex]);
+  }, [closeModal, data, detailRow, notify, pushUndo, reloadTasks, selectedTask]);
 
   const addTaskNote = useCallback(() => {
     if (!selectedTask) return;
@@ -433,27 +587,33 @@ export function App({ data, onQuit }: AppProps) {
     });
   }, [closeModal, data, notify, reloadTasks, selectedTask]);
 
-  const addJournalEntry = useCallback(() => {
-    const target = selectedNote;
-    setModal({
-      type: "prompt",
-      title: "Journal entry",
-      label: target
-        ? `Entry for ${formatNoteTitle(cfg, target.date, GoTime.now())}`
-        : "Entry for today",
-      placeholder: "What is on your mind?",
-      multiline: true,
-      onSubmit: (value) => {
-        data.addJournalEntry(value, target?.date.format(DateOnly));
-        closeModal();
-        reloadNotes();
-        notify("Journal entry saved", "success");
-      },
-    });
-  }, [cfg, closeModal, data, notify, reloadNotes, selectedNote]);
+  // `a` always writes to today, which is what a morning without a note yet
+  // needs; `A` keeps the selected day for catching up on the past.
+  const addJournalEntry = useCallback(
+    (day: "today" | "selected") => {
+      const target = day === "selected" ? selectedNote : null;
+      setModal({
+        type: "prompt",
+        title: "Journal entry",
+        label: target
+          ? `Entry for ${formatNoteTitle(cfg, target.date, GoTime.now())}`
+          : "Entry for today",
+        placeholder: "What is on your mind?",
+        multiline: true,
+        onSubmit: (value) => {
+          const note = data.addJournalEntry(value, target?.date.format(DateOnly));
+          selectedNoteDate.current = note.date.format(DateOnly);
+          closeModal();
+          reloadNotes();
+          notify("Journal entry saved", "success");
+        },
+      });
+    },
+    [cfg, closeModal, data, notify, reloadNotes, selectedNote],
+  );
 
   const editJournalEntry = useCallback(() => {
-    const entry = selectedNote?.entries[entryIndex];
+    const entry = selectedNote?.entries[entryCursor];
     if (!entry) return;
     setModal({
       type: "prompt",
@@ -468,15 +628,16 @@ export function App({ data, onQuit }: AppProps) {
         notify("Entry updated", "success");
       },
     });
-  }, [closeModal, data, entryIndex, notify, reloadNotes, selectedNote]);
+  }, [closeModal, data, entryCursor, notify, reloadNotes, selectedNote]);
 
   const deleteJournalEntry = useCallback(() => {
-    const entry = selectedNote?.entries[entryIndex];
+    const entry = selectedNote?.entries[entryCursor];
     if (!entry) return;
     setModal({
       type: "confirm",
       title: "Delete entry",
       message: "Delete this journal entry?",
+      excerpt: excerptOf(entry.body),
       onConfirm: () => {
         pushUndo(data.deleteJournalEntry(entry));
         closeModal();
@@ -484,7 +645,7 @@ export function App({ data, onQuit }: AppProps) {
         notify("Entry deleted · press u to undo", "success");
       },
     });
-  }, [closeModal, data, entryIndex, notify, pushUndo, reloadNotes, selectedNote]);
+  }, [closeModal, data, entryCursor, notify, pushUndo, reloadNotes, selectedNote]);
 
   const undo = useCallback(() => {
     const [action, ...rest] = undoStack;
@@ -493,6 +654,8 @@ export function App({ data, onQuit }: AppProps) {
       return;
     }
     data.undo(action);
+    // A restored task keeps its id, so the cursor can go back to it.
+    if (action.kind === "task") selectedTaskId.current = action.task.id;
     setUndoStack(rest);
     reloadTasks();
     reloadNotes();
@@ -557,32 +720,27 @@ export function App({ data, onQuit }: AppProps) {
     );
   }, [cfg, dark, persistConfig]);
 
-  const resizePanels = useCallback(
-    (delta: number) => {
-      const next = Math.min(Math.max(ratio + delta, 0.2), 0.8);
+  // Both the keys and the drag fire in bursts; the ratio is written once
+  // the user settles, and the same clamp keeps both panels usable.
+  const ratioSave = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const applyRatio = useCallback(
+    (raw: number) => {
+      const next = clampRatio(raw, width);
       setRatio(next);
-      persistConfig(
-        { ...cfg, panelRatio: Number(next.toFixed(2)) },
-        "Could not save layout",
-      );
-    },
-    [cfg, persistConfig, ratio],
-  );
-
-  // Dragging fires continuously; write the ratio once the mouse settles.
-  const dragSave = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dragPanels = useCallback(
-    (next: number) => {
-      setRatio(next);
-      if (dragSave.current) clearTimeout(dragSave.current);
-      dragSave.current = setTimeout(() => {
+      if (ratioSave.current) clearTimeout(ratioSave.current);
+      ratioSave.current = setTimeout(() => {
         persistConfig(
           { ...cfg, panelRatio: Number(next.toFixed(2)) },
           "Could not save layout",
         );
-      }, 400);
+      }, RATIO_SAVE_MS);
     },
-    [cfg, persistConfig],
+    [cfg, persistConfig, width],
+  );
+
+  const resizePanels = useCallback(
+    (delta: number) => applyRatio(ratio + delta),
+    [applyRatio, ratio],
   );
 
   const cycleSort = useCallback(() => {
@@ -592,10 +750,20 @@ export function App({ data, onQuit }: AppProps) {
     notify(`Sorted by ${SORT_LABELS[next].toLowerCase()}`, "info");
   }, [notify, sort]);
 
+  const toggleDensity = useCallback(() => {
+    const next = cycleDensity(density);
+    setDensity(next);
+    notify(`Density: ${next}`, "info");
+  }, [density, notify]);
+
+  const isJournalTab = tab === "journal";
+
+  // The journal cannot see the selection, so a session started there is not
+  // attached to a task the user never chose.
   const toggleFocus = useCallback(() => {
-    pomodoro.toggle(selectedTask?.id ?? 0);
+    pomodoro.toggle(isJournalTab ? 0 : (selectedTask?.id ?? 0));
     notify(focusStatusMessage(pomodoro.running, pomodoro.kind, cfg), "info");
-  }, [cfg, notify, pomodoro, selectedTask]);
+  }, [cfg, isJournalTab, notify, pomodoro, selectedTask]);
 
   const requestQuit = useCallback(() => {
     if (!pomodoro.running) {
@@ -631,8 +799,10 @@ export function App({ data, onQuit }: AppProps) {
   const openBlockPicker = useCallback(() => {
     if (!selectedTask) return;
     const target = selectedTask;
-    const candidates = tasks.filter(
-      (t) => t.id !== target.id && !target.blockedByIds.includes(t.id),
+    const candidates = openFirst(
+      tasks.filter(
+        (t) => t.id !== target.id && !target.blockedByIds.includes(t.id),
+      ),
     );
     if (candidates.length === 0) {
       notify("No other task to block on", "info");
@@ -659,7 +829,9 @@ export function App({ data, onQuit }: AppProps) {
   const openUnblockPicker = useCallback(() => {
     if (!selectedTask) return;
     const target = selectedTask;
-    const blockers = tasks.filter((t) => target.blockedByIds.includes(t.id));
+    const blockers = openFirst(
+      tasks.filter((t) => target.blockedByIds.includes(t.id)),
+    );
     if (blockers.length === 0) {
       notify("This task has no blockers", "info");
       return;
@@ -678,6 +850,18 @@ export function App({ data, onQuit }: AppProps) {
     });
   }, [closeModal, data, notify, reloadTasks, selectedTask, tasks]);
 
+  const startSearch = useCallback(() => {
+    // The filter bar lives in the list panel; typing into it from the
+    // detail side would move an invisible cursor.
+    setSearching(true);
+    setPanel(0);
+  }, []);
+
+  const stopSearch = useCallback((keep: boolean) => {
+    setSearching(false);
+    if (!keep) setFilters((f) => ({ ...f, query: "" }));
+  }, []);
+
   // -------------------------------------------------------------- palette
 
   const paletteActions = useMemo<PaletteAction[]>(() => {
@@ -694,20 +878,24 @@ export function App({ data, onQuit }: AppProps) {
             { id: "task.subtask", group: "Task", label: "Add subtask", hint: "t", run: addSubtask },
             { id: "task.note", group: "Task", label: "Add note", hint: "n", run: addTaskNote },
             { id: "task.time", group: "Task", label: "Log time", hint: "L", run: logTime },
-            { id: "task.block", group: "Task", label: "Block on…", run: openBlockPicker },
-            { id: "task.unblock", group: "Task", label: "Remove blocker…", run: openUnblockPicker },
+            { id: "task.block", group: "Task", label: "Block on…", hint: "b", run: openBlockPicker },
+            { id: "task.unblock", group: "Task", label: "Remove blocker…", hint: "B", run: openUnblockPicker },
             { id: "view.sort", group: "View", label: "Cycle sort order", hint: "o", run: cycleSort },
             { id: "view.tags", group: "View", label: "Toggle tag bar", hint: "#", run: () => setTagBar((v) => !v) },
           ];
     const actions: PaletteAction[] = [
       ...taskActions,
-      { id: "journal.add", group: "Journal", label: "Add journal entry", hint: "a", run: addJournalEntry },
-      { id: "view.search", group: "View", label: "Filter", hint: "/", run: () => setSearching(true) },
+      { id: "journal.add", group: "Journal", label: "Add journal entry for today", hint: "a", run: () => addJournalEntry("today") },
+      { id: "journal.addDay", group: "Journal", label: "Add entry to selected day", hint: "A", run: () => addJournalEntry("selected") },
+      { id: "view.search", group: "View", label: "Filter", hint: "/", run: startSearch },
+      { id: "view.density", group: "View", label: "Cycle row density", hint: "z", run: toggleDensity },
+      { id: "view.widen", group: "View", label: "Widen task list", hint: ">", run: () => resizePanels(0.05) },
+      { id: "view.narrow", group: "View", label: "Narrow task list", hint: "<", run: () => resizePanels(-0.05) },
       { id: "view.theme", group: "View", label: "Toggle light / dark", hint: "T", run: toggleTheme },
       { id: "view.stats", group: "View", label: "Show statistics", hint: "S", run: () => setModal({ type: "stats" }) },
       { id: "view.help", group: "View", label: "Show help", hint: "?", run: () => setModal({ type: "help" }) },
       { id: "focus.toggle", group: "Focus", label: "Start / stop focus timer", hint: "f", run: toggleFocus },
-      { id: "app.undo", group: "App", label: "Undo last delete", hint: "u", run: undo },
+      { id: "app.undo", group: "App", label: "Undo", hint: "u", run: undo },
       { id: "app.settings", group: "App", label: "Settings", hint: "P", run: () => setModal({ type: "settings" }) },
       { id: "app.export.md", group: "App", label: "Export everything to Markdown", run: () => exportAll("md") },
       { id: "app.export.json", group: "App", label: "Export everything to JSON", run: () => exportAll("json") },
@@ -718,6 +906,7 @@ export function App({ data, onQuit }: AppProps) {
         id: `view.tab.${t.id}`,
         group: "View",
         label: `Go to ${t.label}`,
+        hint: t.key,
         run: () => setTab(t.id),
       });
     }
@@ -736,64 +925,103 @@ export function App({ data, onQuit }: AppProps) {
     openEditTask,
     openUnblockPicker,
     requestQuit,
+    resizePanels,
     selectedTask,
+    startSearch,
     tab,
+    toggleDensity,
     toggleFocus,
     toggleTheme,
     undo,
   ]);
+
+  // --------------------------------------------------------------- layout
+
+  const compact = width < 72;
+  const listWidth = compact ? width : listWidthFor(ratio, width);
+  const dense = isDense(density, height);
+  const isJournal = isJournalTab;
+  const showTagBar = !isJournal && (tagBar || filters.tag !== null);
+  const showSearchBar = searching || filters.query !== "";
 
   // ------------------------------------------------------------- keyboard
 
   const move = useCallback(
     (delta: number) => {
       if (tab === "journal") {
-        if (panel === 0) {
-          setNoteIndex((i) => clampIndex(i + delta, shownNotes.length));
-          setEntryIndex(0);
-        } else {
-          setEntryIndex((i) =>
-            clampIndex(i + delta, selectedNote?.entries.length ?? 0),
-          );
-        }
+        if (panel === 0) selectNoteAt(noteIndex + delta);
+        else setEntryIndex(clampIndex(entryCursor + delta, entryCount));
         return;
       }
       if (panel === 0) {
-        setTaskIndex((i) => clampIndex(i + delta, shown.length));
+        setTaskIndex((i) => {
+          const next = clampIndex(i + delta, shown.length);
+          selectedTaskId.current = shown[next]?.id ?? null;
+          return next;
+        });
       } else {
-        setSubtaskIndex((i) =>
-          clampIndex(i + delta, selectedTask?.subtasks.length ?? 0),
-        );
+        setDetailIndex(clampIndex(detailCursor + delta, rows.length));
       }
     },
-    [panel, selectedNote, selectedTask, shown.length, shownNotes.length, tab],
+    [
+      detailCursor,
+      entryCount,
+      entryCursor,
+      noteIndex,
+      panel,
+      rows.length,
+      selectNoteAt,
+      shown,
+      tab,
+    ],
   );
 
-  const isJournalTab = tab === "journal";
+  // A page is what the focused panel can show; the list's rows vary with
+  // density, while the other surfaces are read line by line.
+  const listRowHeight = isOneLine(listWidth, dense)
+    ? 1
+    : 2 + (height < 30 ? 0 : 1);
+  const listChrome =
+    LIST_CHROME + (showTagBar ? 1 : 0) + (showSearchBar ? 1 : 0);
+  const pageBy = useCallback(
+    (direction: 1 | -1) => {
+      if (tab !== "journal" && panel === 1) {
+        const lines = pageSize(height, 1, DETAIL_CHROME);
+        if (rows.length === 0) detailRef.current?.scrollBy(direction * lines);
+        else move(direction * lines);
+        return;
+      }
+      const rowHeight = tab === "journal" ? (panel === 0 ? 1 : 3) : listRowHeight;
+      move(direction * pageSize(height, rowHeight, listChrome));
+    },
+    [height, listChrome, listRowHeight, move, panel, rows.length, tab],
+  );
 
   useKeyboard((key: KeyEvent) => {
-    if (modal.type !== "none") return;
-
-    if (searching) {
-      if (key.name === "escape") {
-        setSearching(false);
-        setFilters((f) => ({ ...f, query: "" }));
-      } else if (key.name === "return") {
-        setSearching(false);
-      } else if (key.name === "down") {
-        move(1);
-      } else if (key.name === "up") {
-        move(-1);
-      }
+    // Quitting must work from anywhere, overlays included, and always ask
+    // while a session runs; the confirm replaces whatever is open.
+    if (key.ctrl && key.name === "c") {
+      requestQuit();
       return;
     }
+    if (modal.type !== "none") return;
 
     if (key.ctrl && key.name === "k") {
       setModal({ type: "palette" });
       return;
     }
-    if (key.ctrl && key.name === "c") {
-      onQuit?.();
+
+    if (searching) {
+      if (key.name === "escape") stopSearch(false);
+      else if (key.name === "return") stopSearch(true);
+      else if (key.name === "down") move(1);
+      else if (key.name === "up") move(-1);
+      return;
+    }
+
+    if (key.ctrl) {
+      if (key.name === "u") pageBy(-1);
+      else if (key.name === "d") pageBy(1);
       return;
     }
 
@@ -807,6 +1035,12 @@ export function App({ data, onQuit }: AppProps) {
           const next = (idx + (key.shift ? -1 : 1) + TABS.length) % TABS.length;
           return TABS[next]!.id;
         });
+        return;
+      case "1":
+      case "2":
+      case "3":
+      case "4":
+        setTab(TABS[Number(key.name) - 1]!.id);
         return;
       case "j":
       case "down":
@@ -823,6 +1057,18 @@ export function App({ data, onQuit }: AppProps) {
           move(-Number.MAX_SAFE_INTEGER);
         }
         return;
+      case "home":
+        move(-Number.MAX_SAFE_INTEGER);
+        return;
+      case "end":
+        move(Number.MAX_SAFE_INTEGER);
+        return;
+      case "pageup":
+        pageBy(-1);
+        return;
+      case "pagedown":
+        pageBy(1);
+        return;
       case "left":
       case "h":
         // Shifted letters (H) belong to the sequence switch below.
@@ -834,24 +1080,27 @@ export function App({ data, onQuit }: AppProps) {
         if (key.name === "l" && key.shift) break;
         setPanel(1);
         return;
-      case "1":
-        setPanel(0);
-        return;
-      case "2":
-        setPanel(1);
-        return;
       case "escape":
         // Leave the detail panel first; a second escape clears the filter.
         if (panel === 1) setPanel(0);
-        else if (filters.query !== "" || filters.tag) setFilters(emptyFilters);
+        else if (
+          filters.query !== "" ||
+          filters.tag !== null ||
+          filters.view !== "all"
+        ) {
+          setFilters(emptyFilters);
+        }
         return;
       case "return":
-        if (tab !== "journal" && panel === 1) toggleSubtaskAt(subtaskIndex);
-        else setPanel(1);
+        // Enter opens the detail, then edits the row under its cursor;
+        // toggling stays on space so a double enter cannot check a step.
+        if (panel !== 1) setPanel(1);
+        else if (tab === "journal") editJournalEntry();
+        else editDetailRow();
         return;
       case "space":
         if (tab !== "journal") {
-          if (panel === 1) toggleSubtaskAt(subtaskIndex);
+          if (panel === 1) toggleDetailRow();
           else cycleStatus(selectedTask);
         }
         return;
@@ -866,7 +1115,7 @@ export function App({ data, onQuit }: AppProps) {
         if (!isJournalTab) cycleSort();
         return;
       case "/":
-        setSearching(true);
+        startSearch();
         return;
       case "f1":
         if (!isJournalTab) setSort("created");
@@ -883,17 +1132,24 @@ export function App({ data, onQuit }: AppProps) {
 
     switch (key.sequence) {
       case "a":
-        if (tab === "journal") addJournalEntry();
+        if (tab === "journal") addJournalEntry("today");
         else openAddTask();
         break;
+      case "A":
+        if (tab === "journal") addJournalEntry("selected");
+        break;
       case "e":
-        if (tab === "journal") editJournalEntry();
-        else if (panel === 1) editSubtask();
+        // Journal entries are only highlighted in their own panel, so the
+        // day list never edits or deletes one blind.
+        if (tab === "journal") {
+          if (panel === 1) editJournalEntry();
+        } else if (panel === 1) editDetailRow();
         else openEditTask();
         break;
       case "d":
-        if (tab === "journal") deleteJournalEntry();
-        else if (panel === 1) deleteSubtask();
+        if (tab === "journal") {
+          if (panel === 1) deleteJournalEntry();
+        } else if (panel === 1) deleteDetailRow();
         else deleteSelectedTask();
         break;
       case "s":
@@ -907,6 +1163,12 @@ export function App({ data, onQuit }: AppProps) {
         break;
       case "L":
         if (tab !== "journal") logTime();
+        break;
+      case "b":
+        if (tab !== "journal") openBlockPicker();
+        break;
+      case "B":
+        if (tab !== "journal") openUnblockPicker();
         break;
       case "x":
         if (tab === "journal") toggleNoteHidden();
@@ -929,6 +1191,9 @@ export function App({ data, onQuit }: AppProps) {
       case "S":
         setModal({ type: "stats" });
         break;
+      case "z":
+        toggleDensity();
+        break;
       case "?":
         setModal({ type: "help" });
         break;
@@ -939,8 +1204,6 @@ export function App({ data, onQuit }: AppProps) {
         break;
     }
   });
-
-  // --------------------------------------------------------------- layout
 
   const focusTaskTitle = useMemo(
     () =>
@@ -967,53 +1230,99 @@ export function App({ data, onQuit }: AppProps) {
     [pomodoro, theme, focusTaskTitle, cfg.focus.longBreakInterval],
   );
 
-  const compact = width < 72;
-  const listWidth = compact
-    ? width
-    : Math.max(Math.round(width * ratio), 24);
-  const isJournal = isJournalTab;
+  // The status bar is the discoverability surface: its keycaps run the same
+  // callbacks the keys do, and its list follows the focused panel.
+  const hintActions = useMemo<Record<HintAction, () => void>>(
+    () => ({
+      add: () => (isJournal ? addJournalEntry("today") : openAddTask()),
+      addDay: () => addJournalEntry("selected"),
+      edit: () =>
+        isJournal
+          ? editJournalEntry()
+          : panel === 1
+            ? editDetailRow()
+            : openEditTask(),
+      delete: () =>
+        isJournal
+          ? deleteJournalEntry()
+          : panel === 1
+            ? deleteDetailRow()
+            : deleteSelectedTask(),
+      status: () => cycleStatus(selectedTask),
+      toggle: toggleDetailRow,
+      subtask: addSubtask,
+      note: addTaskNote,
+      time: logTime,
+      filter: startSearch,
+      focus: toggleFocus,
+      block: openBlockPicker,
+      back: () => setPanel(0),
+      details: () => setPanel(1),
+      hide: toggleNoteHidden,
+      hidden: toggleHiddenNotes,
+      keep: () => stopSearch(true),
+      clear: () => stopSearch(false),
+      palette: () => setModal({ type: "palette" }),
+      help: () => setModal({ type: "help" }),
+    }),
+    [
+      addJournalEntry,
+      addSubtask,
+      addTaskNote,
+      cycleStatus,
+      deleteDetailRow,
+      deleteJournalEntry,
+      deleteSelectedTask,
+      editDetailRow,
+      editJournalEntry,
+      isJournal,
+      logTime,
+      openAddTask,
+      openBlockPicker,
+      openEditTask,
+      panel,
+      selectedTask,
+      startSearch,
+      stopSearch,
+      toggleDetailRow,
+      toggleFocus,
+      toggleHiddenNotes,
+      toggleNoteHidden,
+    ],
+  );
 
-  // The status bar is the discoverability surface; keep it in step with
-  // whatever the focused panel actually answers to.
-  const hints: [string, string][] = isJournal
-    ? [
-        ["a", "add"],
-        ["e", "edit"],
-        ["d", "delete"],
-        ["/", "search"],
-        ["x", "hide"],
-        ["H", "hidden"],
-        ["^k", "palette"],
-        ["?", "help"],
-      ]
-    : panel === 1
-      ? [
-          ["space", "toggle"],
-          ["e", "edit"],
-          ["d", "delete"],
-          ["t", "add step"],
-          ["h", "back"],
-          ["^k", "palette"],
-          ["?", "help"],
-        ]
-      : [
-          ["a", "add"],
-          ["e", "edit"],
-          ["space", "status"],
-          ["t", "subtask"],
-          ["/", "filter"],
-          ["f", "focus"],
-          ["^k", "palette"],
-          ["?", "help"],
-        ];
+  const hints = useMemo<Hint[]>(
+    () =>
+      hintSpecs({ tab, panel, compact, searching }).map((h) => ({
+        key: h.key,
+        label: h.label,
+        run: h.action ? hintActions[h.action] : undefined,
+      })),
+    [compact, hintActions, panel, searching, tab],
+  );
 
-  const listSubtitle = isJournal
-    ? shownNotes.length === notes.length
-      ? `${notes.length} days`
-      : `${shownNotes.length} of ${notes.length}`
-    : shown.length === tabTotal
-      ? `${tabTotal} tasks`
-      : `${shown.length} of ${tabTotal}`;
+  const tabLabel = TABS.find((t) => t.id === tab)?.label ?? "Tasks";
+
+  const finishedToday = useMemo(
+    () => (tab === "done" ? doneToday(tasks, GoTime.now()) : 0),
+    [tab, tasks],
+  );
+
+  let listSubtitle: string;
+  if (isJournal) {
+    listSubtitle =
+      shownNotes.length === notes.length
+        ? plural(notes.length, "day")
+        : `${shownNotes.length} of ${notes.length}`;
+  } else if (shown.length !== tabTotal) {
+    listSubtitle = `${shown.length} of ${tabTotal}`;
+  } else if (tab === "done") {
+    listSubtitle = `${plural(tabTotal, "task")} · ${finishedToday} today`;
+  } else {
+    listSubtitle = plural(tabTotal, "task");
+  }
+  // In one column the other panel is off screen; say how to reach it.
+  if (compact) listSubtitle += isJournal ? " · l entries" : " · l details";
 
   const detailTitle = isJournal
     ? selectedNote
@@ -1048,7 +1357,9 @@ export function App({ data, onQuit }: AppProps) {
         width={width}
       />
 
-      {tagBar && !isJournal ? (
+      {/* An active tag filter keeps its bar, or the filter would be invisible
+          once the bar is toggled away. */}
+      {showTagBar ? (
         <TagBar
           theme={theme}
           tasks={tasks}
@@ -1063,14 +1374,14 @@ export function App({ data, onQuit }: AppProps) {
         <box width={compact ? undefined : listWidth} flexGrow={compact ? 1 : 0} flexDirection="column" minHeight={0}>
           <Panel
             theme={theme}
-            title={isJournal ? "Journal" : "Tasks"}
+            title={tabLabel}
             subtitle={listSubtitle}
             focused={panel === 0}
             onMouseDown={() => setPanel(0)}
           >
             {/* An applied filter must stay visible after enter, so the bar
                 sticks around while a query is active. */}
-            {searching || filters.query !== "" ? (
+            {showSearchBar ? (
               <SearchBar
                 theme={theme}
                 value={filters.query}
@@ -1095,8 +1406,7 @@ export function App({ data, onQuit }: AppProps) {
                 selected={noteIndex}
                 focused={panel === 0}
                 onSelect={(i) => {
-                  setNoteIndex(i);
-                  setEntryIndex(0);
+                  selectNoteAt(i);
                   setPanel(0);
                 }}
               />
@@ -1109,12 +1419,14 @@ export function App({ data, onQuit }: AppProps) {
                 focused={panel === 0}
                 width={listWidth}
                 height={height}
-                dense={height < 30}
-                sort={sort}
+                dense={dense}
+                // Due groups label finished tasks "overdue"; the Done tab
+                // reads as a log, so it stays flat whatever the sort.
+                sort={tab === "done" ? "created" : sort}
                 now={GoTime.now()}
                 blocked={blocked}
                 marked={undefined}
-                onSelect={setTaskIndex}
+                onSelect={selectTaskAt}
                 onActivate={() => setPanel(0)}
                 onToggleStatus={(index) => cycleStatus(shown[index] ?? null)}
                 emptyIcon={filters.query !== "" || filters.tag ? "⌕" : "✦"}
@@ -1135,13 +1447,7 @@ export function App({ data, onQuit }: AppProps) {
         )}
 
         {compact ? null : (
-          <box
-            width={1}
-            backgroundColor={theme.bg}
-            onMouseDrag={(event) => {
-              dragPanels(Math.min(Math.max(event.x / width, 0.2), 0.8));
-            }}
-          />
+          <PanelDivider theme={theme} onDrag={(x) => applyRatio(x / width)} />
         )}
 
         {compact && panel === 0 ? null : (
@@ -1158,7 +1464,7 @@ export function App({ data, onQuit }: AppProps) {
                   theme={theme}
                   cfg={cfg}
                   note={selectedNote}
-                  selected={entryIndex}
+                  selected={entryCursor}
                   focused={panel === 1}
                   onSelect={(i) => {
                     setEntryIndex(i);
@@ -1167,13 +1473,14 @@ export function App({ data, onQuit }: AppProps) {
                 />
               ) : (
                 <TaskDetail
+                  ref={detailRef}
                   theme={theme}
                   cfg={cfg}
                   task={selectedTask}
                   focused={panel === 1}
-                  cursor={subtaskIndex}
+                  cursor={detailCursor}
                   onSelectRow={(i) => {
-                    setSubtaskIndex(i);
+                    setDetailIndex(i);
                     setPanel(1);
                   }}
                   onToggleSubtask={toggleSubtaskAt}
@@ -1187,7 +1494,7 @@ export function App({ data, onQuit }: AppProps) {
 
       <StatusBar
         theme={theme}
-        hints={hints.map(([key, label]) => ({ key, label }))}
+        hints={hints}
         message={toast?.message ?? null}
         messageKind={toast?.kind ?? "info"}
         messageId={toast?.id ?? 0}
@@ -1215,6 +1522,7 @@ export function App({ data, onQuit }: AppProps) {
           theme={theme}
           title={modal.title}
           message={modal.message}
+          excerpt={modal.excerpt}
           detail={modal.detail}
           confirmLabel={modal.confirmLabel}
           screenWidth={width}

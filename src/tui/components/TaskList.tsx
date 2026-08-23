@@ -83,6 +83,12 @@ const DENSE_MIN_META = 56;
 /** The one-line layout shows the first tag only, in a column this wide. */
 const DENSE_MAX_TAG = 14;
 
+/** Whether rows collapse to one line: the caller asked for density and the
+ * list is wide enough to hold the title and its cells side by side. */
+export function isOneLine(width: number, dense: boolean): boolean {
+  return dense && Math.max(width - META_CHROME, 10) >= DENSE_MIN_META;
+}
+
 /** Four-dot progress, easier to scan than a tiny bar. */
 function progressDots(completed: number, total: number): string {
   if (total === 0) return "";
@@ -391,7 +397,7 @@ export const TaskList = memo(function TaskList({
   }
 
   const metaWidth = Math.max(width - META_CHROME, 10);
-  const oneLine = dense && metaWidth >= DENSE_MIN_META;
+  const oneLine = isOneLine(width, dense);
   // Below this the second line has no room for anything meaningful.
   const showMeta = width > 30;
   // The tag column only takes what the longest first tag needs.

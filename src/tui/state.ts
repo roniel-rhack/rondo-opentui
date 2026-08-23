@@ -1,4 +1,5 @@
 import type { Config } from "../core/config/config.ts";
+import type { Density } from "../core/config/tui-state.ts";
 import { writeJSON, writeNotes, writeTasks } from "../core/export/export.ts";
 import { SessionKind } from "../core/focus/focus.ts";
 import { dateTitle, type Note } from "../core/journal/journal.ts";
@@ -6,7 +7,7 @@ import { isBlocked } from "../core/task/deps.ts";
 import { RecurFreq } from "../core/task/recur.ts";
 import { Priority, Status, type Task } from "../core/task/task.ts";
 import { parseDuration } from "../core/task/timelog.ts";
-import { GoTime, parseDueDateInput, sameDay } from "../core/time.ts";
+import { DateOnly, GoTime, parseDueDateInput, sameDay } from "../core/time.ts";
 import { DueLevel } from "../core/ui/overdue.ts";
 
 export type TabId = "all" | "active" | "done" | "journal";
@@ -624,4 +625,167 @@ export function plural(n: number, one: string, many = `${one}s`): string {
 /** Rows a page key moves by: one screen of rows minus one for context. */
 export function pageSize(height: number, rowHeight: number, chrome: number): number {
   return Math.max(1, Math.floor((height - chrome) / rowHeight) - 1);
+}
+
+/** Position of the note for `date` (YYYY-MM-DD), or the clamped fallback. */
+export function indexOfNoteDate(
+  notes: readonly Note[],
+  date: string | null,
+  fallback: number,
+): number {
+  if (date !== null) {
+    const idx = notes.findIndex((n) => n.date.format(DateOnly) === date);
+    if (idx !== -1) return idx;
+  }
+  return clampIndex(fallback, notes.length);
+}
+
+/** Narrowest list that still shows a readable title next to its glyphs. */
+export const LIST_MIN_WIDTH = 34;
+/** Narrowest detail panel whose fields fit beside their labels. */
+export const DETAIL_MIN_WIDTH = 40;
+
+/** Panel ratio kept inside what the terminal can show: neither panel drops
+ * below its minimum. On a terminal too narrow for both the list wins. */
+export function clampRatio(ratio: number, width: number): number {
+  const min = LIST_MIN_WIDTH / width;
+  const max = Math.max(min, (width - DETAIL_MIN_WIDTH) / width);
+  return Math.min(Math.max(ratio, min), max);
+}
+
+/** List columns for a ratio, clamped the same way so a ratio saved from a
+ * wider terminal cannot squeeze either panel. */
+export function listWidthFor(ratio: number, width: number): number {
+  return Math.round(width * clampRatio(ratio, width));
+}
+
+/** "auto" follows the terminal height; the other two are explicit. */
+export function isDense(density: Density, height: number): boolean {
+  if (density === "auto") return height < 30;
+  return density === "dense";
+}
+
+export function cycleDensity(density: Density): Density {
+  switch (density) {
+    case "auto":
+      return "dense";
+    case "dense":
+      return "comfortable";
+    default:
+      return "auto";
+  }
+}
+
+/** Open tasks before done ones, each group in its incoming order. */
+export function openFirst(tasks: readonly Task[]): Task[] {
+  return [
+    ...tasks.filter((t) => t.status !== Status.Done),
+    ...tasks.filter((t) => t.status === Status.Done),
+  ];
+}
+
+/** One line of at most `max` characters, for quoting what a dialog acts on. */
+export function excerptOf(text: string, max = 48): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= max) return flat;
+  return `${flat.slice(0, max - 1).trimEnd()}…`;
+}
+
+export type HintAction =
+  | "add"
+  | "addDay"
+  | "edit"
+  | "delete"
+  | "status"
+  | "toggle"
+  | "subtask"
+  | "note"
+  | "time"
+  | "filter"
+  | "focus"
+  | "block"
+  | "back"
+  | "details"
+  | "hide"
+  | "hidden"
+  | "keep"
+  | "clear"
+  | "palette"
+  | "help";
+
+export interface HintSpec {
+  key: string;
+  label: string;
+  /** What the keycap runs when clicked; null for keys that only describe. */
+  action: HintAction | null;
+}
+
+export interface HintContext {
+  tab: TabId;
+  panel: 0 | 1;
+  compact: boolean;
+  searching: boolean;
+}
+
+const HINT_TAIL: HintSpec[] = [
+  { key: "^k", label: "palette", action: "palette" },
+  { key: "?", label: "help", action: "help" },
+];
+
+/** Status-bar hints for the focused surface, most useful first so trimming
+ * from the end keeps the keys that matter; the palette and help close every
+ * list. */
+export function hintSpecs(ctx: HintContext): HintSpec[] {
+  if (ctx.searching) {
+    return [
+      { key: "↑↓", label: "move", action: null },
+      { key: "enter", label: "keep", action: "keep" },
+      { key: "esc", label: "clear", action: "clear" },
+      ...HINT_TAIL,
+    ];
+  }
+  if (ctx.tab === "journal") {
+    if (ctx.panel === 1) {
+      return [
+        { key: "e", label: "edit", action: "edit" },
+        { key: "d", label: "delete", action: "delete" },
+        { key: "a", label: "add", action: "add" },
+        { key: "h", label: "back", action: "back" },
+        ...HINT_TAIL,
+      ];
+    }
+    return [
+      ...(ctx.compact ? [{ key: "l", label: "entries", action: "details" as const }] : []),
+      { key: "a", label: "add", action: "add" },
+      { key: "A", label: "add to day", action: "addDay" },
+      { key: "/", label: "search", action: "filter" },
+      { key: "x", label: "hide", action: "hide" },
+      { key: "H", label: "hidden", action: "hidden" },
+      ...HINT_TAIL,
+    ];
+  }
+  if (ctx.panel === 1) {
+    return [
+      { key: "space", label: "toggle", action: "toggle" },
+      { key: "enter", label: "edit", action: "edit" },
+      { key: "d", label: "delete", action: "delete" },
+      { key: "t", label: "step", action: "subtask" },
+      { key: "n", label: "note", action: "note" },
+      { key: "L", label: "time", action: "time" },
+      { key: "h", label: "back", action: "back" },
+      ...HINT_TAIL,
+    ];
+  }
+  return [
+    ...(ctx.compact ? [{ key: "l", label: "details", action: "details" as const }] : []),
+    { key: "a", label: "add", action: "add" },
+    { key: "e", label: "edit", action: "edit" },
+    { key: "space", label: "status", action: "status" },
+    { key: "d", label: "delete", action: "delete" },
+    { key: "t", label: "subtask", action: "subtask" },
+    { key: "/", label: "filter", action: "filter" },
+    { key: "b", label: "block", action: "block" },
+    { key: "f", label: "focus", action: "focus" },
+    ...HINT_TAIL,
+  ];
 }

@@ -24,7 +24,7 @@ const DENSITIES: readonly Density[] = ["auto", "dense", "comfortable"];
 export function defaultTuiState(): TuiState {
   return {
     tab: "active",
-    sort: "created",
+    sort: "due",
     tagBar: false,
     tag: null,
     view: "all",

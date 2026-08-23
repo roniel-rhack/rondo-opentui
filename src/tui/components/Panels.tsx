@@ -10,6 +10,7 @@ import {
   fitHints,
   fitTags,
   loggedSince,
+  plural,
   SORT_LABELS,
   type Hint,
   type SortKey,
@@ -52,6 +53,28 @@ export function Panel({
     >
       {children}
     </box>
+  );
+}
+
+interface PanelDividerProps {
+  theme: TuiTheme;
+  /** Column the pointer is dragged to, in screen coordinates. */
+  onDrag: (x: number) => void;
+}
+
+/** The column between the panels: visible as a hairline, lit while the
+ * pointer is over it so it reads as the drag handle it is. */
+export function PanelDivider({ theme, onDrag }: PanelDividerProps) {
+  const [hover, setHover] = useState(false);
+  return (
+    <box
+      width={1}
+      flexShrink={0}
+      backgroundColor={hover ? theme.borderFocus : theme.border}
+      onMouseOver={() => setHover(true)}
+      onMouseOut={() => setHover(false)}
+      onMouseDrag={(event) => onDrag(event.x)}
+    />
   );
 }
 
@@ -598,7 +621,7 @@ export function StatsOverlay({
     <Overlay
       theme={theme}
       title="Statistics"
-      subtitle={`${total} tasks · ${formatDuration(logged)} logged`}
+      subtitle={`${plural(total, "task")} · ${formatDuration(logged)} logged`}
       width={66}
       height={Math.min(screenHeight - 2, 24)}
       screenWidth={screenWidth}

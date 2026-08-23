@@ -71,10 +71,13 @@ function seed(cfg = defaultConfig()): RondoData {
   data.tasks.create(milk);
   data.setStatus(milk, Status.Done);
 
+  // Due before the report so the due-sorted list, the default, opens on it
+  // just as the created order does.
   const refactor = newTask({
     title: "Refactor the parser",
     priority: Priority.Urgent,
     tags: ["code"],
+    dueDate: GoTime.date(2026, 12, 1, 0, 0, 0, 0, "utc"),
   });
   data.tasks.create(refactor);
 
@@ -94,7 +97,11 @@ async function mount(
   // Wrapping the initial mount keeps React's act() warnings out of the output.
   let setup!: Awaited<ReturnType<typeof testRender>>;
   await act(async () => {
-    setup = await testRender(<App data={data} />, { width, height });
+    setup = await testRender(<App data={data} />, {
+      width,
+      height,
+      exitOnCtrlC: false,
+    });
   });
   await setup.flush();
 
@@ -290,9 +297,10 @@ describe("TUI rendering", () => {
   test("o cycles the sort order", async () => {
     const { captureCharFrame, press, renderer } = await mount();
 
-    expect(captureCharFrame()).toContain("⇅ Created");
-    await press("o");
+    // Due is the opening sort, so the wheel goes on to priority.
     expect(captureCharFrame()).toContain("⇅ Due date");
+    await press("o");
+    expect(captureCharFrame()).toContain("⇅ Priority");
     renderer.destroy();
   });
 
@@ -311,7 +319,9 @@ describe("TUI rendering", () => {
     const { captureCharFrame, press, renderer } = await mount(50, 20);
 
     const list = captureCharFrame();
-    expect(list).toContain("Tasks");
+    expect(list).toContain("● Active");
+    expect(list).toContain("2 tasks · l details");
+    expect(list.split("\n")[18]).toMatch(/^  l  details /);
     expect(list).toContain("Refactor the parser");
     // The detail panel is not on screen while the list is focused.
     expect(list).not.toContain("OPEN BY PRIORITY");
@@ -703,9 +713,13 @@ describe("TUI list density", () => {
       .map((line) => line.slice(0, line.indexOf("│ │") + 1))
       .join("\n");
 
-    expect(listColumn).toContain("Late task");
-    expect(listColumn).not.toContain("OVERDUE");
-    expect(listColumn).toContain("30d late");
+    // The due sort files the task under an OVERDUE header; the row itself
+    // carries only the relative label.
+    const lines = listColumn.split("\n");
+    const row = lines.findIndex((l) => l.includes("Late task"));
+    expect(row).toBeGreaterThan(0);
+    expect(`${lines[row]}\n${lines[row + 1]}`).not.toContain("OVERDUE");
+    expect(lines[row + 1]).toContain("30d late");
     setup.renderer.destroy();
   });
 
@@ -715,7 +729,10 @@ describe("TUI list density", () => {
     // The list opens on Active, which hides the done task used here.
     await goToTab("all");
 
-    const lines = captureCharFrame().split("\n");
+    // Only the list column: the detail panel repeats the title.
+    const lines = captureCharFrame()
+      .split("\n")
+      .map((line) => line.slice(0, line.indexOf("│ │") + 1));
     const doneRow = lines.findIndex((l) => l.includes("Buy oat milk"));
     expect(doneRow).toBeGreaterThan(0);
     const milk = data.listTasks().find((t) => t.title === "Buy oat milk")!;
@@ -780,7 +797,7 @@ describe("TUI review fixes", () => {
 
     await goToTab("journal");
     await press("k", { ctrl: true });
-    await type("cycle");
+    await type("cycle status");
 
     expect(captureCharFrame()).toContain("No matching command");
     renderer.destroy();
@@ -993,14 +1010,20 @@ describe("TUI review fixes", () => {
     renderer.destroy();
   });
 
-  test("resizing the panels persists the ratio", async () => {
-    const { press, renderer } = await mount();
+  test("resizing the panels persists the ratio once the keys settle", async () => {
+    const { press, data, renderer } = await mount();
 
     await press("<");
-    const cfg = JSON.parse(
+    // Like a drag, the key writes once, after a pause, not per press.
+    expect(data.cfg.panelRatio).toBeCloseTo(0.4);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 500));
+    });
+    expect(data.cfg.panelRatio).toBeCloseTo(0.35);
+    const saved = JSON.parse(
       readFileSync(join(process.env.RONDO_HOME!, "config.json"), "utf8"),
     );
-    expect(cfg.panel_ratio).toBeCloseTo(0.35);
+    expect(saved.panel_ratio).toBeCloseTo(0.35);
     renderer.destroy();
   });
 });
@@ -1828,7 +1851,7 @@ describe("TUI review 3 — dialogs", () => {
     expect(frame).toMatch(/│    ┃ New task\s+a/);
     expect(frame).not.toContain("Task     New task");
 
-    for (let i = 0; i < 25; i++) await press("n", { ctrl: true });
+    for (let i = 0; i < 40; i++) await press("n", { ctrl: true });
     frame = captureCharFrame();
     expect(frame).toMatch(/│  APP\s+│/);
     expect(frame).toContain("Quit");
@@ -2017,7 +2040,12 @@ describe("TUI review 3 — detail and journal", () => {
       24,
       defaultConfig(),
       (d) => {
-        const spec = newTask({ title: "Long spec", description: longDescription });
+        // Due before the seed so the due-sorted list opens on it.
+        const spec = newTask({
+          title: "Long spec",
+          description: longDescription,
+          dueDate: GoTime.date(2026, 11, 1, 0, 0, 0, 0, "utc"),
+        });
         d.tasks.create(spec);
         for (const step of ["Step 1", "Step 2", "Step 3"]) {
           d.tasks.addSubtask(spec.id, step);
@@ -2200,11 +2228,18 @@ describe("TUI review 3 — detail and journal", () => {
       30,
       defaultConfig(),
       (d) => {
-        const plan = newTask({ title: "Plan it" });
+        // Due dates before the seed so the due-sorted list opens on Ship it.
+        const plan = newTask({
+          title: "Plan it",
+          dueDate: GoTime.date(2026, 11, 2, 0, 0, 0, 0, "utc"),
+        });
         d.tasks.create(plan);
         d.tasks.addSubtask(plan.id, "Outline");
         d.tasks.addSubtask(plan.id, "Review");
-        const ship = newTask({ title: "Ship it" });
+        const ship = newTask({
+          title: "Ship it",
+          dueDate: GoTime.date(2026, 11, 1, 0, 0, 0, 0, "utc"),
+        });
         d.tasks.create(ship);
         d.tasks.addSubtask(ship.id, "Build");
         d.tasks.addSubtask(ship.id, "Release");
@@ -2281,6 +2316,10 @@ describe("TUI review 3 — task list", () => {
 
   test("80 columns: titles trim at the tail and the priority glyph keeps its gap", async () => {
     const m = await mountWith(backlog, 80, 24);
+    // Newest first, from the top: the glyph sequence below is by creation.
+    await m.press("F1");
+    await m.press("g");
+    await m.settle();
 
     const rows = listLines(m.captureCharFrame()).filter((l) =>
       l.includes("Filler task"),
@@ -2294,10 +2333,11 @@ describe("TUI review 3 — task list", () => {
     }
     // Every priority above Low is marked; Low is not.
     const frame = m.captureCharFrame();
-    expect(frame).toMatch(/Filler task 39 with a… ◆/);
-    expect(frame).toMatch(/Filler task 38 with a… ▲/);
-    expect(frame).toMatch(/Filler task 37 with a… △/);
-    expect(frame).toMatch(/Filler task 36 with a t…  │/);
+    // The list keeps 34 columns at 80, two more than the old 0.4 ratio gave.
+    expect(frame).toMatch(/Filler task 39 with a t… ◆/);
+    expect(frame).toMatch(/Filler task 38 with a t… ▲/);
+    expect(frame).toMatch(/Filler task 37 with a t… △/);
+    expect(frame).toMatch(/Filler task 36 with a tit…  │/);
     m.renderer.destroy();
   });
 
@@ -2375,6 +2415,7 @@ describe("TUI review 3 — task list", () => {
         data.tasks.create(
           newTask({ title: "Later one", dueDate: now.addDate(0, 0, 10) }),
         );
+        data.tasks.create(newTask({ title: "Undated one" }));
       },
       100,
       30,
@@ -2386,8 +2427,8 @@ describe("TUI review 3 — task list", () => {
     const text = lines.join("\n");
     expect(text).toContain("OVERDUE  1");
     expect(text).toContain("TODAY  1");
-    // The seed adds one far-off due date and one undated task.
-    expect(text).toContain("LATER  2");
+    // The seed adds two far-off due dates; the fixture one undated task.
+    expect(text).toContain("LATER  3");
     expect(text).toContain("NO DATE  1");
     expect(text).toContain("2d late");
     expect(text).toContain("today");
@@ -2414,6 +2455,9 @@ describe("TUI review 3 — task list", () => {
       100,
       30,
     );
+    // Undated rows close the due-sorted list.
+    await m.press("G");
+    await m.settle();
 
     const lines = listLines(m.captureCharFrame());
     const row = lines.findIndex((l) => l.includes("Tagged only"));
@@ -2428,11 +2472,12 @@ describe("TUI review 3 — task list", () => {
     const theme = tuiTheme(true);
 
     const rowSpans = () => {
-      const frame = m.captureSpans();
-      const line = frame.lines.find((l) =>
-        l.spans.some((s) => s.text.includes("Refactor the parser")),
-      )!;
-      return line.spans;
+      // The detail title sits above the list row now that a section header
+      // leads the list, so locate the row through the list column.
+      const row = listLines(m.captureCharFrame()).findIndex((l) =>
+        l.includes("Refactor the parser"),
+      );
+      return m.captureSpans().lines[row]!.spans;
     };
 
     const focusedSpans = rowSpans();
@@ -2613,7 +2658,7 @@ describe("TUI review 3 — panels", () => {
       const status = statusRow(captureCharFrame(), 24);
       expect(status).toContain(" ?  help ");
       expect(status).toContain(" ^k  ");
-      expect(status).toContain(" ⇅ Created");
+      expect(status).toContain(" ⇅ Due date");
       expect(status).not.toMatch(/[a-z]⇅/);
       expect(status).not.toContain("spacestatus");
       expect(status.length).toBeLessThanOrEqual(w);
@@ -2852,6 +2897,529 @@ describe("TUI review 3 — panels", () => {
     });
     const after = (doneRow().match(/█/g) ?? []).length;
     expect(after).toBeGreaterThan(before);
+    renderer.destroy();
+  });
+});
+
+describe("TUI review 3 — keys and selection", () => {
+  /** Only the list column: the detail panel repeats titles. */
+  function listColumn(frame: string): string[] {
+    return frame.split("\n").map((line) => {
+      const end = line.indexOf("│ │");
+      return end < 0 ? line : line.slice(0, end + 1);
+    });
+  }
+
+  /** The list row under the cursor. */
+  function cursorRow(frame: string): string {
+    return listColumn(frame).find((l) => l.includes("┃")) ?? "";
+  }
+
+  /** Only the detail column: the list repeats the selected title. */
+  function detailColumn(frame: string): string {
+    return frame
+      .split("\n")
+      .map((line) => line.slice(line.indexOf("│ │") + 2))
+      .join("\n");
+  }
+
+  const settle = async (flush: () => Promise<void>) => {
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+    });
+    await flush();
+  };
+
+  const PAGE_DOWN = "\u001b[6~";
+  const PAGE_UP = "\u001b[5~";
+
+  function fillers(count: number) {
+    return (d: RondoData) => {
+      for (let i = 0; i < count; i++) {
+        d.tasks.create(newTask({ title: `Filler task ${i}` }));
+      }
+    };
+  }
+
+  test("2.3: ctrl+c asks before quitting, even from inside an overlay", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("f");
+    await press("?");
+    expect(captureCharFrame()).toContain("Keyboard & mouse");
+
+    await press("c", { ctrl: true });
+    const frame = captureCharFrame();
+    expect(frame).toContain("focus session is running");
+    expect(frame).not.toContain("Keyboard & mouse");
+    renderer.destroy();
+  });
+
+  test("2.7: a sort change keeps the selected task, not the row number", async () => {
+    const { captureCharFrame, press, renderer, flush } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (d) => {
+        d.tasks.create(
+          newTask({ title: "Soon one", dueDate: GoTime.now().addDate(0, 0, 1) }),
+        );
+      },
+    );
+
+    await press("j");
+    expect(cursorRow(captureCharFrame())).toContain("Refactor the parser");
+
+    await press("F1");
+    await settle(flush);
+    expect(cursorRow(captureCharFrame())).toContain("Refactor the parser");
+    renderer.destroy();
+  });
+
+  test("2.7: clearing a filter keeps the task found under it", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
+
+    await press("/");
+    await type("report");
+    await press("RETURN");
+    expect(cursorRow(captureCharFrame())).toContain("Write the report");
+
+    await press("ESCAPE");
+    expect(captureCharFrame()).toContain("2 tasks");
+    expect(cursorRow(captureCharFrame())).toContain("Write the report");
+    renderer.destroy();
+  });
+
+  test("2.7: a created task is selected, and so is a task brought back by undo", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
+
+    await press("a");
+    await type("Ship the release");
+    await press("s", { ctrl: true });
+    expect(cursorRow(captureCharFrame())).toContain("Ship the release");
+
+    await press("g");
+    expect(cursorRow(captureCharFrame())).toContain("Refactor the parser");
+    await press("d");
+    await press("y");
+    expect(cursorRow(captureCharFrame())).not.toContain("Refactor the parser");
+
+    await press("u");
+    expect(cursorRow(captureCharFrame())).toContain("Refactor the parser");
+    renderer.destroy();
+  });
+
+  test("2.7: a new journal entry selects its day", async () => {
+    const { captureCharFrame, goToTab, press, type, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (d) => {
+        d.addJournalEntry("Long ago", "2026-08-10");
+      },
+    );
+
+    await goToTab("journal");
+    await press("j");
+    expect(cursorRow(captureCharFrame())).toContain("Aug 10");
+
+    await press("a");
+    expect(captureCharFrame()).toContain("Entry for today");
+    await type("Fresh");
+    await press("s", { ctrl: true });
+    expect(cursorRow(captureCharFrame())).toContain("Today");
+    renderer.destroy();
+  });
+
+  test("2.9: / focuses the list and the hints explain the search keys", async () => {
+    const { captureCharFrame, press, renderer } = await mount(60, 20);
+
+    await press("l");
+    expect(captureCharFrame()).toContain("● Details");
+
+    await press("/");
+    const frame = captureCharFrame();
+    expect(frame).toContain("● Active");
+    expect(frame.split("\n")[18]).toMatch(/^  ↑↓  move  enter  keep /);
+
+    await press("ARROW_DOWN");
+    expect(cursorRow(captureCharFrame())).toContain("Write the report");
+    renderer.destroy();
+  });
+
+  test("2.10: deleting the last step leaves the cursor on the one before it", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("j");
+    await press("RETURN");
+    await press("j");
+    expect(captureCharFrame()).toContain("┃ ▢ Draft intro");
+
+    await press("d");
+    await press("y");
+    expect(captureCharFrame()).toContain("┃ ▢ Collect numbers");
+
+    await press("e");
+    expect(captureCharFrame()).toContain("Edit subtask");
+    expect(captureCharFrame()).toContain("Collect numbers");
+    renderer.destroy();
+  });
+
+  test("2.12: typing a query lands the cursor on the best match", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
+
+    await press("j");
+    expect(cursorRow(captureCharFrame())).toContain("Write the report");
+
+    await press("/");
+    await type("re");
+    expect(captureCharFrame()).toContain("2/2");
+    expect(cursorRow(captureCharFrame())).toContain("Refactor the parser");
+    renderer.destroy();
+  });
+
+  test("2.16: f in the journal starts a session without a task", async () => {
+    const { captureCharFrame, goToTab, press, data, renderer } = await mount(120);
+
+    await goToTab("journal");
+    await press("f");
+    const header = captureCharFrame().split("\n")[0]!;
+    expect(header).toContain("Focus");
+    expect(header).not.toContain("Refactor the parser");
+    expect(data.focus.listByTask(3)).toHaveLength(0);
+    renderer.destroy();
+  });
+
+  test("2.17: enter in the detail panel edits the step instead of toggling it", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("j");
+    await press("RETURN");
+    await press("RETURN");
+    const frame = captureCharFrame();
+    expect(frame).toContain("Edit subtask");
+    expect(frame).toContain("Collect numbers");
+
+    await press("ESCAPE");
+    expect(captureCharFrame()).toContain("0/2");
+    await press(" ");
+    expect(captureCharFrame()).toContain("1/2");
+    renderer.destroy();
+  });
+
+  test("3.5: digits jump to tabs and the palette shows them", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
+
+    await press("4");
+    expect(captureCharFrame()).toContain("● Journal");
+    await press("2");
+    expect(captureCharFrame()).toContain("● Done");
+    expect(captureCharFrame()).toContain("Buy oat milk");
+    await press("3");
+    expect(captureCharFrame()).toContain("● All");
+    await press("1");
+    expect(captureCharFrame()).toContain("● Active");
+
+    await press("k", { ctrl: true });
+    await type("go to journal");
+    expect(captureCharFrame()).toMatch(/Go to Journal\s+4/);
+    renderer.destroy();
+  });
+
+  test("3.6: page keys move by a screen, home and end jump", async () => {
+    const { captureCharFrame, press, renderer, flush } = await mount(
+      80,
+      24,
+      defaultConfig(),
+      fillers(40),
+    );
+
+    await press(PAGE_DOWN);
+    await settle(flush);
+    const row = cursorRow(captureCharFrame());
+    expect(row).toContain("Filler task");
+    expect(row).not.toContain("Filler task 39");
+
+    await press(PAGE_UP);
+    await settle(flush);
+    expect(cursorRow(captureCharFrame())).toContain("Refactor the parser");
+
+    await press("d", { ctrl: true });
+    await settle(flush);
+    expect(cursorRow(captureCharFrame())).toBe(row);
+    await press("u", { ctrl: true });
+    await settle(flush);
+    expect(cursorRow(captureCharFrame())).toContain("Refactor the parser");
+
+    await press("END");
+    await settle(flush);
+    expect(cursorRow(captureCharFrame())).toContain("Filler task 0");
+    await press("HOME");
+    await settle(flush);
+    expect(cursorRow(captureCharFrame())).toContain("Refactor the parser");
+    renderer.destroy();
+  });
+
+  test("3.6: in the detail panel a page walks the rows or scrolls the text", async () => {
+    const longDescription = Array.from(
+      { length: 20 },
+      (_, i) => `Line ${i + 1} of the spec`,
+    ).join("\n");
+    const { captureCharFrame, press, renderer, flush } = await mount(
+      80,
+      24,
+      defaultConfig(),
+      (d) => {
+        d.tasks.create(
+          newTask({
+            title: "Long spec",
+            description: longDescription,
+            dueDate: GoTime.date(2026, 11, 1, 0, 0, 0, 0, "utc"),
+          }),
+        );
+      },
+    );
+
+    await press("l");
+    expect(detailColumn(captureCharFrame())).toContain("○ Long spec");
+    expect(detailColumn(captureCharFrame())).not.toContain("Line 14");
+    await press(PAGE_DOWN);
+    await settle(flush);
+    expect(detailColumn(captureCharFrame())).not.toContain("○ Long spec");
+    expect(detailColumn(captureCharFrame())).toContain("Line 14");
+
+    await press("h");
+    await press("G");
+    await press("l");
+    await press(PAGE_DOWN);
+    await settle(flush);
+    expect(captureCharFrame()).toContain("┃ ▢ Draft intro");
+    renderer.destroy();
+  });
+
+  test("3.11: b and B open the block pickers, open tasks first", async () => {
+    const { captureCharFrame, press, data, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (d) => {
+        const chore = newTask({ title: "Archived chore" });
+        d.tasks.create(chore);
+        d.setStatus(chore, Status.Done);
+      },
+    );
+
+    await press("b");
+    let frame = captureCharFrame();
+    expect(frame).toContain("Block on");
+    const lines = frame.split("\n");
+    expect(lines.findIndex((l) => l.includes("Write the report"))).toBeLessThan(
+      lines.findIndex((l) => l.includes("Archived chore")),
+    );
+
+    await press("RETURN");
+    frame = captureCharFrame();
+    expect(frame).toContain("BLOCKED");
+    expect(data.tasks.getById(3)!.blockedByIds).toEqual([1]);
+
+    await press("B");
+    expect(captureCharFrame()).toContain("Remove blocker");
+    await press("RETURN");
+    expect(captureCharFrame()).not.toContain("BLOCKED");
+    expect(data.tasks.getById(3)!.blockedByIds).toEqual([]);
+    renderer.destroy();
+  });
+
+  test("1.10: the panel ratio stops where either panel would become unusable", async () => {
+    const { captureCharFrame, press, renderer } = await mount(80, 24);
+    const dividerAt = () => captureCharFrame().split("\n")[1]!.indexOf("╮");
+
+    for (let i = 0; i < 12; i++) await press(">");
+    expect(dividerAt()).toBe(39);
+    expect(captureCharFrame().split("\n")[5]).toContain("Pending");
+
+    for (let i = 0; i < 12; i++) await press("<");
+    expect(dividerAt()).toBe(33);
+    renderer.destroy();
+  });
+
+  test("5.15: the divider is visible, lights up under the pointer, and the palette resizes", async () => {
+    const cfg = defaultConfig();
+    cfg.theme = "dark";
+    const { captureSpans, captureCharFrame, press, type, renderer, mockMouse, flush } =
+      await mount(100, 30, cfg);
+    const theme = tuiTheme(true);
+    const hex = (c: { toInts(): [number, number, number, number] }) => {
+      const [r, g, b] = c.toInts();
+      return `#${[r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("")}`;
+    };
+    const dividerColumn = () => captureCharFrame().split("\n")[1]!.indexOf("╮") + 1;
+    const dividerBg = () => {
+      const column = dividerColumn();
+      let x = 0;
+      for (const span of captureSpans().lines[5]!.spans) {
+        if (column >= x && column < x + span.width) return hex(span.bg);
+        x += span.width;
+      }
+      throw new Error("divider not found");
+    };
+
+    expect(dividerBg()).toBe(theme.border);
+    await act(async () => {
+      await mockMouse.moveTo(dividerColumn(), 5);
+    });
+    await flush();
+    expect(dividerBg()).toBe(theme.borderFocus);
+
+    await press("k", { ctrl: true });
+    await type("widen");
+    expect(captureCharFrame()).toMatch(/Widen task list\s+>/);
+    await press("RETURN");
+    expect(dividerColumn()).toBe(45);
+    renderer.destroy();
+  });
+
+  test("3.12: a task created inside a tag filter inherits the tag", async () => {
+    const { captureCharFrame, press, click, type, data, renderer } = await mount();
+
+    await press("#");
+    const frame = captureCharFrame();
+    const row = frame.split("\n").findIndex((l) => l.includes("tags "));
+    const column = frame.split("\n")[row]!.indexOf("#work");
+    await click(column + 1, row);
+    expect(captureCharFrame()).toContain("1 of 2");
+
+    await press("a");
+    await type("Write the appendix");
+    await press("s", { ctrl: true });
+
+    const created = data.listTasks().find((t) => t.title === "Write the appendix")!;
+    expect(created.tags).toEqual(["work"]);
+    expect(cursorRow(captureCharFrame())).toContain("Write the appendix");
+    renderer.destroy();
+  });
+
+  test("2.1: journal a writes to today, A to the selected day", async () => {
+    const { captureCharFrame, goToTab, press, type, data, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (d) => {
+        d.addJournalEntry("Long ago", "2026-08-10");
+      },
+    );
+
+    await goToTab("journal");
+    expect(captureCharFrame().split("\n")[28]).toContain(" A  add to day ");
+    await press("j");
+    await press("a");
+    expect(captureCharFrame()).toContain("Entry for today");
+    await press("ESCAPE");
+
+    await press("A");
+    const frame = captureCharFrame();
+    expect(frame).toContain("Entry for");
+    expect(frame).toContain("Aug 10");
+    expect(frame).not.toContain("Entry for today");
+    await type("Back-filled");
+    await press("s", { ctrl: true });
+
+    const old = data
+      .listNotes(false)
+      .find((n) => n.date.format("2006-01-02") === "2026-08-10")!;
+    expect(old.entries.map((e) => e.body)).toContain("Back-filled");
+    renderer.destroy();
+  });
+
+  test("2.6: journal d and e need the entry panel, and the confirm quotes the entry", async () => {
+    const { captureCharFrame, goToTab, press, renderer } = await mount();
+
+    await goToTab("journal");
+    const hints = captureCharFrame().split("\n")[28]!;
+    expect(hints).not.toContain(" d  delete ");
+    expect(hints).not.toContain(" e  edit ");
+
+    await press("d");
+    expect(captureCharFrame()).not.toContain("Delete entry");
+    await press("e");
+    expect(captureCharFrame()).not.toContain("Edit entry");
+
+    await press("l");
+    expect(captureCharFrame().split("\n")[28]).toContain(" d  delete ");
+    await press("d");
+    const frame = captureCharFrame();
+    expect(frame).toContain("Delete entry");
+    expect(frame).toContain("“Shipped the opentui port”");
+    renderer.destroy();
+  });
+
+  test("5.3: an active tag filter keeps its bar until the tag is cleared", async () => {
+    const { captureCharFrame, press, click, renderer } = await mount();
+
+    await press("#");
+    const frame = captureCharFrame();
+    const row = frame.split("\n").findIndex((l) => l.includes("tags "));
+    const column = frame.split("\n")[row]!.indexOf("#work");
+    await click(column + 1, row);
+
+    await press("#");
+    expect(captureCharFrame()).toContain("tags ");
+    expect(captureCharFrame()).toContain("1 of 2");
+
+    await press("ESCAPE");
+    expect(captureCharFrame()).not.toContain("tags ");
+    expect(captureCharFrame()).toContain("2 tasks");
+    renderer.destroy();
+  });
+
+  test("5.4: the status-bar keycaps run the actions they name", async () => {
+    const { captureCharFrame, click, renderer } = await mount();
+
+    const row = captureCharFrame().split("\n")[28]!;
+    await click(row.indexOf(" a  add ") + 1, 28);
+    expect(captureCharFrame()).toContain("New task");
+    renderer.destroy();
+  });
+
+  test("1.6: z cycles the density for the session", async () => {
+    const { captureCharFrame, press, renderer } = await mount(
+      160,
+      40,
+      defaultConfig(),
+      (d) => {
+        const t = newTask({
+          title: "One line task",
+          priority: Priority.High,
+          tags: ["ops", "later"],
+          dueDate: GoTime.now().addDate(0, 0, 1),
+        });
+        d.tasks.create(t);
+        d.tasks.addSubtask(t.id, "step");
+      },
+    );
+    const oneLine = /One line task +tomorrow +○○○○ 0\/1 +#ops +▲/;
+
+    expect(captureCharFrame()).not.toMatch(oneLine);
+    await press("z");
+    expect(captureCharFrame()).toContain("Density: dense");
+    expect(captureCharFrame()).toMatch(oneLine);
+    await press("z");
+    expect(captureCharFrame()).toContain("Density: comfortable");
+    expect(captureCharFrame()).not.toMatch(oneLine);
+    await press("z");
+    expect(captureCharFrame()).toContain("Density: auto");
+    renderer.destroy();
+  });
+
+  test("5.8 / 5.18: panels are titled by tab and the Done tab counts today's finishes", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    expect(captureCharFrame()).toContain("● Active");
+    await press("2");
+    const frame = captureCharFrame();
+    expect(frame).toContain("● Done");
+    expect(frame).toContain("1 task · 1 today");
+    expect(frame).not.toContain("1 tasks");
     renderer.destroy();
   });
 });

@@ -37,6 +37,8 @@ describe("tui-state file", () => {
 
   test("missing file yields defaults", () => {
     expect(loadTuiState()).toEqual(defaultTuiState());
+    // The app opens on the due sort, so a fresh state must agree.
+    expect(defaultTuiState().sort).toBe("due");
   });
 
   test("round-trips every field", () => {
