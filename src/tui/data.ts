@@ -40,6 +40,7 @@ export type UndoAction =
     }
   | { kind: "note"; label: string; taskId: number; body: string; createdAt: GoTime }
   | { kind: "timelog"; label: string; taskId: number; duration: number; note: string; loggedAt: GoTime }
+  | { kind: "timelog-added"; label: string; logId: number }
   | { kind: "priority"; label: string; taskId: number; prev: Priority }
   | { kind: "due"; label: string; taskId: number; prev: GoTime | null }
   | { kind: "bulk"; label: string; actions: UndoAction[] };
@@ -183,23 +184,14 @@ export class RondoData {
   }
 
   /** Pending → InProgress, InProgress → Pending, Done → InProgress. */
-  toggleInProgress(task: Task): Status {
+  toggleInProgress(task: Task): {
+    status: Status;
+    spawnedId: number | null;
+    undo: UndoAction;
+  } {
     const status =
       task.status === Status.InProgress ? Status.Pending : Status.InProgress;
-    this.setStatus(task, status);
-    return status;
-  }
-
-  /** Cycles Pending → InProgress → Done → Pending. */
-  cycleStatus(task: Task): Status {
-    const next =
-      task.status === Status.Pending
-        ? Status.InProgress
-        : task.status === Status.InProgress
-          ? Status.Done
-          : Status.Pending;
-    this.setStatus(task, next);
-    return next;
+    return { status, ...this.setStatus(task, status) };
   }
 
   setPriority(task: Task, priority: Priority): UndoAction {
@@ -318,6 +310,32 @@ export class RondoData {
     };
   }
 
+  /**
+   * Rewrites a time log in place: the row is replaced, keeping its original
+   * timestamp, and the undo drops the replacement before restoring the old
+   * entry.
+   */
+  replaceTimeLog(
+    taskId: number,
+    log: { id: number; duration: number; note: string; loggedAt: GoTime },
+    duration: number,
+    note: string,
+  ): UndoAction {
+    const removed = this.deleteTimeLog(taskId, log);
+    this.tasks.restoreTimeLog(taskId, duration, note, log.loggedAt);
+    const row = this.db.query("SELECT last_insert_rowid() AS id").get() as {
+      id: number;
+    };
+    return {
+      kind: "bulk",
+      label: "Edited time log",
+      actions: [
+        removed,
+        { kind: "timelog-added", label: "Added time log", logId: row.id },
+      ],
+    };
+  }
+
   addJournalEntry(body: string, dateStr?: string): Note {
     const note = dateStr
       ? this.journal.getOrCreate(dateStr)
@@ -390,6 +408,9 @@ export class RondoData {
           action.note,
           action.loggedAt,
         );
+        break;
+      case "timelog-added":
+        this.tasks.deleteTimeLog(action.logId);
         break;
       case "priority": {
         const task = this.tasks.getById(action.taskId);

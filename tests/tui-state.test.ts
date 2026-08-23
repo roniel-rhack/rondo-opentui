@@ -6,10 +6,21 @@ import { Priority, Status } from "../src/core/task/task.ts";
 import { DueLevel } from "../src/core/ui/overdue.ts";
 import { DateOnly, GoTime, parseDateOnly } from "../src/core/time.ts";
 import {
+  DUE_CHIPS,
   TABS,
   VIEWS,
   VIEW_LABELS,
   blockedIds,
+  durationInput,
+  exportFileName,
+  exportTasksContent,
+  parseDueInput,
+  parseTimeLogInput,
+  sortToast,
+  statusToast,
+  stepPriority,
+  timeLogInput,
+  uniquePath,
   clampIndex,
   collectTags,
   detailRows,
@@ -705,8 +716,88 @@ describe("hintSpecs (5.4)", () => {
   test("the task list offers the block picker; the detail panel edits rows", () => {
     const list = hintSpecs({ tab: "active", panel: 0, compact: false, searching: false });
     expect(list.find((h) => h.key === "b")?.action).toBe("block");
-    const detail = hintSpecs({ tab: "active", panel: 1, compact: false, searching: false });
+    expect(list.find((h) => h.key === "space")?.action).toBe("done");
+    expect(list.find((h) => h.key === "s")?.action).toBe("start");
+    expect(list.find((h) => h.key === "@")?.action).toBe("due");
+    const detail = hintSpecs({ tab: "active", panel: 1, compact: false, searching: false, row: "subtask" });
     expect(detail.find((h) => h.key === "enter")?.label).toBe("edit");
     expect(detail.find((h) => h.key === "space")?.label).toBe("toggle");
+  });
+
+  test("3.10: detail hints follow the row kind", () => {
+    const ctx = { tab: "active" as const, panel: 1 as const, compact: false, searching: false };
+    const note = keys(hintSpecs({ ...ctx, row: "note" }));
+    expect(note).not.toContain("space");
+    expect(note.slice(0, 3)).toEqual(["enter", "d", "n"]);
+    const log = keys(hintSpecs({ ...ctx, row: "timelog" }));
+    expect(log.slice(0, 3)).toEqual(["enter", "d", "L"]);
+    const empty = keys(hintSpecs({ ...ctx, row: null }));
+    expect(empty).not.toContain("enter");
+    expect(empty).not.toContain("d");
+    expect(empty.slice(0, 3)).toEqual(["t", "n", "L"]);
+  });
+});
+
+describe("mutation helpers (3.1, 3.3, 3.16, 2.14)", () => {
+  test("stepPriority walks the scale and stops at both ends", () => {
+    expect(stepPriority(Priority.Low, 1)).toBe(Priority.Medium);
+    expect(stepPriority(Priority.High, 1)).toBe(Priority.Urgent);
+    expect(stepPriority(Priority.Urgent, 1)).toBeNull();
+    expect(stepPriority(Priority.Medium, -1)).toBe(Priority.Low);
+    expect(stepPriority(Priority.Low, -1)).toBeNull();
+  });
+
+  test("statusToast names the spawned occurrence only when there is one", () => {
+    expect(statusToast(3, Status.Done, null)).toBe("#3 → Done · u undo");
+    expect(statusToast(3, Status.Done, 9)).toBe("#3 → Done · next is #9 · u undo");
+    expect(statusToast(3, Status.InProgress, null)).toBe("#3 → In Progress · u undo");
+  });
+
+  test("sortToast flags an active filter", () => {
+    expect(sortToast("due", false)).toBe("Sorted by due date");
+    expect(sortToast("priority", true)).toBe("Sorted by priority (filter active)");
+  });
+
+  test("uniquePath numbers a taken name before the extension", () => {
+    const taken = new Set(["/x/rondo.md", "/x/rondo-2.md", "/x/plain", "/x.y/plain"]);
+    const exists = (p: string) => taken.has(p);
+    expect(uniquePath("/x/rondo.md", exists)).toBe("/x/rondo-3.md");
+    expect(uniquePath("/x/fresh.md", exists)).toBe("/x/fresh.md");
+    expect(uniquePath("/x/plain", exists)).toBe("/x/plain-2");
+    expect(uniquePath("/x.y/plain", exists)).toBe("/x.y/plain-2");
+  });
+
+  test("exportFileName is dated", () => {
+    const now = GoTime.date(2026, 8, 22, 10, 0, 0, 0, "local");
+    expect(exportFileName("md", now)).toBe("rondo-2026-08-22.md");
+    expect(exportFileName("json", now)).toBe("rondo-2026-08-22.json");
+  });
+
+  test("exportTasksContent leaves the journal out", () => {
+    const tasks = [task({ id: 1, title: "Only me" })];
+    expect(exportTasksContent("md", tasks)).toContain("Only me");
+    expect(exportTasksContent("md", tasks)).not.toContain("Journal");
+    const json = JSON.parse(exportTasksContent("json", tasks));
+    expect(json.tasks[0].title).toBe("Only me");
+    expect(json.journal).toBeUndefined();
+  });
+
+  test("timeLogInput round-trips through parseTimeLogInput", () => {
+    expect(durationInput(90 * Minute)).toBe("1h30m");
+    expect(durationInput(2 * Hour)).toBe("2h");
+    expect(durationInput(0)).toBe("0m");
+    const text = timeLogInput({ duration: 90 * Minute, note: "pairing" });
+    expect(text).toBe("1h30m pairing");
+    expect(parseTimeLogInput(text)).toEqual({ duration: 90 * Minute, note: "pairing" });
+    expect(timeLogInput({ duration: 45 * Minute, note: "" })).toBe("45m");
+  });
+
+  test("every due chip is a token the parser accepts", () => {
+    const now = GoTime.date(2026, 8, 22, 10, 0, 0, 0, "local");
+    expect(DUE_CHIPS.map((c) => c.key)).toEqual(["t", "m", "w", "n"]);
+    expect(parseDueInput("today", now)!.format(DateOnly)).toBe("2026-08-22");
+    expect(parseDueInput("tomorrow", now)!.format(DateOnly)).toBe("2026-08-23");
+    expect(parseDueInput("+1w", now)!.format(DateOnly)).toBe("2026-08-29");
+    expect(parseDueInput("none", now)).toBeNull();
   });
 });

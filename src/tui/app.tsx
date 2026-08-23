@@ -6,6 +6,7 @@ import {
 } from "@opentui/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  configDir,
   formatDateTime,
   formatNoteTitle,
   save as saveConfig,
@@ -16,14 +17,19 @@ import { Minute } from "../core/duration.ts";
 import { SessionKind } from "../core/focus/focus.ts";
 import type { Note } from "../core/journal/journal.ts";
 import { RecurFreq, recurFreqString } from "../core/task/recur.ts";
-import { Status, statusString, type Task } from "../core/task/task.ts";
+import {
+  Status,
+  priorityString,
+  statusString,
+  type Task,
+} from "../core/task/task.ts";
 import { formatDuration } from "../core/task/timelog.ts";
 import { DateOnly, GoTime } from "../core/time.ts";
 import { initTheme, isDark } from "../core/ui/colors.ts";
 import type { RondoData, TaskDraft, UndoAction } from "./data.ts";
 import { usePomodoro } from "./hooks/usePomodoro.ts";
 import {
-  SORT_LABELS,
+  DUE_CHIPS,
   TABS,
   blockedIds,
   clampIndex,
@@ -35,6 +41,8 @@ import {
   emptyFilters,
   excerptOf,
   exportContent,
+  exportFileName,
+  exportTasksContent,
   focusStatusMessage,
   hintSpecs,
   indexOfId,
@@ -46,8 +54,13 @@ import {
   parseDueInput,
   parseTimeLogInput,
   plural,
+  sortToast,
+  statusToast,
+  stepPriority,
   tabCounts,
+  timeLogInput,
   toastDuration,
+  uniquePath,
   visibleNotes,
   visibleTasks,
   type Filters,
@@ -55,6 +68,7 @@ import {
   type HintAction,
   type SortKey,
   type TabId,
+  type ToastKind,
 } from "./state.ts";
 import { tuiTheme } from "./theme.ts";
 import { Header } from "./components/Header.tsx";
@@ -76,11 +90,12 @@ import {
   PromptDialog,
   TaskPickerDialog,
   type PaletteAction,
+  type PromptChip,
 } from "./components/Dialogs.tsx";
 import { TaskForm, emptyTaskForm, type TaskFormValues } from "./components/TaskForm.tsx";
 import { SettingsOverlay } from "./components/Settings.tsx";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 type Modal =
   | { type: "none" }
@@ -101,6 +116,8 @@ type Modal =
       placeholder?: string;
       initial?: string;
       multiline?: boolean;
+      chips?: PromptChip[];
+      stayOpen?: boolean;
       onSubmit: (value: string) => string | void;
     }
   | {
@@ -118,7 +135,7 @@ type Modal =
 interface Toast {
   id: number;
   message: string;
-  kind: "info" | "success" | "error";
+  kind: ToastKind;
 }
 
 export interface AppProps {
@@ -397,41 +414,118 @@ export function App({ data, onQuit }: AppProps) {
     [closeModal, data, notify, reloadTasks],
   );
 
-  const cycleStatus = useCallback(
-    (task: Task | null) => {
-      if (!task) return;
-      const next = data.cycleStatus(task);
-      reloadTasks();
-      notify(`#${task.id} → ${statusString(next)}`, "success");
-    },
-    [data, notify, reloadTasks],
-  );
-
   const pushUndo = useCallback((action: UndoAction) => {
     setUndoStack((stack) => [action, ...stack].slice(0, 20));
   }, []);
 
+  // Every status change is one keypress and one undo entry; the toast names
+  // the spawned occurrence so a recurring completion is not a surprise.
+  const applyStatus = useCallback(
+    (
+      task: Task,
+      result: { status: Status; spawnedId: number | null; undo: UndoAction },
+    ) => {
+      pushUndo(result.undo);
+      reloadTasks();
+      notify(statusToast(task.id, result.status, result.spawnedId), "success");
+    },
+    [notify, pushUndo, reloadTasks],
+  );
+
+  const toggleDone = useCallback(
+    (task: Task | null) => {
+      if (task) applyStatus(task, data.toggleDone(task));
+    },
+    [applyStatus, data],
+  );
+
+  const toggleInProgress = useCallback(
+    (task: Task | null) => {
+      if (task) applyStatus(task, data.toggleInProgress(task));
+    },
+    [applyStatus, data],
+  );
+
+  // Deletes are undoable, so they no longer ask; the toast lingers as long
+  // as an error would, which is the window for pressing u.
+  const undoableDelete = useCallback(
+    (action: UndoAction, what: string) => {
+      pushUndo(action);
+      closeModal();
+      notify(`${what} · u to undo`, "undo");
+    },
+    [closeModal, notify, pushUndo],
+  );
+
   const deleteSelectedTask = useCallback(() => {
     if (!selectedTask) return;
-    const blocked = data.blockedBy(selectedTask);
+    const task = selectedTask;
+    const perform = () => {
+      const action = data.deleteTask(task);
+      undoableDelete(action, action.label);
+      reloadTasks();
+    };
+    // Removing a blocker changes other tasks, which is worth a look first.
+    const blocked = data.blockedBy(task);
+    if (blocked.length === 0) {
+      perform();
+      return;
+    }
     setModal({
       type: "confirm",
       title: "Delete task",
-      message: `Delete "${selectedTask.title}"?`,
-      detail:
-        blocked.length > 0
-          ? `It blocks ${blocked.map((id) => `#${id}`).join(", ")} — they will be unblocked.`
-          : undefined,
-      onConfirm: () => {
-        const action = data.deleteTask(selectedTask);
+      message: `Delete "${task.title}"?`,
+      detail: `It blocks ${blocked.map((id) => `#${id}`).join(", ")} — they will be unblocked.`,
+      onConfirm: perform,
+    });
+  }, [data, reloadTasks, selectedTask, undoableDelete]);
+
+  const stepPriorityBy = useCallback(
+    (delta: 1 | -1) => {
+      if (!selectedTask) return;
+      const next = stepPriority(selectedTask.priority, delta);
+      if (next === null) {
+        notify(
+          `#${selectedTask.id} is already ${priorityString(selectedTask.priority)}`,
+          "info",
+        );
+        return;
+      }
+      const action = data.setPriority(selectedTask, next);
+      pushUndo(action);
+      reloadTasks();
+      notify(`${action.label} · u undo`, "success");
+    },
+    [data, notify, pushUndo, reloadTasks, selectedTask],
+  );
+
+  const openDuePrompt = useCallback(() => {
+    if (!selectedTask) return;
+    const task = selectedTask;
+    setModal({
+      type: "prompt",
+      title: "Due date",
+      label: `Due date for #${task.id}`,
+      placeholder: "YYYY-MM-DD · today · +3d · none",
+      initial: task.dueDate ? task.dueDate.format(DateOnly) : "",
+      chips: DUE_CHIPS,
+      onSubmit: (value) => {
+        let due: GoTime | null;
+        try {
+          due = parseDueInput(value, GoTime.now());
+        } catch {
+          return "Use YYYY-MM-DD, today, tomorrow, +3d, +1w or none";
+        }
+        const action = data.setDue(task, due);
         pushUndo(action);
         closeModal();
         reloadTasks();
-        notify(`${action.label} · press u to undo`, "success");
+        notify(`${action.label} · u undo`, "success");
       },
     });
   }, [closeModal, data, notify, pushUndo, reloadTasks, selectedTask]);
 
+  // Enter adds and keeps the prompt, so a list of steps goes in at once.
   const addSubtask = useCallback(() => {
     if (!selectedTask) return;
     const taskId = selectedTask.id;
@@ -440,14 +534,13 @@ export function App({ data, onQuit }: AppProps) {
       title: "New subtask",
       label: `Subtask for #${taskId}`,
       placeholder: "Step description",
+      stayOpen: true,
       onSubmit: (value) => {
         data.addSubtask(taskId, value);
-        closeModal();
         reloadTasks();
-        notify("Subtask added", "success");
       },
     });
-  }, [closeModal, data, notify, reloadTasks, selectedTask]);
+  }, [data, reloadTasks, selectedTask]);
 
   const toggleSubtaskAt = useCallback(
     (index: number) => {
@@ -501,51 +594,55 @@ export function App({ data, onQuit }: AppProps) {
       });
       return;
     }
-    notify("Time logs cannot be edited — d removes one, L logs again", "info");
-  }, [closeModal, data, detailRow, notify, reloadTasks, selectedTask]);
-
-  const deleteDetailRow = useCallback(() => {
-    const task = selectedTask;
-    if (!task || !detailRow) return;
-    const done = (action: UndoAction, what: string) => {
-      pushUndo(action);
-      closeModal();
-      reloadTasks();
-      notify(`${what} deleted · press u to undo`, "success");
-    };
-    if (detailRow.kind === "subtask") {
-      const subtask = task.subtasks[detailRow.index];
-      if (!subtask) return;
-      setModal({
-        type: "confirm",
-        title: "Delete subtask",
-        message: `Delete "${subtask.title}"?`,
-        onConfirm: () => done(data.deleteSubtask(task.id, subtask), "Subtask"),
-      });
-      return;
-    }
-    if (detailRow.kind === "note") {
-      const note = task.notes[detailRow.index];
-      if (!note) return;
-      setModal({
-        type: "confirm",
-        title: "Delete note",
-        message: "Delete this note?",
-        excerpt: excerptOf(note.body),
-        onConfirm: () => done(data.deleteTaskNote(task.id, note), "Note"),
-      });
-      return;
-    }
     const log = task.timeLogs[detailRow.index];
     if (!log) return;
     setModal({
-      type: "confirm",
-      title: "Delete time log",
-      message: `Delete the ${formatDuration(log.duration)} entry?`,
-      excerpt: log.note ? excerptOf(log.note) : undefined,
-      onConfirm: () => done(data.deleteTimeLog(task.id, log), "Time log"),
+      type: "prompt",
+      title: "Edit time log",
+      label: "Duration, then an optional note",
+      placeholder: "25m what you did",
+      initial: timeLogInput(log),
+      onSubmit: (value) => {
+        let parsed: ReturnType<typeof parseTimeLogInput>;
+        try {
+          parsed = parseTimeLogInput(value);
+        } catch {
+          return "Invalid duration — try 45m or 1h30m";
+        }
+        pushUndo(data.replaceTimeLog(task.id, log, parsed.duration, parsed.note));
+        closeModal();
+        reloadTasks();
+        notify("Time log updated · u undo", "success");
+      },
     });
   }, [closeModal, data, detailRow, notify, pushUndo, reloadTasks, selectedTask]);
+
+  // The cursor is clamped where it is read, so the row after the deleted
+  // one (or the last) ends up under it without bookkeeping here.
+  const deleteDetailRow = useCallback(() => {
+    const task = selectedTask;
+    if (!task || !detailRow) return;
+    if (detailRow.kind === "subtask") {
+      const subtask = task.subtasks[detailRow.index];
+      if (!subtask) return;
+      undoableDelete(data.deleteSubtask(task.id, subtask), `Deleted step "${subtask.title}"`);
+    } else if (detailRow.kind === "note") {
+      const note = task.notes[detailRow.index];
+      if (!note) return;
+      undoableDelete(
+        data.deleteTaskNote(task.id, note),
+        `Deleted note “${excerptOf(note.body, 32)}”`,
+      );
+    } else {
+      const log = task.timeLogs[detailRow.index];
+      if (!log) return;
+      undoableDelete(
+        data.deleteTimeLog(task.id, log),
+        `Deleted the ${formatDuration(log.duration)} log`,
+      );
+    }
+    reloadTasks();
+  }, [data, detailRow, reloadTasks, selectedTask, undoableDelete]);
 
   const addTaskNote = useCallback(() => {
     if (!selectedTask) return;
@@ -574,15 +671,16 @@ export function App({ data, onQuit }: AppProps) {
       label: "Duration, then an optional note",
       placeholder: "25m what you did",
       onSubmit: (value) => {
+        let parsed: ReturnType<typeof parseTimeLogInput>;
         try {
-          const { duration, note } = parseTimeLogInput(value);
-          data.logTime(taskId, duration, note);
-          closeModal();
-          reloadTasks();
-          notify(`Logged ${value}`, "success");
+          parsed = parseTimeLogInput(value);
         } catch {
-          notify("Invalid duration — try 45m or 1h30m", "error");
+          return "Invalid duration — try 45m or 1h30m";
         }
+        data.logTime(taskId, parsed.duration, parsed.note);
+        closeModal();
+        reloadTasks();
+        notify(`Logged ${value}`, "success");
       },
     });
   }, [closeModal, data, notify, reloadTasks, selectedTask]);
@@ -633,19 +731,12 @@ export function App({ data, onQuit }: AppProps) {
   const deleteJournalEntry = useCallback(() => {
     const entry = selectedNote?.entries[entryCursor];
     if (!entry) return;
-    setModal({
-      type: "confirm",
-      title: "Delete entry",
-      message: "Delete this journal entry?",
-      excerpt: excerptOf(entry.body),
-      onConfirm: () => {
-        pushUndo(data.deleteJournalEntry(entry));
-        closeModal();
-        reloadNotes();
-        notify("Entry deleted · press u to undo", "success");
-      },
-    });
-  }, [closeModal, data, entryCursor, notify, pushUndo, reloadNotes, selectedNote]);
+    undoableDelete(
+      data.deleteJournalEntry(entry),
+      `Deleted entry “${excerptOf(entry.body, 32)}”`,
+    );
+    reloadNotes();
+  }, [data, entryCursor, reloadNotes, selectedNote, undoableDelete]);
 
   const undo = useCallback(() => {
     const [action, ...rest] = undoStack;
@@ -681,21 +772,44 @@ export function App({ data, onQuit }: AppProps) {
     [closeModal, data, notify],
   );
 
-  const exportAll = useCallback(
-    (format: "md" | "json") => {
-      const path = join(
-        process.env.RONDO_HOME ?? process.cwd(),
-        `rondo-export.${format}`,
+  // The path is offered, not imposed: a dated file under the data dir by
+  // default, and an existing file is never overwritten — the export lands
+  // next to it with a numbered name and the toast says so.
+  const exportTo = useCallback(
+    (format: "md" | "json", scope: "all" | "tasks") => {
+      const suggested = join(
+        configDir(),
+        "exports",
+        exportFileName(format, GoTime.now()),
       );
-      const content = exportContent(format, tasks, notes);
-      try {
-        writeFileSync(path, content, "utf8");
-        notify(`Exported to ${path}`, "success");
-      } catch (err) {
-        notify(`Export failed: ${(err as Error).message}`, "error");
-      }
+      setModal({
+        type: "prompt",
+        title: scope === "tasks" ? "Export tasks" : "Export everything",
+        label: `File path (${format === "md" ? "Markdown" : "JSON"})`,
+        initial: suggested,
+        onSubmit: (value) => {
+          const content =
+            scope === "tasks"
+              ? exportTasksContent(format, tasks)
+              : exportContent(format, tasks, notes);
+          try {
+            mkdirSync(dirname(value), { recursive: true });
+            const path = uniquePath(value, existsSync);
+            writeFileSync(path, content, "utf8");
+            closeModal();
+            notify(
+              path === value
+                ? `Exported to ${path}`
+                : `${basename(value)} exists · exported to ${path}`,
+              "success",
+            );
+          } catch (err) {
+            return `Export failed: ${(err as Error).message}`;
+          }
+        },
+      });
     },
-    [notes, notify, tasks],
+    [closeModal, notes, notify, tasks],
   );
 
   const persistConfig = useCallback(
@@ -743,12 +857,18 @@ export function App({ data, onQuit }: AppProps) {
     [applyRatio, ratio],
   );
 
+  const applySort = useCallback(
+    (next: SortKey) => {
+      setSort(next);
+      notify(sortToast(next, filters.query !== ""), "info");
+    },
+    [filters.query, notify],
+  );
+
   const cycleSort = useCallback(() => {
     const order: SortKey[] = ["created", "due", "priority"];
-    const next = order[(order.indexOf(sort) + 1) % order.length]!;
-    setSort(next);
-    notify(`Sorted by ${SORT_LABELS[next].toLowerCase()}`, "info");
-  }, [notify, sort]);
+    applySort(order[(order.indexOf(sort) + 1) % order.length]!);
+  }, [applySort, sort]);
 
   const toggleDensity = useCallback(() => {
     const next = cycleDensity(density);
@@ -873,8 +993,12 @@ export function App({ data, onQuit }: AppProps) {
         : [
             { id: "task.add", group: "Task", label: "New task", hint: "a", run: openAddTask },
             { id: "task.edit", group: "Task", label: "Edit selected task", hint: "e", run: openEditTask },
-            { id: "task.status", group: "Task", label: "Cycle status", hint: "space", run: () => cycleStatus(selectedTask) },
+            { id: "task.done", group: "Task", label: "Mark done / reopen", hint: "space", run: () => toggleDone(selectedTask) },
+            { id: "task.start", group: "Task", label: "Start / stop", hint: "s", run: () => toggleInProgress(selectedTask) },
             { id: "task.delete", group: "Task", label: "Delete selected task", hint: "d", run: deleteSelectedTask },
+            { id: "task.priorityUp", group: "Task", label: "Priority up", hint: "+", run: () => stepPriorityBy(1) },
+            { id: "task.priorityDown", group: "Task", label: "Priority down", hint: "-", run: () => stepPriorityBy(-1) },
+            { id: "task.due", group: "Task", label: "Set due date", hint: "@", run: openDuePrompt },
             { id: "task.subtask", group: "Task", label: "Add subtask", hint: "t", run: addSubtask },
             { id: "task.note", group: "Task", label: "Add note", hint: "n", run: addTaskNote },
             { id: "task.time", group: "Task", label: "Log time", hint: "L", run: logTime },
@@ -897,8 +1021,10 @@ export function App({ data, onQuit }: AppProps) {
       { id: "focus.toggle", group: "Focus", label: "Start / stop focus timer", hint: "f", run: toggleFocus },
       { id: "app.undo", group: "App", label: "Undo", hint: "u", run: undo },
       { id: "app.settings", group: "App", label: "Settings", hint: "P", run: () => setModal({ type: "settings" }) },
-      { id: "app.export.md", group: "App", label: "Export everything to Markdown", run: () => exportAll("md") },
-      { id: "app.export.json", group: "App", label: "Export everything to JSON", run: () => exportAll("json") },
+      { id: "app.export.md", group: "App", label: "Export everything to Markdown", run: () => exportTo("md", "all") },
+      { id: "app.export.json", group: "App", label: "Export everything to JSON", run: () => exportTo("json", "all") },
+      { id: "app.export.tasks.md", group: "App", label: "Export tasks only to Markdown", run: () => exportTo("md", "tasks") },
+      { id: "app.export.tasks.json", group: "App", label: "Export tasks only to JSON", run: () => exportTo("json", "tasks") },
       { id: "app.quit", group: "App", label: "Quit", hint: "q", run: requestQuit },
     ];
     for (const t of TABS) {
@@ -914,23 +1040,26 @@ export function App({ data, onQuit }: AppProps) {
   }, [
     addJournalEntry,
     addSubtask,
-    exportAll,
     addTaskNote,
     cycleSort,
-    cycleStatus,
     deleteSelectedTask,
+    exportTo,
     logTime,
     openAddTask,
     openBlockPicker,
+    openDuePrompt,
     openEditTask,
     openUnblockPicker,
     requestQuit,
     resizePanels,
     selectedTask,
     startSearch,
+    stepPriorityBy,
     tab,
     toggleDensity,
+    toggleDone,
     toggleFocus,
+    toggleInProgress,
     toggleTheme,
     undo,
   ]);
@@ -1101,7 +1230,7 @@ export function App({ data, onQuit }: AppProps) {
       case "space":
         if (tab !== "journal") {
           if (panel === 1) toggleDetailRow();
-          else cycleStatus(selectedTask);
+          else toggleDone(selectedTask);
         }
         return;
       case "u":
@@ -1118,13 +1247,13 @@ export function App({ data, onQuit }: AppProps) {
         startSearch();
         return;
       case "f1":
-        if (!isJournalTab) setSort("created");
+        if (!isJournalTab) applySort("created");
         return;
       case "f2":
-        if (!isJournalTab) setSort("due");
+        if (!isJournalTab) applySort("due");
         return;
       case "f3":
-        if (!isJournalTab) setSort("priority");
+        if (!isJournalTab) applySort("priority");
         return;
       default:
         break;
@@ -1153,7 +1282,16 @@ export function App({ data, onQuit }: AppProps) {
         else deleteSelectedTask();
         break;
       case "s":
-        if (tab !== "journal") cycleStatus(selectedTask);
+        if (tab !== "journal") toggleInProgress(selectedTask);
+        break;
+      case "+":
+        if (tab !== "journal") stepPriorityBy(1);
+        break;
+      case "-":
+        if (tab !== "journal") stepPriorityBy(-1);
+        break;
+      case "@":
+        if (tab !== "journal") openDuePrompt();
         break;
       case "t":
         if (tab !== "journal") addSubtask();
@@ -1248,7 +1386,9 @@ export function App({ data, onQuit }: AppProps) {
           : panel === 1
             ? deleteDetailRow()
             : deleteSelectedTask(),
-      status: () => cycleStatus(selectedTask),
+      done: () => toggleDone(selectedTask),
+      start: () => toggleInProgress(selectedTask),
+      due: openDuePrompt,
       toggle: toggleDetailRow,
       subtask: addSubtask,
       note: addTaskNote,
@@ -1269,7 +1409,6 @@ export function App({ data, onQuit }: AppProps) {
       addJournalEntry,
       addSubtask,
       addTaskNote,
-      cycleStatus,
       deleteDetailRow,
       deleteJournalEntry,
       deleteSelectedTask,
@@ -1279,26 +1418,35 @@ export function App({ data, onQuit }: AppProps) {
       logTime,
       openAddTask,
       openBlockPicker,
+      openDuePrompt,
       openEditTask,
       panel,
       selectedTask,
       startSearch,
       stopSearch,
       toggleDetailRow,
+      toggleDone,
       toggleFocus,
       toggleHiddenNotes,
+      toggleInProgress,
       toggleNoteHidden,
     ],
   );
 
   const hints = useMemo<Hint[]>(
     () =>
-      hintSpecs({ tab, panel, compact, searching }).map((h) => ({
+      hintSpecs({
+        tab,
+        panel,
+        compact,
+        searching,
+        row: detailRow?.kind ?? null,
+      }).map((h) => ({
         key: h.key,
         label: h.label,
         run: h.action ? hintActions[h.action] : undefined,
       })),
-    [compact, hintActions, panel, searching, tab],
+    [compact, detailRow?.kind, hintActions, panel, searching, tab],
   );
 
   const tabLabel = TABS.find((t) => t.id === tab)?.label ?? "Tasks";
@@ -1428,7 +1576,7 @@ export function App({ data, onQuit }: AppProps) {
                 marked={undefined}
                 onSelect={selectTaskAt}
                 onActivate={() => setPanel(0)}
-                onToggleStatus={(index) => cycleStatus(shown[index] ?? null)}
+                onToggleStatus={(index) => toggleDone(shown[index] ?? null)}
                 emptyIcon={filters.query !== "" || filters.tag ? "⌕" : "✦"}
                 emptyTitle={
                   filters.query !== "" || filters.tag
@@ -1540,6 +1688,8 @@ export function App({ data, onQuit }: AppProps) {
           placeholder={modal.placeholder}
           initial={modal.initial}
           multiline={modal.multiline}
+          chips={modal.chips}
+          stayOpen={modal.stayOpen}
           screenWidth={width}
           screenHeight={height}
           onSubmit={modal.onSubmit}

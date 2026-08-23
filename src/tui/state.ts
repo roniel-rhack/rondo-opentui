@@ -5,7 +5,7 @@ import { SessionKind } from "../core/focus/focus.ts";
 import { dateTitle, type Note } from "../core/journal/journal.ts";
 import { isBlocked } from "../core/task/deps.ts";
 import { RecurFreq } from "../core/task/recur.ts";
-import { Priority, Status, type Task } from "../core/task/task.ts";
+import { Priority, Status, statusString, type Task } from "../core/task/task.ts";
 import { parseDuration } from "../core/task/timelog.ts";
 import { DateOnly, GoTime, parseDueDateInput, sameDay } from "../core/time.ts";
 import { DueLevel } from "../core/ui/overdue.ts";
@@ -126,9 +126,12 @@ export function focusStatusMessage(
   }
 }
 
-/** Errors deserve more reading time than confirmations. */
-export function toastDuration(kind: "info" | "success" | "error"): number {
-  return kind === "error" ? 6400 : 3200;
+export type ToastKind = "info" | "success" | "error" | "undo";
+
+/** Errors deserve more reading time than confirmations, and so does a
+ * delete that went through without asking: the toast is the undo window. */
+export function toastDuration(kind: ToastKind): number {
+  return kind === "error" || kind === "undo" ? 6400 : 3200;
 }
 
 /** Full export, both stores, in either format. */
@@ -139,6 +142,83 @@ export function exportContent(
 ): string {
   if (format === "json") return writeJSON(tasks, notes);
   return `${writeTasks(tasks)}\n${writeNotes(notes)}`;
+}
+
+/** Tasks only, the CLI's `export` without `--journal`. */
+export function exportTasksContent(
+  format: "md" | "json",
+  tasks: readonly Task[],
+): string {
+  if (format === "json") return writeJSON(tasks, null);
+  return writeTasks(tasks);
+}
+
+/** Dated default name, so a daily export never lands on yesterday's file. */
+export function exportFileName(format: "md" | "json", now: GoTime): string {
+  return `rondo-${now.format(DateOnly)}.${format}`;
+}
+
+/** `path`, or the first of `path-2`, `path-3`… that does not exist yet, so
+ * an export never overwrites a file silently. */
+export function uniquePath(path: string, exists: (p: string) => boolean): string {
+  if (!exists(path)) return path;
+  const dot = path.lastIndexOf(".");
+  const slash = path.lastIndexOf("/");
+  const stem = dot > slash ? path.slice(0, dot) : path;
+  const ext = dot > slash ? path.slice(dot) : "";
+  for (let n = 2; ; n++) {
+    const candidate = `${stem}-${n}${ext}`;
+    if (!exists(candidate)) return candidate;
+  }
+}
+
+/** Toast for a status change. Completing a recurring task spawns the next
+ * occurrence, and undo removes it again, so the toast says which one. */
+export function statusToast(
+  taskId: number,
+  status: Status,
+  spawnedId: number | null,
+): string {
+  const spawn = spawnedId !== null ? ` · next is #${spawnedId}` : "";
+  return `#${taskId} → ${statusString(status)}${spawn} · u undo`;
+}
+
+/** The sort still applies under a query (the score only breaks ties), but
+ * the rows may not visibly move, so the toast says why. */
+export function sortToast(sort: SortKey, filtered: boolean): string {
+  return `Sorted by ${SORT_LABELS[sort].toLowerCase()}${filtered ? " (filter active)" : ""}`;
+}
+
+/** One step along the scale, or null at either end. */
+export function stepPriority(priority: Priority, delta: 1 | -1): Priority | null {
+  const next = priority + delta;
+  if (next < Priority.Low || next > Priority.Urgent) return null;
+  return next as Priority;
+}
+
+/** Quick answers for the due-date prompt; every value is a token the
+ * parser accepts, so a chip and a typed word take the same path. */
+export const DUE_CHIPS: { key: string; label: string; value: string }[] = [
+  { key: "t", label: "today", value: "today" },
+  { key: "m", label: "tomorrow", value: "tomorrow" },
+  { key: "w", label: "+1w", value: "+1w" },
+  { key: "n", label: "none", value: "none" },
+];
+
+/** Go-style duration without spaces, the form parseDuration reads back:
+ * formatDuration's "1h 30m" would split into a 1h log with note "30m". */
+export function durationInput(d: number): string {
+  const totalMinutes = Math.max(0, Math.trunc(d / 60_000_000_000));
+  const hours = Math.trunc(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0 && minutes > 0) return `${hours}h${minutes}m`;
+  if (hours > 0) return `${hours}h`;
+  return `${minutes}m`;
+}
+
+/** What the time-log prompt shows when re-editing an entry. */
+export function timeLogInput(log: { duration: number; note: string }): string {
+  return `${durationInput(log.duration)} ${log.note}`.trim();
 }
 
 const PRIORITY_TOKENS: Record<string, Priority> = {
@@ -696,7 +776,9 @@ export type HintAction =
   | "addDay"
   | "edit"
   | "delete"
-  | "status"
+  | "done"
+  | "start"
+  | "due"
   | "toggle"
   | "subtask"
   | "note"
@@ -725,6 +807,9 @@ export interface HintContext {
   panel: 0 | 1;
   compact: boolean;
   searching: boolean;
+  /** Kind of the detail row under the cursor; null or absent when the
+   * detail panel has no rows to walk. */
+  row?: DetailRow["kind"] | null;
 }
 
 const HINT_TAIL: HintSpec[] = [
@@ -765,13 +850,28 @@ export function hintSpecs(ctx: HintContext): HintSpec[] {
     ];
   }
   if (ctx.panel === 1) {
-    return [
-      { key: "space", label: "toggle", action: "toggle" },
-      { key: "enter", label: "edit", action: "edit" },
-      { key: "d", label: "delete", action: "delete" },
+    // Only a subtask toggles; notes and logs edit and delete. The add keys
+    // lead with the one that matches the row, so the bar reads as "more of
+    // these".
+    const row = ctx.row ?? null;
+    const adders: HintSpec[] = [
       { key: "t", label: "step", action: "subtask" },
       { key: "n", label: "note", action: "note" },
       { key: "L", label: "time", action: "time" },
+    ];
+    const lead = row === "note" ? 1 : row === "timelog" ? 2 : 0;
+    const ordered = [...adders.slice(lead), ...adders.slice(0, lead)];
+    return [
+      ...(row === "subtask"
+        ? [{ key: "space", label: "toggle", action: "toggle" as const }]
+        : []),
+      ...(row !== null
+        ? [
+            { key: "enter", label: "edit", action: "edit" as const },
+            { key: "d", label: "delete", action: "delete" as const },
+          ]
+        : []),
+      ...ordered,
       { key: "h", label: "back", action: "back" },
       ...HINT_TAIL,
     ];
@@ -780,10 +880,13 @@ export function hintSpecs(ctx: HintContext): HintSpec[] {
     ...(ctx.compact ? [{ key: "l", label: "details", action: "details" as const }] : []),
     { key: "a", label: "add", action: "add" },
     { key: "e", label: "edit", action: "edit" },
-    { key: "space", label: "status", action: "status" },
+    { key: "space", label: "done", action: "done" },
+    { key: "s", label: "start", action: "start" },
     { key: "d", label: "delete", action: "delete" },
     { key: "t", label: "subtask", action: "subtask" },
     { key: "/", label: "filter", action: "filter" },
+    { key: "@", label: "due", action: "due" },
+    { key: "+ -", label: "priority", action: null },
     { key: "b", label: "block", action: "block" },
     { key: "f", label: "focus", action: "focus" },
     ...HINT_TAIL,

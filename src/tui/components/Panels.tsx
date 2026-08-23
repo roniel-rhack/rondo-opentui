@@ -14,6 +14,7 @@ import {
   SORT_LABELS,
   type Hint,
   type SortKey,
+  type ToastKind,
 } from "../state.ts";
 import { mix, priorityColors, type TuiTheme } from "../theme.ts";
 import { useCountdown } from "../hooks/useTween.ts";
@@ -242,7 +243,7 @@ interface StatusBarProps {
   theme: TuiTheme;
   hints: readonly Hint[];
   message: string | null;
-  messageKind: "info" | "success" | "error";
+  messageKind: ToastKind;
   /** Changes whenever a new message arrives, restarting the timer bar. */
   messageId: number;
   /** How long the current toast lives; errors get longer than info. */
@@ -297,12 +298,20 @@ export function StatusBar({
   const tone =
     messageKind === "error"
       ? theme.danger
-      : messageKind === "success"
-        ? theme.success
-        : theme.accent;
+      : messageKind === "undo"
+        ? theme.warning
+        : messageKind === "success"
+          ? theme.success
+          : theme.accent;
 
   const icon =
-    messageKind === "error" ? "✕" : messageKind === "success" ? "✓" : "•";
+    messageKind === "error"
+      ? "✕"
+      : messageKind === "undo"
+        ? "↶"
+        : messageKind === "success"
+          ? "✓"
+          : "•";
 
   const sortLabel = sort ? `⇅ ${SORT_LABELS[sort]}` : "";
   // Horizontal padding, then the sort segment and its leading gap.

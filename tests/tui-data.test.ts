@@ -4,6 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../src/core/config/config.ts";
+import { Minute } from "../src/core/duration.ts";
 import { openMemory } from "../src/core/database/db.ts";
 import { RecurFreq } from "../src/core/task/recur.ts";
 import { Priority, Status } from "../src/core/task/task.ts";
@@ -37,8 +38,8 @@ describe("RondoData recurrence", () => {
       }),
     );
 
-    data.cycleStatus(t); // Pending -> InProgress
-    data.cycleStatus(t); // InProgress -> Done, spawns the next occurrence
+    data.toggleInProgress(t); // Pending -> InProgress
+    data.toggleDone(t); // InProgress -> Done, spawns the next occurrence
 
     expect(data.listTasks().length).toBe(2);
   });
@@ -53,11 +54,11 @@ describe("RondoData recurrence", () => {
       }),
     );
 
-    data.cycleStatus(t); // Pending -> InProgress
-    data.cycleStatus(t); // InProgress -> Done, spawns
-    data.cycleStatus(t); // Done -> Pending (accidental extra press)
-    data.cycleStatus(t); // Pending -> InProgress
-    data.cycleStatus(t); // InProgress -> Done again
+    data.toggleInProgress(t); // Pending -> InProgress
+    data.toggleDone(t); // InProgress -> Done, spawns
+    data.toggleDone(t); // Done -> Pending (accidental extra press)
+    data.toggleInProgress(t); // Pending -> InProgress
+    data.toggleDone(t); // InProgress -> Done again
 
     expect(data.listTasks().length).toBe(2);
   });
@@ -72,8 +73,8 @@ describe("RondoData recurrence", () => {
       }),
     );
 
-    data.cycleStatus(t);
-    data.cycleStatus(t);
+    data.toggleInProgress(t);
+    data.toggleDone(t);
 
     const completed = data.tasks.getById(t.id)!;
     expect(completed.status).toBe(Status.Done);
@@ -159,11 +160,15 @@ describe("RondoData status", () => {
     const data = newData();
     const t = data.createTask(draft({ title: "Toggle" }));
 
-    expect(data.toggleInProgress(t)).toBe(Status.InProgress);
-    expect(data.toggleInProgress(t)).toBe(Status.Pending);
+    expect(data.toggleInProgress(t).status).toBe(Status.InProgress);
+    expect(data.toggleInProgress(t).status).toBe(Status.Pending);
     data.setStatus(t, Status.Done);
-    expect(data.toggleInProgress(t)).toBe(Status.InProgress);
+    const { status, undo } = data.toggleInProgress(t);
+    expect(status).toBe(Status.InProgress);
     expect(data.tasks.getById(t.id)!.status).toBe(Status.InProgress);
+
+    data.undo(undo);
+    expect(data.tasks.getById(t.id)!.status).toBe(Status.Done);
   });
 
   test("the status undo restores recurrence and removes the spawn", () => {
@@ -266,6 +271,29 @@ describe("RondoData notes and time logs", () => {
     expect(back.duration).toBe(1_500_000_000_000);
     expect(back.note).toBe("pairing");
     expect(back.loggedAt.equal(log.loggedAt)).toBe(true);
+  });
+});
+
+describe("RondoData time log edit (3.10)", () => {
+  test("replaceTimeLog keeps the timestamp and one undo brings the old log back", () => {
+    const data = newData();
+    const t = data.createTask(draft({ title: "L" }));
+    data.logTime(t.id, 45 * Minute, "pairing");
+    const log = data.tasks.getById(t.id)!.timeLogs[0]!;
+
+    const action = data.replaceTimeLog(t.id, log, 90 * Minute, "review");
+    expect(action.kind).toBe("bulk");
+    const edited = data.tasks.getById(t.id)!.timeLogs;
+    expect(edited).toHaveLength(1);
+    expect(edited[0]!.duration).toBe(90 * Minute);
+    expect(edited[0]!.note).toBe("review");
+    expect(edited[0]!.loggedAt.equal(log.loggedAt)).toBe(true);
+
+    data.undo(action);
+    const back = data.tasks.getById(t.id)!.timeLogs;
+    expect(back).toHaveLength(1);
+    expect(back[0]!.duration).toBe(45 * Minute);
+    expect(back[0]!.note).toBe("pairing");
   });
 });
 

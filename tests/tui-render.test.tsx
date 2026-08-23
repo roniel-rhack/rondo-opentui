@@ -149,6 +149,15 @@ async function mount(
   return { data, press, type, click, goToTab, ...setup };
 }
 
+/** Makes the first task (Refactor the parser) a blocker of the report, the
+ * one case where a delete still asks. */
+function blocksReport(data: RondoData) {
+  const tasks = data.tasks.list();
+  const report = tasks.find((t) => t.title === "Write the report")!;
+  const refactor = tasks.find((t) => t.title === "Refactor the parser")!;
+  data.addDependency(report.id, refactor.id);
+}
+
 describe("TUI rendering", () => {
   test("shows header, tabs and task rows", async () => {
     const { captureCharFrame, renderer } = await mount();
@@ -187,16 +196,19 @@ describe("TUI rendering", () => {
     renderer.destroy();
   });
 
-  test("space cycles the status of the selected task", async () => {
+  test("space marks the selected task done and u reopens it", async () => {
     const { captureCharFrame, press, data, renderer } = await mount();
 
     await press(" ");
 
-    const refactor = data
-      .listTasks()
-      .find((t) => t.title === "Refactor the parser")!;
-    expect(refactor.status).toBe(Status.InProgress);
-    expect(captureCharFrame()).toContain("In Progress");
+    const refactor = () =>
+      data.tasks.list().find((t) => t.title === "Refactor the parser")!;
+    expect(refactor().status).toBe(Status.Done);
+    expect(captureCharFrame()).toContain("#3 → Done · u undo");
+
+    await press("u");
+    expect(refactor().status).toBe(Status.Pending);
+    expect(captureCharFrame()).toContain("Refactor the parser");
     renderer.destroy();
   });
 
@@ -251,18 +263,17 @@ describe("TUI rendering", () => {
     renderer.destroy();
   });
 
-  test("delete asks for confirmation and removes the task", async () => {
+  test("d deletes the task at once and the toast offers undo", async () => {
     const { captureCharFrame, press, data, renderer } = await mount();
 
     await press("d");
-    expect(captureCharFrame()).toContain("Delete task");
 
-    await press("y");
-
+    const frame = captureCharFrame();
+    expect(frame).not.toContain("Delete task");
     expect(
       data.listTasks().some((t) => t.title === "Refactor the parser"),
     ).toBe(false);
-    expect(captureCharFrame()).toContain("undo");
+    expect(frame).toContain('Deleted "Refactor the parser" · u to undo');
     renderer.destroy();
   });
 
@@ -270,7 +281,6 @@ describe("TUI rendering", () => {
     const { press, data, renderer } = await mount();
 
     await press("d");
-    await press("y");
     await press("u");
 
     expect(
@@ -381,6 +391,8 @@ describe("TUI flows", () => {
 
     await type("Write the plan");
     await press("RETURN");
+    expect(captureCharFrame()).toContain("1 added · esc done");
+    await press("ESCAPE");
 
     const refactor = data
       .listTasks()
@@ -517,9 +529,15 @@ describe("TUI overlays", () => {
   });
 
   test("a confirmation can be cancelled with n", async () => {
-    const { captureCharFrame, press, data, renderer } = await mount();
+    const { captureCharFrame, press, data, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      blocksReport,
+    );
 
     await press("d");
+    expect(captureCharFrame()).toContain("Delete task");
     await press("n");
 
     expect(captureCharFrame()).not.toContain("Delete task");
@@ -686,7 +704,7 @@ describe("TUI inputs", () => {
     const { captureCharFrame, press, renderer } = await mount();
 
     await press("t");
-    expect(captureCharFrame()).toContain("enter save · esc cancel");
+    expect(captureCharFrame()).toContain("enter add · esc done");
     renderer.destroy();
   });
 });
@@ -848,10 +866,17 @@ describe("TUI review fixes", () => {
   });
 
   test("enter does not confirm a delete", async () => {
-    const { captureCharFrame, press, renderer } = await mount();
+    // Only a task that blocks others still asks before it goes.
+    const { captureCharFrame, press, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      blocksReport,
+    );
 
     await press("d");
     expect(captureCharFrame()).toContain("Delete task");
+    expect(captureCharFrame()).toContain("will be unblocked");
 
     await press("RETURN");
     expect(captureCharFrame()).toContain("Delete task");
@@ -946,8 +971,16 @@ describe("TUI review fixes", () => {
   test("the subtask panel gets its own key hints", async () => {
     const { captureCharFrame, press, renderer } = await mount();
 
+    // No rows to walk on the first task: only the add keys.
     await press("RETURN");
-    expect(captureCharFrame()).toContain("toggle");
+    expect(captureCharFrame()).not.toContain(" space  toggle ");
+    expect(captureCharFrame()).toContain(" t  step ");
+
+    await press("h");
+    await press("j");
+    await press("j");
+    await press("RETURN");
+    expect(captureCharFrame()).toContain(" space  toggle ");
     renderer.destroy();
   });
 
@@ -1097,6 +1130,7 @@ describe("TUI review 2 fixes", () => {
     await m.press("t");
     await m.type(LONG_SUB);
     await m.press("RETURN");
+    await m.press("ESCAPE"); // the prompt stays open for more steps
 
     await m.press("RETURN"); // into the subtask panel
     await m.press("e");
@@ -2660,7 +2694,7 @@ describe("TUI review 3 — panels", () => {
       expect(status).toContain(" ^k  ");
       expect(status).toContain(" ⇅ Due date");
       expect(status).not.toMatch(/[a-z]⇅/);
-      expect(status).not.toContain("spacestatus");
+      expect(status).not.toContain("spacedone");
       expect(status.length).toBeLessThanOrEqual(w);
       renderer.destroy();
     }
@@ -2670,7 +2704,7 @@ describe("TUI review 3 — panels", () => {
     const { captureCharFrame, renderer } = await mount(80, 24);
     const status = statusRow(captureCharFrame(), 24);
     expect(status).toContain(" a  add ");
-    expect(status).toContain(" space  status ");
+    expect(status).toContain(" space  done ");
     expect(status).toContain(" ^k  palette ");
     renderer.destroy();
   });
@@ -3001,7 +3035,6 @@ describe("TUI review 3 — keys and selection", () => {
     await press("g");
     expect(cursorRow(captureCharFrame())).toContain("Refactor the parser");
     await press("d");
-    await press("y");
     expect(cursorRow(captureCharFrame())).not.toContain("Refactor the parser");
 
     await press("u");
@@ -3056,8 +3089,8 @@ describe("TUI review 3 — keys and selection", () => {
     expect(captureCharFrame()).toContain("┃ ▢ Draft intro");
 
     await press("d");
-    await press("y");
     expect(captureCharFrame()).toContain("┃ ▢ Collect numbers");
+    expect(captureCharFrame()).toContain('Deleted step "Draft intro" · u to undo');
 
     await press("e");
     expect(captureCharFrame()).toContain("Edit subtask");
@@ -3331,8 +3364,8 @@ describe("TUI review 3 — keys and selection", () => {
     renderer.destroy();
   });
 
-  test("2.6: journal d and e need the entry panel, and the confirm quotes the entry", async () => {
-    const { captureCharFrame, goToTab, press, renderer } = await mount();
+  test("2.6: journal d and e need the entry panel, and the delete toast quotes the entry", async () => {
+    const { captureCharFrame, goToTab, press, data, renderer } = await mount();
 
     await goToTab("journal");
     const hints = captureCharFrame().split("\n")[28]!;
@@ -3340,7 +3373,7 @@ describe("TUI review 3 — keys and selection", () => {
     expect(hints).not.toContain(" e  edit ");
 
     await press("d");
-    expect(captureCharFrame()).not.toContain("Delete entry");
+    expect(data.listNotes(false)[0]!.entries).toHaveLength(1);
     await press("e");
     expect(captureCharFrame()).not.toContain("Edit entry");
 
@@ -3348,8 +3381,11 @@ describe("TUI review 3 — keys and selection", () => {
     expect(captureCharFrame().split("\n")[28]).toContain(" d  delete ");
     await press("d");
     const frame = captureCharFrame();
-    expect(frame).toContain("Delete entry");
-    expect(frame).toContain("“Shipped the opentui port”");
+    expect(frame).toContain("Deleted entry “Shipped the opentui port” · u to undo");
+    expect(data.listNotes(false)[0]!.entries).toHaveLength(0);
+
+    await press("u");
+    expect(data.listNotes(false)[0]!.entries).toHaveLength(1);
     renderer.destroy();
   });
 
@@ -3420,6 +3456,310 @@ describe("TUI review 3 — keys and selection", () => {
     expect(frame).toContain("● Done");
     expect(frame).toContain("1 task · 1 today");
     expect(frame).not.toContain("1 tasks");
+    renderer.destroy();
+  });
+});
+
+describe("TUI review 3 — mutations and undo", () => {
+  function statusRow(frame: string, height: number): string {
+    return frame.split("\n")[height - 2] ?? "";
+  }
+
+  const refactor = (data: RondoData) =>
+    data.tasks.list().find((t) => t.title === "Refactor the parser")!;
+
+  test("3.1: s starts and stops the selected task, each undoable", async () => {
+    const { captureCharFrame, press, data, renderer } = await mount();
+
+    await press("s");
+    expect(refactor(data).status).toBe(Status.InProgress);
+    expect(captureCharFrame()).toContain("#3 → In Progress · u undo");
+
+    await press("s");
+    expect(refactor(data).status).toBe(Status.Pending);
+
+    await press("u");
+    expect(refactor(data).status).toBe(Status.InProgress);
+    await press("u");
+    expect(refactor(data).status).toBe(Status.Pending);
+    renderer.destroy();
+  });
+
+  test("3.1: clicking the status glyph marks the row done", async () => {
+    const { captureCharFrame, click, data, renderer } = await mount();
+
+    // The detail panel repeats the title; the list row carries the rail.
+    const lines = captureCharFrame().split("\n");
+    const y = lines.findIndex((l) => l.includes("┃ ○ Refactor the parser"));
+    const x = lines[y]!.indexOf("○");
+    await click(x, y);
+
+    expect(refactor(data).status).toBe(Status.Done);
+    expect(captureCharFrame()).toContain("#3 → Done · u undo");
+    renderer.destroy();
+  });
+
+  test("3.1: the palette offers done and start instead of a status wheel", async () => {
+    const { captureCharFrame, press, type, data, renderer } = await mount();
+
+    await press("k", { ctrl: true });
+    await type("start");
+    expect(captureCharFrame()).toContain("Start / stop");
+    await press("RETURN");
+    expect(refactor(data).status).toBe(Status.InProgress);
+
+    await press("k", { ctrl: true });
+    await type("mark done");
+    expect(captureCharFrame()).toContain("Mark done / reopen");
+    expect(captureCharFrame()).not.toContain("Cycle status");
+    await press("RETURN");
+    expect(refactor(data).status).toBe(Status.Done);
+    renderer.destroy();
+  });
+
+  test("2.4: completing a recurring task names the spawn and u removes it", async () => {
+    const { captureCharFrame, press, data, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (d) => {
+        const t = newTask({
+          title: "Water the plants",
+          dueDate: GoTime.date(2026, 9, 1, 0, 0, 0, 0, "utc"),
+        });
+        d.tasks.create(t);
+        d.tasks.updateRecurrence(t.id, RecurFreq.Daily, 1);
+      },
+    );
+
+    await press(" ");
+    expect(captureCharFrame()).toContain("#4 → Done · next is #5 · u undo");
+    expect(data.tasks.list().map((t) => t.title)).toContain("Water the plants");
+    expect(data.tasks.getById(5)).not.toBeNull();
+
+    await press("u");
+    expect(data.tasks.getById(5)).toBeNull();
+    const plants = data.tasks.getById(4)!;
+    expect(plants.status).toBe(Status.Pending);
+    expect(plants.recurFreq).toBe(RecurFreq.Daily);
+    renderer.destroy();
+  });
+
+  test("3.3: + and - step the priority with undo, and stop at the ends", async () => {
+    const { captureCharFrame, press, data, renderer } = await mount();
+
+    await press("+");
+    expect(captureCharFrame()).toContain("#3 is already Urgent");
+    expect(refactor(data).priority).toBe(Priority.Urgent);
+
+    await press("-");
+    expect(captureCharFrame()).toContain("#3 → High · u undo");
+    expect(refactor(data).priority).toBe(Priority.High);
+
+    await press("u");
+    expect(refactor(data).priority).toBe(Priority.Urgent);
+    renderer.destroy();
+  });
+
+  test("3.3: @ opens a due prompt pre-filled with the date and rejects junk inline", async () => {
+    const { captureCharFrame, press, type, data, renderer } = await mount();
+
+    await press("@");
+    let frame = captureCharFrame();
+    expect(frame).toContain("Due date");
+    expect(frame).toContain("2026-12-01");
+    expect(frame).toContain("t today");
+    expect(frame).toContain("n none");
+
+    await type("xx");
+    await press("RETURN");
+    frame = captureCharFrame();
+    expect(frame).toContain("⚠ Use YYYY-MM-DD");
+    expect(frame).toContain("Due date");
+    expect(refactor(data).dueDate!.format("2006-01-02")).toBe("2026-12-01");
+    renderer.destroy();
+  });
+
+  test("3.3: a due chip answers a key on an undated task, and u clears it again", async () => {
+    const { captureCharFrame, press, data, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (d) => {
+        d.tasks.create(newTask({ title: "Someday" }));
+      },
+    );
+
+    await press("G");
+    await press("@");
+    await press("t");
+
+    const today = GoTime.now().format("2006-01-02");
+    const someday = () => data.tasks.list().find((t) => t.title === "Someday")!;
+    expect(someday().dueDate!.format("2006-01-02")).toBe(today);
+    expect(captureCharFrame()).toContain(`#4 due ${today} · u undo`);
+
+    await press("u");
+    expect(someday().dueDate).toBeNull();
+    renderer.destroy();
+  });
+
+  test("3.4: a delete in the detail panel goes through at once and u brings the row back", async () => {
+    const { captureCharFrame, press, data, renderer } = await mount();
+
+    await press("j");
+    await press("j");
+    await press("RETURN");
+    await press("d");
+    const report = () => data.tasks.list().find((t) => t.title === "Write the report")!;
+    expect(report().subtasks.map((s) => s.title)).toEqual(["Draft intro"]);
+    expect(captureCharFrame()).not.toContain("Delete subtask");
+    expect(captureCharFrame()).toContain("Collect numbers\" · u to undo");
+
+    await press("u");
+    expect(report().subtasks.map((s) => s.title)).toEqual([
+      "Collect numbers",
+      "Draft intro",
+    ]);
+    renderer.destroy();
+  });
+
+  test("3.10: e on a note opens it for editing; d deletes it with undo", async () => {
+    const { captureCharFrame, press, type, data, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (d) => {
+        d.addTaskNote(refactor(d).id, "first draft");
+      },
+    );
+
+    await press("RETURN");
+    const hints = statusRow(captureCharFrame(), 30);
+    expect(hints).toContain(" enter  edit ");
+    expect(hints).not.toContain(" space  toggle ");
+
+    await press("e");
+    expect(captureCharFrame()).toContain("Edit note");
+    expect(captureCharFrame()).toContain("first draft");
+    await type(" done");
+    await press("s", { ctrl: true });
+    expect(refactor(data).notes[0]!.body).toBe("first draft done");
+    expect(captureCharFrame()).toContain("Note updated");
+
+    await press("d");
+    expect(refactor(data).notes).toHaveLength(0);
+    expect(captureCharFrame()).toContain("Deleted note “first draft done” · u to undo");
+
+    await press("u");
+    expect(refactor(data).notes.map((n) => n.body)).toEqual(["first draft done"]);
+    renderer.destroy();
+  });
+
+  test("3.10: e on a time log re-prompts it and one u restores the old entry", async () => {
+    const { captureCharFrame, press, type, data, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (d) => {
+        d.logTime(refactor(d).id, 90 * Minute, "pairing");
+      },
+    );
+
+    await press("RETURN");
+    expect(statusRow(captureCharFrame(), 30)).toContain(" L  time ");
+
+    await press("e");
+    expect(captureCharFrame()).toContain("Edit time log");
+    expect(captureCharFrame()).toContain("1h30m pairing");
+
+    await type(" and review");
+    await press("RETURN");
+    const logs = () => refactor(data).timeLogs;
+    expect(logs()).toHaveLength(1);
+    expect(logs()[0]!.note).toBe("pairing and review");
+    expect(logs()[0]!.duration).toBe(90 * Minute);
+    expect(captureCharFrame()).toContain("Time log updated · u undo");
+
+    await press("u");
+    expect(logs()).toHaveLength(1);
+    expect(logs()[0]!.note).toBe("pairing");
+    renderer.destroy();
+  });
+
+  test("2.15: a bad duration shows inside the log-time prompt", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
+
+    await press("L");
+    await type("lots");
+    await press("RETURN");
+
+    const frame = captureCharFrame();
+    expect(frame).toContain("Log time");
+    expect(frame).toContain("⚠ Invalid duration — try 45m or 1h30m");
+    renderer.destroy();
+  });
+
+  test("3.14: the subtask prompt stays open and counts what it added", async () => {
+    const { captureCharFrame, press, type, data, renderer } = await mount();
+
+    await press("t");
+    await type("Plan");
+    await press("RETURN");
+    await type("Build");
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("2 added · esc done");
+
+    await press("ESCAPE");
+    expect(captureCharFrame()).not.toContain("New subtask");
+    expect(refactor(data).subtasks.map((s) => s.title)).toEqual(["Plan", "Build"]);
+    renderer.destroy();
+  });
+
+  test("3.16: export asks for a path under the data dir and never overwrites", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
+    const today = GoTime.now().format("2006-01-02");
+    const expected = join(process.env.RONDO_HOME!, "exports", `rondo-${today}.md`);
+
+    await press("k", { ctrl: true });
+    await type("tasks only to markdown");
+    expect(captureCharFrame()).toContain("Export tasks only to Markdown");
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("Export tasks");
+    expect(captureCharFrame()).toContain(`rondo-${today}.md`);
+
+    await press("RETURN");
+    // The status bar elides long paths in the middle; the tail is enough.
+    expect(captureCharFrame()).toContain("✓ Exported to /");
+    expect(captureCharFrame()).toContain(`rondo-${today}.md`);
+    const content = readFileSync(expected, "utf8");
+    expect(content).toContain("Refactor the parser");
+    expect(content).not.toContain("Shipped the opentui port");
+
+    await press("k", { ctrl: true });
+    await type("everything to markdown");
+    await press("RETURN");
+    await press("RETURN");
+    const second = expected.replace(/\.md$/, "-2.md");
+    expect(captureCharFrame()).toContain(`rondo-${today}.md exists · exported to `);
+    expect(captureCharFrame()).toContain(`rondo-${today}-2.md`);
+    expect(readFileSync(second, "utf8")).toContain("Shipped the opentui port");
+    expect(readFileSync(expected, "utf8")).not.toContain("Shipped the opentui port");
+    renderer.destroy();
+  });
+
+  test("2.14: sorting under a query says the filter is active", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
+
+    await press("/");
+    await type("re");
+    await press("RETURN");
+    await press("o");
+    expect(captureCharFrame()).toContain("Sorted by priority (filter active)");
+    expect(captureCharFrame()).toContain("⇅ Priority");
+
+    await press("F1");
+    expect(captureCharFrame()).toContain("Sorted by created (filter active)");
     renderer.destroy();
   });
 });
