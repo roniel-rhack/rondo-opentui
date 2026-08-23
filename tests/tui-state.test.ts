@@ -26,13 +26,19 @@ import {
   detailRows,
   doneToday,
   emptyFilters,
+  fitChips,
   fitHints,
   fitTags,
   fuzzyScore,
   groupTasks,
+  dueSentence,
+  hintKeysMissingFromHelp,
+  HELP_SECTIONS,
   indexOfId,
   indexOfNoteDate,
   isDense,
+  isOneLine,
+  rowGap,
   cycleDensity,
   clampRatio,
   listWidthFor,
@@ -55,6 +61,7 @@ import {
   bulkToast,
   withTasks,
   restoreTuiState,
+  restoredTag,
   type Hint,
 } from "../src/tui/state.ts";
 import { defaultTuiState } from "../src/core/config/tui-state.ts";
@@ -490,6 +497,63 @@ describe("groupTasks (5.1)", () => {
   test("no tasks, no groups", () => {
     expect(groupTasks([], "due", now)).toEqual([]);
   });
+
+  test("a finished task lands in Done, not in Overdue (5.2)", () => {
+    const finished = task({ id: 7, dueDate: due("2026-08-19") });
+    finished.status = Status.Done;
+    const groups = groupTasks([...tasks, finished], "due", now);
+    expect(groups.map((g) => [g.label, g.tasks.map((t) => t.id)])).toEqual([
+      ["Overdue", [1]],
+      ["Today", [2]],
+      ["This week", [3, 4]],
+      ["Later", [5]],
+      ["No date", [6]],
+      ["Done", [7]],
+    ]);
+  });
+});
+
+describe("restoredTag (4.1)", () => {
+  const tagged = [task({ id: 1 }), task({ id: 2 })];
+  tagged[0]!.tags = ["Work"];
+
+  test("keeps a tag some task still carries, drops the rest", () => {
+    expect(restoredTag("work", tagged)).toBe("work");
+    expect(restoredTag("gone", tagged)).toBe(null);
+    expect(restoredTag(null, tagged)).toBe(null);
+  });
+});
+
+describe("dueSentence (5.1)", () => {
+  test("says the distance in words", () => {
+    expect(dueSentence(due("2026-08-21"), now)).toBe("today");
+    expect(dueSentence(due("2026-08-22"), now)).toBe("tomorrow");
+    expect(dueSentence(due("2026-08-20"), now)).toBe("yesterday");
+    expect(dueSentence(due("2026-08-18"), now)).toBe("3 days overdue");
+    expect(dueSentence(due("2026-08-22"), now)).toBe("tomorrow");
+    expect(dueSentence(due("2026-08-31"), now)).toBe("in 10 days");
+  });
+});
+
+describe("fitChips (1.7)", () => {
+  test("takes the chips that fit and stops", () => {
+    const labels = ["today", "tomorrow", "+1w", "none"];
+    expect(fitChips(labels, 40)).toBe(4);
+    expect(fitChips(labels, 24)).toBe(2);
+    expect(fitChips(labels, 7)).toBe(0);
+    expect(fitChips([], 40)).toBe(0);
+  });
+});
+
+describe("help table (5.16)", () => {
+  test("documents every key the status bar hints at", () => {
+    expect(hintKeysMissingFromHelp()).toEqual([]);
+  });
+
+  test("names the confirm-dialog keys", () => {
+    const rows = HELP_SECTIONS.flatMap(([, r]) => r);
+    expect(rows.some(([key]) => key === "y / n")).toBe(true);
+  });
 });
 
 describe("indexOfId (2.7)", () => {
@@ -645,10 +709,31 @@ describe("clampRatio / listWidthFor (1.10)", () => {
 
 describe("density (1.6)", () => {
   test("auto follows the height, the others are explicit", () => {
-    expect(isDense("auto", 24)).toBe(true);
-    expect(isDense("auto", 30)).toBe(false);
-    expect(isDense("dense", 50)).toBe(true);
-    expect(isDense("comfortable", 20)).toBe(false);
+    expect(isDense("auto", 24, 40)).toBe(true);
+    expect(isDense("auto", 30, 40)).toBe(false);
+    expect(isDense("dense", 50, 40)).toBe(true);
+    expect(isDense("comfortable", 20, 200)).toBe(false);
+  });
+
+  test("auto is dense on a wide list whatever the height", () => {
+    // A list this wide fits the metadata beside the title, so the second
+    // line would be mostly blank.
+    expect(isDense("auto", 50, 120)).toBe(true);
+    expect(isDense("auto", 50, 63)).toBe(false);
+    expect(isDense("auto", 50, 64)).toBe(true);
+  });
+
+  test("the blank line between rows follows the density, not the height", () => {
+    expect(rowGap("comfortable", 24)).toBe(1);
+    expect(rowGap("dense", 50)).toBe(0);
+    expect(rowGap("auto", 24)).toBe(0);
+    expect(rowGap("auto", 30)).toBe(1);
+  });
+
+  test("one-line rows need a wide enough list", () => {
+    expect(isOneLine(64, true)).toBe(true);
+    expect(isOneLine(63, true)).toBe(false);
+    expect(isOneLine(120, false)).toBe(false);
   });
 
   test("z cycles auto, dense, comfortable", () => {

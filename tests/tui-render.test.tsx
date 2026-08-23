@@ -32,7 +32,13 @@ import {
   type TaskDetailHandle,
 } from "../src/tui/components/TaskDetail.tsx";
 import { RondoData } from "../src/tui/data.ts";
-import { TABS, collectTags, type TabId, type Hint } from "../src/tui/state.ts";
+import {
+  TABS,
+  collectTags,
+  hintKeysMissingFromHelp,
+  type TabId,
+  type Hint,
+} from "../src/tui/state.ts";
 import { mix, priorityColors, tuiTheme } from "../src/tui/theme.ts";
 import { TaskList } from "../src/tui/components/TaskList.tsx";
 import { StatusBar, TagBar } from "../src/tui/components/Panels.tsx";
@@ -1972,6 +1978,7 @@ describe("TUI review 3 — detail and journal", () => {
     focused: true,
     onSelectRow: () => {},
     onToggleSubtask: () => {},
+    blocked: false,
     blockedByTitles: new Map<number, string>(),
   };
 
@@ -2599,7 +2606,7 @@ describe("TUI review 3 — task list", () => {
           selected={0}
           focused
           width={60}
-          height={20}
+          gap={0}
           dense={false}
           sort="created"
           now={GoTime.now()}
@@ -2925,9 +2932,11 @@ describe("TUI review 3 — panels", () => {
     const lines = captureCharFrame().split("\n");
     const footer = lines.findIndex((l) => l.includes("esc close"));
     expect(footer).toBeGreaterThan(0);
-    expect(footer).toBeLessThan(19);
     expect(lines[footer + 1]).toContain("╰");
-    expect(lines[2]).toContain("Statistics");
+    expect(lines.slice(0, 3).join("\n")).toContain("Statistics");
+    // The status bar keeps its two rows: the overlay ends above them.
+    expect(footer + 1).toBeLessThan(18);
+    expect(lines[18]).toContain("^k");
     renderer.destroy();
   });
 
@@ -3450,7 +3459,9 @@ describe("TUI review 3 — keys and selection", () => {
     );
     const oneLine = /One line task +tomorrow +○○○○ 0\/1 +#ops +▲/;
 
-    expect(captureCharFrame()).not.toMatch(oneLine);
+    // A list this wide already packs the metadata beside the title in auto:
+    // the second line would be mostly blank.
+    expect(captureCharFrame()).toMatch(oneLine);
     await press("z");
     expect(captureCharFrame()).toContain("Density: dense");
     expect(captureCharFrame()).toMatch(oneLine);
@@ -3459,6 +3470,7 @@ describe("TUI review 3 — keys and selection", () => {
     expect(captureCharFrame()).not.toMatch(oneLine);
     await press("z");
     expect(captureCharFrame()).toContain("Density: auto");
+    expect(captureCharFrame()).toMatch(oneLine);
     await press("z");
     await new Promise((r) => setTimeout(r, 500));
     expect(
@@ -4150,6 +4162,442 @@ describe("TUI review 3 — filters, views, marks and persistence", () => {
     expect(status).toContain(" #  tag ");
     expect(status).toContain(" m  mark ");
     expect(status).toMatch(/\^k  palette .* \?  help/);
+    renderer.destroy();
+  });
+});
+
+describe("TUI review 3 — follow-ups", () => {
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /** Three tasks, each with a tag of its own, so the form offers three tag
+   * chips — the case where the chip row used to wrap. */
+  function seedTagged(): RondoData {
+    const data = new RondoData(openMemory(), defaultConfig());
+    for (const [title, tag] of [
+      ["Alpha", "work"],
+      ["Bravo", "home"],
+      ["Charlie", "code"],
+    ] as const) {
+      data.tasks.create(newTask({ title, tags: [tag] }));
+    }
+    return data;
+  }
+
+  /** Only the list panel of a two-panel frame. */
+  function listSide(frame: string): string[] {
+    return frame.split("\n").map((line) => {
+      const end = line.indexOf("│ │");
+      return end < 0 ? line : line.slice(0, end + 1);
+    });
+  }
+
+  /** Only the detail panel of a two-panel frame. */
+  function detailSide(frame: string): string[] {
+    return frame.split("\n").map((line) => {
+      const start = line.indexOf("│ │");
+      return start < 0 ? "" : line.slice(start + 2);
+    });
+  }
+
+  test("1.2: the form keeps its error visible at 60×20 with three tag chips", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount(
+      60,
+      20,
+      defaultConfig(),
+      seedTagged(),
+    );
+
+    await press("a");
+    const clean = captureCharFrame().split("\n");
+    // The chips fit on one row: no label wraps into a stray fragment below.
+    const chipRows = clean.filter((l) => /today +tomorrow/.test(l));
+    expect(chipRows).toHaveLength(1);
+    expect(chipRows[0]).toContain("#code");
+    expect(clean.some((l) => /^│ │ +y +│ │$/.test(l))).toBe(false);
+
+    await type("Tiny");
+    await press("TAB");
+    await press("TAB");
+    await type("31/12/2026");
+    await press("s", { ctrl: true });
+
+    const lines = captureCharFrame().split("\n");
+    expect(lines.some((l) => l.includes("⚠ Due date must be"))).toBe(true);
+    // The chips are what yields to the message, not the message to them.
+    expect(lines.some((l) => l.includes("tomorrow   "))).toBe(false);
+    // The status bar is still there under the overlay.
+    expect(lines[18]).toContain("^k");
+    renderer.destroy();
+  });
+
+  test("1.8: a fixed-height overlay never reaches the status bar", async () => {
+    const { captureCharFrame, press, renderer } = await mount(80, 24);
+
+    await press("?");
+    const lines = captureCharFrame().split("\n");
+    const bottom = lines.findIndex((l) => l.includes("↑↓ / j k scroll"));
+    expect(bottom).toBeGreaterThan(0);
+    expect(bottom + 1).toBeLessThan(22);
+    expect(lines[22]).toContain("^k");
+    renderer.destroy();
+  });
+
+  test("1.6: a wide list packs rows onto one line in auto", async () => {
+    const { captureCharFrame, renderer } = await mount(
+      200,
+      50,
+      defaultConfig(),
+      (data) => {
+        data.tasks.create(
+          newTask({
+            title: "Wide row",
+            priority: Priority.High,
+            tags: ["ops"],
+            dueDate: GoTime.now().addDate(0, 0, 1),
+          }),
+        );
+      },
+    );
+
+    expect(captureCharFrame()).toMatch(/Wide row +tomorrow .*#ops +▲/);
+    renderer.destroy();
+  });
+
+  test("1.6: comfortable restores the blank line on a short terminal", async () => {
+    const { captureCharFrame, press, renderer } = await mount(80, 24);
+    const titleRows = () => {
+      const lines = listSide(captureCharFrame());
+      return lines.reduce<number[]>((out, line, i) => {
+        if (/[○◐✓] (Refactor|Write)/.test(line)) out.push(i);
+        return out;
+      }, []);
+    };
+
+    const dense = titleRows();
+    expect(dense[1]! - dense[0]!).toBe(2);
+
+    await press("z");
+    await press("z");
+    expect(captureCharFrame()).toContain("Density: comfortable");
+    const comfortable = titleRows();
+    expect(comfortable[1]! - comfortable[0]!).toBe(3);
+    renderer.destroy();
+  });
+
+  test("1.6: one-line rows line up whether or not a row has a priority", async () => {
+    const { captureCharFrame, renderer } = await mount(
+      160,
+      24,
+      defaultConfig(),
+      (data) => {
+        const due = GoTime.now().addDate(0, 0, 1);
+        data.tasks.create(
+          newTask({ title: "With priority", priority: Priority.High, dueDate: due }),
+        );
+        data.tasks.create(
+          newTask({ title: "Without priority", priority: Priority.Low, dueDate: due }),
+        );
+      },
+    );
+
+    const lines = listSide(captureCharFrame());
+    const withGlyph = lines.find((l) => l.includes("With priority"))!;
+    const without = lines.find((l) => l.includes("Without priority"))!;
+    expect(withGlyph.indexOf("tomorrow")).toBe(without.indexOf("tomorrow"));
+    renderer.destroy();
+  });
+
+  test("3.3: the due chips still answer on a task that has a due date", async () => {
+    const { press, data, renderer } = await mount(100, 30, defaultConfig(), (d) => {
+      d.tasks.create(
+        newTask({ title: "Re-date me", dueDate: GoTime.date(2026, 8, 21, 0, 0, 0, 0, "utc") }),
+      );
+    });
+
+    await press("@");
+    await press("m");
+    const task = data.listTasks().find((t) => t.title === "Re-date me")!;
+    expect(task.dueDate!.format("2006-01-02")).toBe(
+      GoTime.now().addDate(0, 0, 1).format("2006-01-02"),
+    );
+    renderer.destroy();
+  });
+
+  test("3.8: the BLOCKED chip goes once the blocker is done", async () => {
+    const { captureCharFrame, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (data) => {
+        const blocker = newTask({ title: "Blocker task" });
+        const blocked = newTask({ title: "Waiting task" });
+        data.tasks.create(blocker);
+        data.tasks.create(blocked);
+        data.addDependency(blocked.id, blocker.id);
+        data.setStatus(blocker, Status.Done);
+      },
+    );
+
+    const frame = captureCharFrame();
+    expect(frame).toContain("Waiting task");
+    expect(frame).not.toContain("BLOCKED");
+    // The row agrees: no blocked marker either.
+    expect(listSide(frame).find((l) => l.includes("Waiting task"))).not.toContain("⊘");
+    renderer.destroy();
+  });
+
+  test("3.12: a #tag typed into the filter seeds the new task", async () => {
+    const { captureCharFrame, press, type, data, renderer } = await mount();
+
+    await press("/");
+    await type("#code");
+    await press("RETURN");
+
+    await press("a");
+    await type("Parser docs");
+    await press("s", { ctrl: true });
+
+    const created = data.listTasks().find((t) => t.title === "Parser docs")!;
+    expect(created.tags).toEqual(["code"]);
+    expect(captureCharFrame()).toContain("Parser docs");
+    renderer.destroy();
+  });
+
+  test("5.1: the detail spells the due date out", async () => {
+    const { captureCharFrame, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (data) => {
+        data.tasks.create(
+          newTask({ title: "Late one", dueDate: GoTime.now().addDate(0, 0, -3) }),
+        );
+      },
+    );
+
+    const frame = captureCharFrame();
+    expect(frame).toMatch(/Due .*· 3 days overdue/);
+    // The badge it replaces is gone; the list still groups by Overdue.
+    expect(detailSide(frame).join("\n")).not.toContain("OVERDUE");
+    renderer.destroy();
+  });
+
+  test("5.2: a finished task is grouped under Done, never Overdue", async () => {
+    const { captureCharFrame, press, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (data) => {
+        const late = newTask({
+          title: "Finished late",
+          dueDate: GoTime.now().addDate(0, 0, -2),
+        });
+        data.tasks.create(late);
+        data.setStatus(late, Status.Done);
+        data.tasks.create(
+          newTask({ title: "Still late", dueDate: GoTime.now().addDate(0, 0, -2) }),
+        );
+      },
+    );
+
+    await press("3");
+    const lines = listSide(captureCharFrame());
+    const overdue = lines.findIndex((l) => l.includes("OVERDUE"));
+    const done = lines.findIndex((l) => l.includes("DONE"));
+    expect(overdue).toBeGreaterThan(0);
+    expect(lines[overdue]).toContain("1");
+    expect(done).toBeGreaterThan(overdue);
+    const finished = lines.findIndex((l) => l.includes("Finished late"));
+    expect(finished).toBeGreaterThan(done);
+    renderer.destroy();
+  });
+
+  test("5.13: enter never confirms a destructive dialog", async () => {
+    const { captureCharFrame, press, data, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      blocksReport,
+    );
+
+    await press("d");
+    expect(captureCharFrame()).toContain("Delete task");
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("Delete task");
+    expect(data.listTasks()).toHaveLength(3);
+
+    await press("y");
+    expect(data.listTasks()).toHaveLength(2);
+    renderer.destroy();
+  });
+
+  test("5.16: the help documents the dialog keys and every status hint", async () => {
+    const { captureCharFrame, press, renderer } = await mount(100, 30);
+
+    await press("?");
+    expect(captureCharFrame()).toContain("Confirm / cancel a dialog");
+    expect(hintKeysMissingFromHelp()).toEqual([]);
+    renderer.destroy();
+  });
+
+  test("6.1: the detail cursor belongs to the task it was moved in", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    // "Write the report" is the one with subtasks; walk to its second row.
+    await press("j");
+    await press("j");
+    await press("l");
+    await press("j");
+    expect(captureCharFrame()).toMatch(/┃ ▢ Draft intro/);
+
+    // Another task shows its own rows, not a cursor inherited from this one.
+    await press("h");
+    await press("k");
+    expect(captureCharFrame()).not.toContain("▢");
+
+    await press("j");
+    await press("l");
+    expect(captureCharFrame()).toMatch(/┃ ▢ Draft intro/);
+    renderer.destroy();
+  });
+
+  test("4.1: quitting flushes the pending session state", async () => {
+    const home = mkdtempSync(join(tmpdir(), "rondo-quit-"));
+    process.env.RONDO_HOME = home;
+    const data = seed();
+    let quit = 0;
+    let setup!: Awaited<ReturnType<typeof testRender>>;
+    await act(async () => {
+      setup = await testRender(<App data={data} onQuit={() => quit++} />, {
+        width: 100,
+        height: 30,
+        exitOnCtrlC: false,
+      });
+    });
+    await setup.flush();
+
+    await act(async () => {
+      setup.mockInput.pressKey("4");
+    });
+    await setup.flush();
+    await act(async () => {
+      setup.mockInput.pressKey("q");
+    });
+    await setup.flush();
+
+    expect(quit).toBe(1);
+    const state = JSON.parse(
+      readFileSync(join(home, "tui-state.json"), "utf8"),
+    );
+    expect(state.tab).toBe("journal");
+    setup.renderer.destroy();
+  });
+
+  test("review: two undos in one chunk undo two actions", async () => {
+    const { press, type, data, renderer } = await mount();
+
+    await press("d");
+    await press("d");
+    expect(data.listTasks()).toHaveLength(1);
+
+    await type("uu");
+    expect(data.listTasks()).toHaveLength(3);
+    renderer.destroy();
+  });
+
+  test("review: two deletes in one chunk delete one task", async () => {
+    const { press, type, data, renderer } = await mount();
+
+    await type("dd");
+    expect(data.listTasks()).toHaveLength(2);
+
+    await press("u");
+    expect(data.listTasks()).toHaveLength(3);
+    renderer.destroy();
+  });
+
+  test("review: a theme saved during the ratio debounce survives it", async () => {
+    const { press, renderer } = await mount();
+
+    await press(">");
+    await press("T");
+    await act(async () => {
+      await wait(600);
+    });
+
+    const saved = JSON.parse(
+      readFileSync(join(process.env.RONDO_HOME!, "config.json"), "utf8"),
+    );
+    expect(saved.theme).toBe("light");
+    expect(saved.panel_ratio).toBeCloseTo(0.45);
+    renderer.destroy();
+  });
+
+  test("review: a tab with nothing in it keeps the remembered row", async () => {
+    const { captureCharFrame, press, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (data) => {
+        const done = data.tasks.list().find((t) => t.status === Status.Done)!;
+        data.tasks.delete(done.id);
+      },
+    );
+
+    await press("j");
+    const selected = () =>
+      captureCharFrame()
+        .split("\n")
+        .find((l) => l.includes("┃ ○"))!;
+    const before = selected();
+
+    await press("2");
+    expect(captureCharFrame()).toContain("No tasks yet");
+    await press("1");
+    expect(selected()).toBe(before);
+    renderer.destroy();
+  });
+
+  test("review: a prompt for a vanished task says so instead of crashing", async () => {
+    const { captureCharFrame, press, type, data, renderer } = await mount();
+
+    const task = data.listTasks().find((t) => t.title === "Refactor the parser")!;
+    await press("L");
+    data.tasks.delete(task.id);
+    await type("25m");
+    await press("RETURN");
+
+    expect(captureCharFrame()).toContain(`Task #${task.id} no longer exists`);
+    renderer.destroy();
+  });
+
+  test("review: a bulk delete asks when a marked task blocks another", async () => {
+    const { captureCharFrame, press, data, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      blocksReport,
+    );
+
+    await press("m");
+    await press("d");
+    const frame = captureCharFrame();
+    expect(frame).toContain("Delete 1 task?");
+    expect(frame).toContain("they will be unblocked");
+    expect(data.listTasks()).toHaveLength(3);
+
+    await press("y");
+    expect(data.listTasks()).toHaveLength(2);
+    renderer.destroy();
+  });
+
+  test("review: the digits follow the tabs' own keys", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    for (const tab of TABS) {
+      await press(tab.key);
+      expect(captureCharFrame()).toContain(`● ${tab.label}`);
+    }
     renderer.destroy();
   });
 });

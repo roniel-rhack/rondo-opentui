@@ -1,5 +1,6 @@
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
 import {
+  memo,
   useEffect,
   useImperativeHandle,
   useRef,
@@ -22,9 +23,9 @@ import {
 } from "../../core/task/task.ts";
 import { formatDuration, totalDuration } from "../../core/task/timelog.ts";
 import { GoTime } from "../../core/time.ts";
-import { DueLevel, dueBadge, dueStatus } from "../../core/ui/overdue.ts";
+import { DueLevel, dueStatus } from "../../core/ui/overdue.ts";
 import { useSmoothScrollIntoView } from "../hooks/useSmoothScroll.ts";
-import { detailRows, type DetailRow } from "../state.ts";
+import { detailRows, dueSentence, type DetailRow } from "../state.ts";
 import { priorityColors, type TuiTheme } from "../theme.ts";
 import {
   AnimatedMeter,
@@ -51,6 +52,9 @@ interface TaskDetailProps {
   onSelectRow: (index: number) => void;
   /** Index inside `task.subtasks`, not the unified cursor. */
   onToggleSubtask: (subIndex: number) => void;
+  /** Whether a blocker of this task is still open; a Done blocker does not
+   * block, and the list row draws the same distinction. */
+  blocked: boolean;
   blockedByTitles: Map<number, string>;
   /** Clicking a tag chip filters the list by it. */
   onFilterTag?: (tag: string) => void;
@@ -237,7 +241,11 @@ export function detailRowId(row: DetailRow): string {
 }
 
 /** Right panel: everything known about the selected task. */
-export function TaskDetail({ task, ref, ...props }: TaskDetailProps) {
+export const TaskDetail = memo(function TaskDetail({
+  task,
+  ref,
+  ...props
+}: TaskDetailProps) {
   if (!task) {
     return (
       <EmptyState
@@ -249,7 +257,7 @@ export function TaskDetail({ task, ref, ...props }: TaskDetailProps) {
     );
   }
   return <TaskBody {...props} task={task} ref={ref} />;
-}
+});
 
 function TaskBody({
   theme,
@@ -259,6 +267,7 @@ function TaskBody({
   cursor,
   onSelectRow,
   onToggleSubtask,
+  blocked,
   blockedByTitles,
   onFilterTag,
   ref,
@@ -376,7 +385,7 @@ function TaskBody({
           label={priorityString(task.priority)}
           color={priorityColors(theme)[task.priority] ?? theme.textDim}
         />
-        {task.blockedByIds.length > 0 ? (
+        {blocked ? (
           <>
             <box width={1} />
             <Chip theme={theme} label="BLOCKED" color={theme.danger} filled bold />
@@ -407,9 +416,12 @@ function TaskBody({
             <Field
               theme={theme}
               label="Due"
-              value={`${formatDate(cfg, task.dueDate)}${
-                dueBadge(level) ? `  ${dueBadge(level)}` : ""
-              }`}
+              // The date in words: no badge to decode, and the arithmetic
+              // against today is already done.
+              value={`${formatDate(cfg, task.dueDate)} · ${dueSentence(
+                task.dueDate,
+                now,
+              )}`}
               color={dueColor}
             />
           )

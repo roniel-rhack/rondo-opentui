@@ -11,7 +11,7 @@ bun install
 bun run start          # TUI
 bun run start list     # any argument dispatches to the CLI instead
 bun run dev            # TUI with --watch
-bun test               # 382 tests
+bun test               # 644 tests
 bun run typecheck      # tsc --noEmit
 bun run build          # dist/rondo-opentui (single binary, ad-hoc signed)
 ```
@@ -37,6 +37,8 @@ src/
     journal/       journal.ts · store.ts
     focus/         focus.ts · store.ts (pomodoro sessions, streaks)
     config/        ~/.todo-app/config.json, format presets, validation
+                   tui-state.ts: the saved TUI session (tab, sort, view, tag,
+                   selection, density)
     database/      db.ts (bun:sqlite) · backup.ts (VACUUM INTO + pruning)
     export/        Markdown and JSON exporters
     ui/            colors · ansi · markdown · overdue · stats (CLI-side rendering)
@@ -50,8 +52,8 @@ src/
                    filtering, sorting, fuzzy matching
     data.ts        Store facade the components talk to
     theme.ts       Design tokens (dark + light), mix(), meter()
-    hooks/         usePomodoro · useTween/useEntrance/useCountdown ·
-                   useSmoothScrollIntoView
+    hooks/         usePomodoro · useClock · useToast · useTaskData ·
+                   useTween/useEntrance/useCountdown · useSmoothScrollIntoView
     components/    Header · TaskList · TaskDetail · JournalPanel · Panels ·
                    Dialogs · TaskForm · Settings · Overlay · primitives
 tests/             bun:test — core, CLI, TUI selectors, live TUI rendering
@@ -79,6 +81,10 @@ constrains a few things:
 - **`config.json` may carry a TS-only `theme` key** ("dark" / "light"). The Go
   build ignores it on read and drops it when it rewrites the file — losing it
   is fine, inventing more keys like it needs the same care.
+- **The session state lives in its own file.** `~/.todo-app/tui-state.json`
+  holds the tab, sort, view, tag, selection and density the TUI restores. It
+  is deliberately not in `config.json`, which the Go build rewrites without
+  the keys it does not know; the Go build ignores the extra file entirely.
 
 ## Testing
 

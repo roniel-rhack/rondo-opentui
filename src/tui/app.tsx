@@ -21,7 +21,6 @@ import {
 } from "../core/config/tui-state.ts";
 import { Minute } from "../core/duration.ts";
 import { SessionKind } from "../core/focus/focus.ts";
-import type { Note } from "../core/journal/journal.ts";
 import { RecurFreq, recurFreqString } from "../core/task/recur.ts";
 import {
   Status,
@@ -35,6 +34,8 @@ import { initTheme, isDark } from "../core/ui/colors.ts";
 import type { RondoData, TaskDraft, UndoAction } from "./data.ts";
 import { useClock } from "./hooks/useClock.ts";
 import { usePomodoro } from "./hooks/usePomodoro.ts";
+import { useTaskData } from "./hooks/useTaskData.ts";
+import { useToast } from "./hooks/useToast.ts";
 import {
   DUE_CHIPS,
   TABS,
@@ -59,14 +60,18 @@ import {
   indexOfId,
   indexOfNoteDate,
   isDense,
+  isOneLine,
   listWidthFor,
   nextView,
   openFirst,
   pageSize,
   parseDueInput,
+  parseFilterQuery,
   parseTimeLogInput,
   plural,
   restoreTuiState,
+  restoredTag,
+  rowGap,
   sortToast,
   statusToast,
   stepPriority,
@@ -79,7 +84,6 @@ import {
   viewToast,
   visibleNotes,
   visibleTasks,
-  withTasks,
   type Filters,
   type Hint,
   type HintAction,
@@ -101,7 +105,7 @@ import {
   TagBar,
 } from "./components/Panels.tsx";
 import { TaskDetail, type TaskDetailHandle } from "./components/TaskDetail.tsx";
-import { TaskList, isOneLine } from "./components/TaskList.tsx";
+import { TaskList } from "./components/TaskList.tsx";
 import {
   CommandPalette,
   ConfirmDialog,
@@ -159,12 +163,6 @@ interface StatsSnapshot {
   streakDays: number;
 }
 
-interface Toast {
-  id: number;
-  message: string;
-  kind: ToastKind;
-}
-
 export interface AppProps {
   data: RondoData;
   onQuit?: () => void;
@@ -180,8 +178,6 @@ const DETAIL_CHROME = 5;
 const RATIO_SAVE_MS = 400;
 /** Milliseconds of quiet before the session state reaches tui-state.json. */
 const STATE_SAVE_MS = 400;
-/** How often the database is asked whether another connection committed. */
-const CHANGE_POLL_MS = 2000;
 
 function toDraft(values: TaskFormValues): TaskDraft {
   return {
@@ -195,6 +191,12 @@ function toDraft(values: TaskFormValues): TaskDraft {
       .filter((t) => t !== ""),
     recurFreq: values.recur,
   };
+}
+
+/** Inline prompt error for a task that disappeared while its dialog was open;
+ * the change poll can delete it from under one. */
+function gone(taskId: number): string {
+  return `Task #${taskId} no longer exists`;
 }
 
 function fromTask(task: Task): TaskFormValues {
@@ -230,9 +232,17 @@ export function App({ data, onQuit }: AppProps) {
   }, [renderer, theme]);
   const [cfg, setCfg] = useState<Config>(data.cfg);
 
-  const [tasks, setTasks] = useState<Task[]>(() => data.listTasks());
-  const [notes, setNotes] = useState<Note[]>(() => data.listNotes(false));
-  const [showHidden, setShowHidden] = useState(false);
+  const { toast, notify } = useToast();
+  const {
+    tasks,
+    notes,
+    showHidden,
+    setShowHidden,
+    reloadTasks,
+    reloadNotes,
+    reloadAll,
+    refreshTasks,
+  } = useTaskData(data, notify);
 
   // Where the last session left off; the path is fixed at mount so a save
   // that fires late can never land in a directory chosen afterwards.
@@ -242,7 +252,13 @@ export function App({ data, onQuit }: AppProps) {
   const [tab, setTab] = useState<TabId>(restored.tab);
   const [panel, setPanel] = useState<0 | 1>(0);
   const [taskIndex, setTaskIndex] = useState(0);
-  const [detailIndex, setDetailIndex] = useState(0);
+  // The detail cursor belongs to the task it was moved in, so another task
+  // starts at its first row without an effect firing a second commit per
+  // selection change.
+  const [detailAt, setDetailAt] = useState<{
+    taskId: number | null;
+    index: number;
+  }>({ taskId: null, index: 0 });
   const [noteIndex, setNoteIndex] = useState(0);
   const [entryIndex, setEntryIndex] = useState(0);
   // The selection is remembered by identity, not row number: a re-sort, a
@@ -251,11 +267,11 @@ export function App({ data, onQuit }: AppProps) {
   const selectedNoteDate = useRef<string | null>(restored.selectedNoteDate);
 
   const [sort, setSort] = useState<SortKey>(restored.sort);
-  const [filters, setFilters] = useState<Filters>({
+  const [filters, setFilters] = useState<Filters>(() => ({
     ...emptyFilters,
-    tag: restored.tag,
+    tag: restoredTag(restored.tag, tasks),
     view: restored.view,
-  });
+  }));
   const [searching, setSearching] = useState(false);
   const [tagBar, setTagBar] = useState(restored.tagBar);
   const [ratio, setRatio] = useState(cfg.panelRatio);
@@ -265,62 +281,11 @@ export function App({ data, onQuit }: AppProps) {
   const now = useClock();
 
   const [modal, setModal] = useState<Modal>({ type: "none" });
-  const [toast, setToast] = useState<Toast | null>(null);
-  const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
+  // The stack lives in a ref, not in state: a burst of `u` presses is drained
+  // from one stdin chunk before React commits, and every one of them must see
+  // what the previous press already popped.
+  const undoStack = useRef<UndoAction[]>([]);
   const detailRef = useRef<TaskDetailHandle | null>(null);
-
-  const notify = useCallback(
-    (message: string, kind: Toast["kind"] = "info") => {
-      setToast((prev) => ({ id: (prev?.id ?? 0) + 1, message, kind }));
-    },
-    [],
-  );
-
-  const reloadTasks = useCallback(() => {
-    setTasks(data.listTasks());
-  }, [data]);
-
-  const reloadNotes = useCallback(
-    (hidden = showHidden) => {
-      setNotes(data.listNotes(hidden));
-    },
-    [data, showHidden],
-  );
-
-  const reloadAll = useCallback(() => {
-    reloadTasks();
-    reloadNotes();
-  }, [reloadNotes, reloadTasks]);
-
-  // A single-task mutation swaps that task only; every other row keeps its
-  // identity and its memoized render.
-  const refreshTasks = useCallback(
-    (ids: readonly number[]) => {
-      const fresh = new Map(ids.map((id) => [id, data.refreshTask(id)]));
-      setTasks((prev) => withTasks(prev, fresh));
-    },
-    [data],
-  );
-
-  // The CLI and the agent skill write the same database; a foreign commit
-  // shows up within a poll. The baseline is taken once, at mount.
-  useEffect(() => {
-    data.changed();
-  }, [data]);
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (!data.changed()) return;
-      reloadAll();
-      notify("Refreshed — changed outside", "info");
-    }, CHANGE_POLL_MS);
-    return () => clearInterval(id);
-  }, [data, notify, reloadAll]);
-
-  useEffect(() => {
-    if (!toast) return;
-    const id = setTimeout(() => setToast(null), toastDuration(toast.kind));
-    return () => clearTimeout(id);
-  }, [toast]);
 
   const pomodoro = usePomodoro(data, cfg, (kind, taskId) => {
     if (kind !== SessionKind.Work) {
@@ -329,12 +294,15 @@ export function App({ data, onQuit }: AppProps) {
       // The app already measured the time; the task should not have to wait
       // for the user to type it in again.
       const duration = cfg.focus.workDuration * Minute;
-      data.logTime(taskId, duration, "focus session");
-      refreshTasks([taskId]);
-      notify(
-        `Focus complete · ${formatDuration(duration)} logged to #${taskId}`,
-        "success",
-      );
+      if (data.logTime(taskId, duration, "focus session")) {
+        refreshTasks([taskId]);
+        notify(
+          `Focus complete · ${formatDuration(duration)} logged to #${taskId}`,
+          "success",
+        );
+      } else {
+        notify("Focus session complete", "success");
+      }
     } else {
       notify("Focus session complete", "success");
     }
@@ -368,6 +336,8 @@ export function App({ data, onQuit }: AppProps) {
     () => (selectedTask ? detailRows(selectedTask) : []),
     [selectedTask],
   );
+  const detailIndex =
+    detailAt.taskId === (selectedTask?.id ?? null) ? detailAt.index : 0;
   const detailCursor = clampIndex(detailIndex, rows.length);
   const detailRow = rows[detailCursor];
   const entryCount = selectedNote?.entries.length ?? 0;
@@ -377,6 +347,12 @@ export function App({ data, onQuit }: AppProps) {
     () => new Map(tasks.map((t) => [t.id, `#${t.id} ${t.title}`])),
     [tasks],
   );
+
+  // The cursor row keeps the id it was moved in, so a stale index cannot
+  // point the detail panel at the wrong task's rows.
+  const setDetailIndex = useCallback((index: number) => {
+    setDetailAt({ taskId: selectedTaskId.current, index });
+  }, []);
 
   // A new query, tag or view ranks the list afresh, so the cursor lands on
   // the best match. Clearing the filter is different: the task found under
@@ -398,10 +374,14 @@ export function App({ data, onQuit }: AppProps) {
     setEntryIndex(0);
   }, [filters.query, filters.tag, filters.view]);
 
+  // An empty list leaves the remembered identity alone: the tab or filter
+  // that shows nothing is usually a detour, and the cursor comes back to the
+  // same row afterwards.
   useEffect(() => {
     setTaskIndex((i) => {
       const next = indexOfId(shown, selectedTaskId.current, i);
-      selectedTaskId.current = shown[next]?.id ?? null;
+      const id = shown[next]?.id;
+      if (id !== undefined) selectedTaskId.current = id;
       return next;
     });
   }, [shown]);
@@ -409,20 +389,17 @@ export function App({ data, onQuit }: AppProps) {
   useEffect(() => {
     setNoteIndex((i) => {
       const next = indexOfNoteDate(shownNotes, selectedNoteDate.current, i);
-      selectedNoteDate.current =
-        shownNotes[next]?.date.format(DateOnly) ?? null;
+      const date = shownNotes[next]?.date.format(DateOnly);
+      if (date !== undefined) selectedNoteDate.current = date;
       return next;
     });
   }, [shownNotes]);
 
-  useEffect(() => {
-    setDetailIndex(0);
-  }, [selectedTask?.id]);
-
   const selectTaskAt = useCallback(
     (index: number) => {
       const i = clampIndex(index, shown.length);
-      selectedTaskId.current = shown[i]?.id ?? null;
+      const id = shown[i]?.id;
+      if (id !== undefined) selectedTaskId.current = id;
       setTaskIndex(i);
     },
     [shown],
@@ -431,9 +408,11 @@ export function App({ data, onQuit }: AppProps) {
   const selectNoteAt = useCallback(
     (index: number) => {
       const i = clampIndex(index, shownNotes.length);
-      const next = shownNotes[i]?.date.format(DateOnly) ?? null;
-      if (next !== selectedNoteDate.current) setEntryIndex(0);
-      selectedNoteDate.current = next;
+      const next = shownNotes[i]?.date.format(DateOnly);
+      if (next !== undefined && next !== selectedNoteDate.current) {
+        selectedNoteDate.current = next;
+        setEntryIndex(0);
+      }
       setNoteIndex(i);
     },
     [shownNotes],
@@ -443,15 +422,30 @@ export function App({ data, onQuit }: AppProps) {
 
   // Session state is written after a short quiet period; the mount only
   // restores. A state file that cannot be written is not worth a toast.
-  const selectedId = selectedTask?.id ?? null;
-  const selectedDate = selectedNote?.date.format(DateOnly) ?? null;
+  // An empty list keeps the last identity rather than saving "nothing".
+  const selectedId = selectedTask?.id ?? selectedTaskId.current;
+  const selectedDate =
+    selectedNote?.date.format(DateOnly) ?? selectedNoteDate.current;
+  const pendingState = useRef<TuiState | null>(null);
+
+  /** Writes whatever the debounce is still holding. Quitting goes through
+   * here, or the last keystrokes before `q` would never reach the file. */
+  const flushState = useCallback(() => {
+    const state = pendingState.current;
+    if (!state) return;
+    pendingState.current = null;
+    try {
+      saveTuiState(state, statePath.current);
+    } catch {}
+  }, []);
+
   const stateSeen = useRef(false);
   useEffect(() => {
     if (!stateSeen.current) {
       stateSeen.current = true;
       return;
     }
-    const state: TuiState = {
+    pendingState.current = {
       tab,
       sort,
       tagBar,
@@ -461,30 +455,41 @@ export function App({ data, onQuit }: AppProps) {
       selectedNoteDate: selectedDate,
       density,
     };
-    const id = setTimeout(() => {
-      try {
-        saveTuiState(state, statePath.current);
-      } catch {}
-    }, STATE_SAVE_MS);
+    const id = setTimeout(flushState, STATE_SAVE_MS);
     return () => clearTimeout(id);
-  }, [density, filters.tag, filters.view, selectedDate, selectedId, sort, tab, tagBar]);
+  }, [
+    density,
+    filters.tag,
+    filters.view,
+    flushState,
+    selectedDate,
+    selectedId,
+    sort,
+    tab,
+    tagBar,
+  ]);
 
   // ---------------------------------------------------------------- actions
 
   const openAddTask = useCallback(() => {
     // A task created inside a filter belongs to it, or it would vanish from
-    // the list the moment it is saved.
+    // the list the moment it is saved. Both filter paths seed it: the tag
+    // picker and a #tag typed into the query.
+    const parsed = parseFilterQuery(filters.query);
+    const tags = [...new Set([filters.tag, ...parsed.tags])].filter(
+      (t): t is string => t !== null && t !== "",
+    );
     setModal({
       type: "task-form",
       title: "New task",
       initial: {
         ...emptyTaskForm,
-        tags: filters.tag ?? "",
-        due: filters.view === "today" ? "today" : "",
+        tags: tags.join(", "),
+        due: filters.view === "today" || parsed.due === "today" ? "today" : "",
       },
       taskId: null,
     });
-  }, [filters.tag, filters.view]);
+  }, [filters.query, filters.tag, filters.view]);
 
   const openEditTask = useCallback(() => {
     if (!selectedTask) return;
@@ -517,8 +522,16 @@ export function App({ data, onQuit }: AppProps) {
   );
 
   const pushUndo = useCallback((action: UndoAction) => {
-    setUndoStack((stack) => [action, ...stack].slice(0, 20));
+    undoStack.current = [action, ...undoStack.current].slice(0, 20);
   }, []);
+
+  // The keyboard hands over a whole stdin chunk before React commits, so an
+  // action that mutates the selection reads the row from the store instead of
+  // the snapshot the render it was built in captured.
+  const currentTask = useCallback(() => {
+    const id = selectedTaskId.current ?? selectedTask?.id ?? null;
+    return id === null ? null : data.refreshTask(id);
+  }, [data, selectedTask]);
 
   // Every status change is one keypress and one undo entry; the toast names
   // the spawned occurrence so a recurring completion is not a surprise.
@@ -561,8 +574,10 @@ export function App({ data, onQuit }: AppProps) {
   );
 
   const deleteSelectedTask = useCallback(() => {
-    if (!selectedTask) return;
-    const task = selectedTask;
+    // Re-read: a second `d` from the same chunk must find the row gone
+    // instead of deleting it twice and stacking two undo entries for it.
+    const task = currentTask();
+    if (!task) return;
     const perform = () => {
       const action = data.deleteTask(task);
       undoableDelete(action, action.label);
@@ -581,25 +596,26 @@ export function App({ data, onQuit }: AppProps) {
       detail: `It blocks ${blocked.map((id) => `#${id}`).join(", ")} — they will be unblocked.`,
       onConfirm: perform,
     });
-  }, [data, reloadTasks, selectedTask, undoableDelete]);
+  }, [currentTask, data, reloadTasks, undoableDelete]);
 
   const stepPriorityBy = useCallback(
     (delta: 1 | -1) => {
-      if (!selectedTask) return;
-      const next = stepPriority(selectedTask.priority, delta);
+      const task = currentTask();
+      if (!task) return;
+      const next = stepPriority(task.priority, delta);
       if (next === null) {
         notify(
-          `#${selectedTask.id} is already ${priorityString(selectedTask.priority)}`,
+          `#${task.id} is already ${priorityString(task.priority)}`,
           "info",
         );
         return;
       }
-      const action = data.setPriority(selectedTask, next);
+      const action = data.setPriority(task, next);
       pushUndo(action);
-      refreshTasks([selectedTask.id]);
+      refreshTasks([task.id]);
       notify(`${action.label} · u undo`, "success");
     },
-    [data, notify, pushUndo, refreshTasks, selectedTask],
+    [currentTask, data, notify, pushUndo, refreshTasks],
   );
 
   const openDuePrompt = useCallback(() => {
@@ -619,7 +635,11 @@ export function App({ data, onQuit }: AppProps) {
         } catch {
           return "Use YYYY-MM-DD, today, tomorrow, +3d, +1w or none";
         }
-        const action = data.setDue(task, due);
+        // The task may have been deleted from another connection while the
+        // prompt was open; say so instead of writing into nothing.
+        const fresh = data.refreshTask(task.id);
+        if (!fresh) return gone(task.id);
+        const action = data.setDue(fresh, due);
         pushUndo(action);
         closeModal();
         refreshTasks([task.id]);
@@ -639,7 +659,7 @@ export function App({ data, onQuit }: AppProps) {
       placeholder: "Step description",
       stayOpen: true,
       onSubmit: (value) => {
-        data.addSubtask(taskId, value);
+        if (!data.addSubtask(taskId, value)) return gone(taskId);
         refreshTasks([taskId]);
       },
     });
@@ -757,7 +777,7 @@ export function App({ data, onQuit }: AppProps) {
       placeholder: "What happened?",
       multiline: true,
       onSubmit: (value) => {
-        data.addTaskNote(taskId, value);
+        if (!data.addTaskNote(taskId, value)) return gone(taskId);
         closeModal();
         refreshTasks([taskId]);
         notify("Note added", "success");
@@ -780,7 +800,9 @@ export function App({ data, onQuit }: AppProps) {
         } catch {
           return "Invalid duration — try 45m or 1h30m";
         }
-        data.logTime(taskId, parsed.duration, parsed.note);
+        if (!data.logTime(taskId, parsed.duration, parsed.note)) {
+          return gone(taskId);
+        }
         closeModal();
         refreshTasks([taskId]);
         notify(`Logged ${value}`, "success");
@@ -842,18 +864,25 @@ export function App({ data, onQuit }: AppProps) {
   }, [data, entryCursor, reloadNotes, selectedNote, undoableDelete]);
 
   const undo = useCallback(() => {
-    const [action, ...rest] = undoStack;
+    const [action, ...rest] = undoStack.current;
     if (!action) {
       notify("Nothing to undo", "info");
       return;
     }
-    data.undo(action);
+    // Popped before the store is touched: a repeated `u` then finds the next
+    // entry rather than replaying this one.
+    undoStack.current = rest;
+    try {
+      data.undo(action);
+    } catch (err) {
+      notify(`Could not undo: ${(err as Error).message}`, "error");
+      return;
+    }
     // A restored task keeps its id, so the cursor can go back to it.
     if (action.kind === "task") selectedTaskId.current = action.task.id;
-    setUndoStack(rest);
     reloadAll();
     notify("Undone", "success");
-  }, [data, notify, reloadAll, undoStack]);
+  }, [data, notify, reloadAll]);
 
   const saveSettings = useCallback(
     (next: Config) => {
@@ -939,19 +968,39 @@ export function App({ data, onQuit }: AppProps) {
   // Both the keys and the drag fire in bursts; the ratio is written once
   // the user settles, and the same clamp keeps both panels usable.
   const ratioSave = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRatio = useRef<number | null>(null);
+
+  /** Merges the pending ratio onto the config as it stands when the write
+   * happens: a settings save inside the debounce window must not be undone
+   * by a snapshot taken before it. */
+  const flushRatio = useCallback(() => {
+    if (ratioSave.current) {
+      clearTimeout(ratioSave.current);
+      ratioSave.current = null;
+    }
+    const next = pendingRatio.current;
+    if (next === null) return;
+    pendingRatio.current = null;
+    persistConfig({ ...data.cfg, panelRatio: next }, "Could not save layout");
+  }, [data, persistConfig]);
+
+  // A pending write is dropped on unmount; quitting flushes it first.
+  useEffect(
+    () => () => {
+      if (ratioSave.current) clearTimeout(ratioSave.current);
+    },
+    [],
+  );
+
   const applyRatio = useCallback(
     (raw: number) => {
       const next = clampRatio(raw, width);
       setRatio(next);
+      pendingRatio.current = Number(next.toFixed(2));
       if (ratioSave.current) clearTimeout(ratioSave.current);
-      ratioSave.current = setTimeout(() => {
-        persistConfig(
-          { ...cfg, panelRatio: Number(next.toFixed(2)) },
-          "Could not save layout",
-        );
-      }, RATIO_SAVE_MS);
+      ratioSave.current = setTimeout(flushRatio, RATIO_SAVE_MS);
     },
-    [cfg, persistConfig, width],
+    [flushRatio, width],
   );
 
   const resizePanels = useCallback(
@@ -987,9 +1036,17 @@ export function App({ data, onQuit }: AppProps) {
     notify(focusStatusMessage(pomodoro.running, pomodoro.kind, cfg), "info");
   }, [cfg, isJournalTab, notify, pomodoro, selectedTask]);
 
+  // Quitting exits the process, so whatever the debounces are still holding
+  // has to reach disk here: the last tab switch or `>` before `q` counts.
+  const quitNow = useCallback(() => {
+    flushState();
+    flushRatio();
+    onQuit?.();
+  }, [flushRatio, flushState, onQuit]);
+
   const requestQuit = useCallback(() => {
     if (!pomodoro.running) {
-      onQuit?.();
+      quitNow();
       return;
     }
     setModal({
@@ -999,17 +1056,16 @@ export function App({ data, onQuit }: AppProps) {
       confirmLabel: "Quit",
       onConfirm: () => {
         pomodoro.stop();
-        onQuit?.();
+        quitNow();
       },
     });
-  }, [onQuit, pomodoro]);
+  }, [pomodoro, quitNow]);
 
   const toggleHiddenNotes = useCallback(() => {
     const next = !showHidden;
     setShowHidden(next);
-    setNotes(data.listNotes(next));
     notify(next ? "Showing hidden notes" : "Hiding hidden notes", "info");
-  }, [data, notify, showHidden]);
+  }, [notify, setShowHidden, showHidden]);
 
   const toggleNoteHidden = useCallback(() => {
     if (!selectedNote) return;
@@ -1174,8 +1230,33 @@ export function App({ data, onQuit }: AppProps) {
   );
 
   const bulkDelete = useCallback(() => {
-    bulk("deleted", (t) => data.deleteTask(t), "undo");
-  }, [bulk, data]);
+    const perform = () => {
+      closeModal();
+      bulk("deleted", (t) => data.deleteTask(t), "undo");
+    };
+    // The same safeguard a single delete has, and more tasks are at stake:
+    // blockers that are themselves being deleted do not count.
+    const marks = new Set(markedTasks.map((t) => t.id));
+    const unblocked = new Set<number>();
+    for (const task of markedTasks) {
+      for (const id of data.blockedBy(task)) {
+        if (!marks.has(id)) unblocked.add(id);
+      }
+    }
+    if (unblocked.size === 0) {
+      perform();
+      return;
+    }
+    setModal({
+      type: "confirm",
+      title: "Delete tasks",
+      message: `Delete ${plural(markedTasks.length, "task")}?`,
+      detail: `They block ${[...unblocked]
+        .map((id) => `#${id}`)
+        .join(", ")} — they will be unblocked.`,
+      onConfirm: perform,
+    });
+  }, [bulk, closeModal, data, markedTasks]);
 
   const openBulkDuePrompt = useCallback(() => {
     setModal({
@@ -1205,8 +1286,12 @@ export function App({ data, onQuit }: AppProps) {
 
   const pressDone = useCallback(() => {
     if (bulkActive) bulkDone();
-    else toggleDone(selectedTask);
-  }, [bulkActive, bulkDone, selectedTask, toggleDone]);
+    else toggleDone(currentTask());
+  }, [bulkActive, bulkDone, currentTask, toggleDone]);
+
+  const pressStart = useCallback(() => {
+    toggleInProgress(currentTask());
+  }, [currentTask, toggleInProgress]);
 
   const pressDue = useCallback(() => {
     if (bulkActive) openBulkDuePrompt();
@@ -1266,7 +1351,7 @@ export function App({ data, onQuit }: AppProps) {
             { id: "task.add", group: "Task", label: "New task", hint: "a", run: openAddTask },
             { id: "task.edit", group: "Task", label: "Edit selected task", hint: "e", run: openEditTask },
             { id: "task.done", group: "Task", label: "Mark done / reopen", hint: "space", run: pressDone },
-            { id: "task.start", group: "Task", label: "Start / stop", hint: "s", run: () => toggleInProgress(selectedTask) },
+            { id: "task.start", group: "Task", label: "Start / stop", hint: "s", run: pressStart },
             { id: "task.delete", group: "Task", label: "Delete selected task", hint: "d", run: pressDelete },
             { id: "task.priorityUp", group: "Task", label: "Priority up", hint: "+", run: () => pressPriority(1) },
             { id: "task.priorityDown", group: "Task", label: "Priority down", hint: "-", run: () => pressPriority(-1) },
@@ -1354,6 +1439,7 @@ export function App({ data, onQuit }: AppProps) {
     pressDone,
     pressDue,
     pressPriority,
+    pressStart,
     reloadFromDisk,
     requestQuit,
     resizePanels,
@@ -1364,7 +1450,6 @@ export function App({ data, onQuit }: AppProps) {
     toggleDensity,
     toggleFocus,
     toggleHiddenNotes,
-    toggleInProgress,
     toggleMark,
     toggleNoteHidden,
     toggleTheme,
@@ -1375,7 +1460,10 @@ export function App({ data, onQuit }: AppProps) {
 
   const compact = width < 72;
   const listWidth = compact ? width : listWidthFor(ratio, width);
-  const dense = isDense(density, height);
+  // Density reads the list's width as well as the height: a wide list fits
+  // the metadata beside the title instead of half-filling a second line.
+  const dense = isDense(density, height, listWidth);
+  const listGap = rowGap(density, height);
   const isJournal = isJournalTab;
   const showTagBar = !isJournal && (tagBar || filters.tag !== null);
   const showSearchBar = searching || filters.query !== "";
@@ -1392,7 +1480,8 @@ export function App({ data, onQuit }: AppProps) {
       if (panel === 0) {
         setTaskIndex((i) => {
           const next = clampIndex(i + delta, shown.length);
-          selectedTaskId.current = shown[next]?.id ?? null;
+          const id = shown[next]?.id;
+          if (id !== undefined) selectedTaskId.current = id;
           return next;
         });
       } else {
@@ -1414,9 +1503,7 @@ export function App({ data, onQuit }: AppProps) {
 
   // A page is what the focused panel can show; the list's rows vary with
   // density, while the other surfaces are read line by line.
-  const listRowHeight = isOneLine(listWidth, dense)
-    ? 1
-    : 2 + (height < 30 ? 0 : 1);
+  const listRowHeight = (isOneLine(listWidth, dense) ? 1 : 2) + listGap;
   const listChrome =
     LIST_CHROME + (showTagBar ? 1 : 0) + (showSearchBar ? 1 : 0);
   const pageBy = useCallback(
@@ -1475,9 +1562,13 @@ export function App({ data, onQuit }: AppProps) {
       case "1":
       case "2":
       case "3":
-      case "4":
-        setTab(TABS[Number(key.name) - 1]!.id);
+      case "4": {
+        // The digit comes from the tab's own `key`, the same field the
+        // palette prints, so reordering TABS cannot split the two.
+        const target = TABS.find((t) => t.key === key.name);
+        if (target) setTab(target.id);
         return;
+      }
       case "j":
       case "down":
         move(1);
@@ -1589,7 +1680,7 @@ export function App({ data, onQuit }: AppProps) {
         else pressDelete();
         break;
       case "s":
-        if (tab !== "journal") toggleInProgress(selectedTask);
+        if (tab !== "journal") pressStart();
         break;
       case "+":
         if (tab !== "journal") pressPriority(1);
@@ -1709,7 +1800,7 @@ export function App({ data, onQuit }: AppProps) {
             ? deleteDetailRow()
             : pressDelete(),
       done: pressDone,
-      start: () => toggleInProgress(selectedTask),
+      start: pressStart,
       due: pressDue,
       toggle: toggleDetailRow,
       subtask: addSubtask,
@@ -1751,13 +1842,13 @@ export function App({ data, onQuit }: AppProps) {
       pressDelete,
       pressDone,
       pressDue,
+      pressStart,
       selectedTask,
       startSearch,
       stopSearch,
       toggleDetailRow,
       toggleFocus,
       toggleHiddenNotes,
-      toggleInProgress,
       toggleMark,
       toggleNoteHidden,
     ],
@@ -1913,11 +2004,9 @@ export function App({ data, onQuit }: AppProps) {
                 selected={taskIndex}
                 focused={panel === 0}
                 width={listWidth}
-                height={height}
+                gap={listGap}
                 dense={dense}
-                // Due groups label finished tasks "overdue"; the Done tab
-                // reads as a log, so it stays flat whatever the sort.
-                sort={tab === "done" ? "created" : sort}
+                sort={sort}
                 now={now}
                 blocked={blocked}
                 marked={marked}
@@ -1972,6 +2061,7 @@ export function App({ data, onQuit }: AppProps) {
                   cursor={detailCursor}
                   onSelectRow={selectDetailRow}
                   onToggleSubtask={toggleSubtaskAt}
+                  blocked={selectedTask ? blocked.has(selectedTask.id) : false}
                   blockedByTitles={taskTitles}
                   onFilterTag={setTagFilter}
                 />

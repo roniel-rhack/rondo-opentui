@@ -242,8 +242,13 @@ export class RondoData {
     this.tasks.removeBlocker(taskId, blockerId);
   }
 
-  addSubtask(taskId: number, title: string): void {
+  /** False when the task is gone — deleted from another connection while a
+   * prompt for it was open — so the caller can say so instead of letting a
+   * foreign-key error escape. */
+  addSubtask(taskId: number, title: string): boolean {
+    if (!this.tasks.getById(taskId)) return false;
     this.tasks.addSubtask(taskId, title);
+    return true;
   }
 
   toggleSubtask(id: number): void {
@@ -269,8 +274,11 @@ export class RondoData {
     };
   }
 
-  addTaskNote(taskId: number, body: string): void {
+  /** False when the task no longer exists; see `addSubtask`. */
+  addTaskNote(taskId: number, body: string): boolean {
+    if (!this.tasks.getById(taskId)) return false;
     this.tasks.addNote(taskId, body);
+    return true;
   }
 
   editTaskNote(noteId: number, body: string): void {
@@ -291,8 +299,11 @@ export class RondoData {
     };
   }
 
-  logTime(taskId: number, duration: number, note: string): void {
+  /** False when the task no longer exists; see `addSubtask`. */
+  logTime(taskId: number, duration: number, note: string): boolean {
+    if (!this.tasks.getById(taskId)) return false;
     this.tasks.addTimeLog(taskId, duration, note);
+    return true;
   }
 
   deleteTimeLog(

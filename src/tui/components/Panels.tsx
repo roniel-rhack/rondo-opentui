@@ -6,12 +6,14 @@ import { formatDuration, totalDuration } from "../../core/task/timelog.ts";
 import { GoTime } from "../../core/time.ts";
 import { computeStreak } from "../../core/ui/stats.ts";
 import {
+  HELP_SECTIONS,
   fitHints,
   fitTags,
   loggedSince,
   plural,
   SORT_LABELS,
   type Hint,
+  type HelpSection,
   type SortKey,
   type ToastKind,
 } from "../state.ts";
@@ -282,7 +284,7 @@ function SortSegment({
 }
 
 /** Bottom bar: key hints, or the active toast with a draining timer bar. */
-export function StatusBar({
+export const StatusBar = memo(function StatusBar({
   theme,
   hints,
   message,
@@ -368,7 +370,7 @@ export function StatusBar({
       </box>
     </box>
   );
-}
+});
 
 interface HelpOverlayProps {
   theme: TuiTheme;
@@ -376,94 +378,6 @@ interface HelpOverlayProps {
   screenHeight: number;
   onClose: () => void;
 }
-
-type HelpSection = [string, [string, string][]];
-
-// Global first: a first-time user at 80×24 sees help, palette and quit
-// without scrolling. The rows describe the key map the app routes.
-const HELP_SECTIONS: HelpSection[] = [
-  [
-    "Global",
-    [
-      ["?", "This help"],
-      ["^k", "Command palette"],
-      ["1 2 3 4", "Active / Done / All / Journal"],
-      ["u", "Undo"],
-      ["R", "Reload from disk"],
-      ["T", "Light / dark theme"],
-      ["P", "Settings"],
-      ["S", "Statistics"],
-      ["f", "Start / stop focus"],
-      ["z", "Density"],
-      ["< >, drag", "Resize panels"],
-      ["q, ctrl+c", "Quit (asks while focus runs)"],
-    ],
-  ],
-  [
-    "Navigation",
-    [
-      ["j k ↑ ↓", "Move selection"],
-      ["g G Home End", "First / last"],
-      ["PgUp PgDn ^u ^d", "Page up / down"],
-      ["h l ← →", "Switch panel"],
-      ["enter", "Open detail / edit row"],
-      ["esc", "Back to list, then clear filter"],
-      ["click, wheel", "Select row, scroll"],
-    ],
-  ],
-  [
-    "Detail panel",
-    [
-      ["space", "Toggle subtask"],
-      ["enter, e", "Edit subtask, note or log"],
-      ["d", "Delete row"],
-      ["t n L", "Add subtask / note / log"],
-      ["h, esc", "Back to list"],
-    ],
-  ],
-  [
-    "Tasks",
-    [
-      ["a", "Add task"],
-      ["e", "Edit task"],
-      ["d", "Delete (undo with u)"],
-      ["space", "Mark done / reopen"],
-      ["s", "Start / stop"],
-      ["+ -", "Priority up / down"],
-      ["@", "Due date"],
-      ["#", "Tag picker"],
-      ["t", "Add subtask"],
-      ["n", "Add note"],
-      ["L", "Log time (\"45m note\")"],
-      ["b B", "Block on… / remove blocker…"],
-      ["m", "Mark for bulk action"],
-      ["o, F1 F2 F3", "Sort: cycle, created, due, priority"],
-    ],
-  ],
-  [
-    "Journal",
-    [
-      ["a", "Add entry to today"],
-      ["A", "Add entry to selected day"],
-      ["e", "Edit entry"],
-      ["d", "Delete entry"],
-      ["x", "Hide note"],
-      ["H", "Show hidden"],
-      ["/", "Search entries"],
-    ],
-  ],
-  [
-    "Views & filters",
-    [
-      ["/", "Filter: text, #tag, !high,"],
-      ["", "due:today, is:blocked"],
-      ["v", "Cycle view: all, today, overdue,"],
-      ["", "week, blocked"],
-      ["#", "Tag picker"],
-      ["esc", "Clear filter"],
-    ],
-  ],
-];
 
 // Balanced for the wide layout: 29 and 32 rows.
 const HELP_COLUMNS: [HelpSection[], HelpSection[]] = [

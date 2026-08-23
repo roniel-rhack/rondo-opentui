@@ -5,9 +5,9 @@ import type { TextareaRenderable } from "@opentui/core";
 import { RecurFreq, recurFreqString } from "../../core/task/recur.ts";
 import { Priority, priorityString } from "../../core/task/task.ts";
 import { DateOnly, GoTime } from "../../core/time.ts";
-import { parseDueInput, parseQuickAdd, type QuickAdd } from "../state.ts";
+import { fitChips, parseDueInput, parseQuickAdd, type QuickAdd } from "../state.ts";
 import { mix, priorityColors, type TuiTheme } from "../theme.ts";
-import { Button, Overlay } from "./Overlay.tsx";
+import { Button, Overlay, fixedOverlayBodyRows } from "./Overlay.tsx";
 import { ChipButton } from "./primitives.tsx";
 
 export interface TaskFormValues {
@@ -90,6 +90,10 @@ const COMPACT_HEIGHT = 20;
 /** Overlay width the two segmented controls were designed for. */
 const FULL_WIDTH = 76;
 const DUE_PREVIEW = "Mon, Jan 02";
+/** Rows the fields themselves need, before the chip rows and the error: four
+ * three-row frames, plus a label above each of them in the full layout. */
+const COMPACT_FIELD_ROWS = 12;
+const FULL_FIELD_ROWS = 18;
 
 interface Problem {
   field: FieldId;
@@ -198,6 +202,41 @@ export function TaskForm({
 
   const compact = screenHeight < COMPACT_BELOW;
   const narrow = screenWidth - 4 < FULL_WIDTH;
+
+  // The overlay cannot grow past the status bar, so the optional rows are
+  // budgeted against what is left: the error message always wins, and the
+  // chips are what yields when the terminal is too short for both.
+  const bodyRows = fixedOverlayBodyRows(
+    screenHeight,
+    compact ? COMPACT_HEIGHT : FULL_HEIGHT,
+  );
+  const errorRows = error ? (compact ? 1 : 2) : 0;
+  const spareRows =
+    bodyRows - (compact ? COMPACT_FIELD_ROWS : FULL_FIELD_ROWS) - errorRows;
+  // Each column of the due/tags row keeps its own chips on one line; what
+  // does not fit is dropped rather than wrapped.
+  const columnWidth =
+    Math.floor((Math.min(FULL_WIDTH, screenWidth - 4) - 6) / 2) - 1;
+  const dateChips = spareRows >= 1
+    ? DATE_SHORTCUTS.slice(
+        0,
+        fitChips(
+          DATE_SHORTCUTS.map((shortcut) => shortcut.label),
+          columnWidth,
+        ),
+      )
+    : [];
+  const tagChips = spareRows >= 1
+    ? knownTags
+        .slice(0, 4)
+        .slice(
+          0,
+          fitChips(
+            knownTags.slice(0, 4).map((t) => `#${t}`),
+            columnWidth,
+          ),
+        )
+    : [];
 
   // Editing continues at the end of the title, like the old input did.
   useEffect(() => {
@@ -499,7 +538,7 @@ export function TaskForm({
       theme={theme}
       title={title}
       width={FULL_WIDTH}
-      height={Math.min(screenHeight - 2, compact ? COMPACT_HEIGHT : FULL_HEIGHT)}
+      height={compact ? COMPACT_HEIGHT : FULL_HEIGHT}
       screenWidth={screenWidth}
       screenHeight={screenHeight}
       footer="enter (title) / ctrl+s save · tab field · esc cancel"
@@ -572,8 +611,9 @@ export function TaskForm({
               titleColor: due && !due.valid ? theme.danger : undefined,
             },
           )}
+          {dateChips.length > 0 ? (
           <box flexDirection="row" flexShrink={0}>
-            {DATE_SHORTCUTS.map((shortcut) => (
+            {dateChips.map((shortcut) => (
               <ChipButton
                 key={shortcut.label}
                 theme={theme}
@@ -594,6 +634,7 @@ export function TaskForm({
               />
             ))}
           </box>
+          ) : null}
         </box>
 
         <box flexGrow={1} flexDirection="column">
@@ -605,9 +646,9 @@ export function TaskForm({
             (v) => setValues({ ...values, tags: v }),
             { title: frameTitle("Tags") },
           )}
-          {knownTags.length > 0 ? (
+          {tagChips.length > 0 ? (
             <box flexDirection="row" flexShrink={0}>
-              {knownTags.slice(0, 4).map((tag) => (
+              {tagChips.map((tag) => (
                 <ChipButton
                   key={tag}
                   theme={theme}

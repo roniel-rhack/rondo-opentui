@@ -146,6 +146,21 @@ export function restoreTuiState(saved: TuiState): RestoredTuiState {
   };
 }
 
+/** A restored tag filter, dropped when no task carries the tag any more: a
+ * tag renamed from the CLI would otherwise come back as an empty list with
+ * nothing on screen naming the filter. */
+export function restoredTag(
+  tag: string | null,
+  tasks: readonly Task[],
+): string | null {
+  if (tag === null) return null;
+  const wanted = tag.toLowerCase();
+  const known = tasks.some((t) =>
+    t.tags.some((x) => x.toLowerCase() === wanted),
+  );
+  return known ? tag : null;
+}
+
 /** Case-insensitive subsequence match with a simple locality score. */
 export function fuzzyScore(needle: string, haystack: string): number | null {
   if (needle === "") return 0;
@@ -638,7 +653,20 @@ export interface TaskGroup {
   tasks: Task[];
 }
 
-const DUE_GROUPS = ["Overdue", "Today", "This week", "Later", "No date"];
+/** Plain-language distance to a due date, for the detail panel's due line:
+ * the list's `relativeDue` is a column, this one is a sentence. */
+export function dueSentence(due: GoTime, now: GoTime): string {
+  const days = dayOffset(due, now);
+  if (days === 0) return "today";
+  if (days === 1) return "tomorrow";
+  if (days === -1) return "yesterday";
+  if (days < 0) return `${plural(-days, "day")} overdue`;
+  return `in ${plural(days, "day")}`;
+}
+
+// Done closes the due list: a finished task is not overdue, whatever its
+// date says, so it never inflates the Overdue count.
+const DUE_GROUPS = ["Overdue", "Today", "This week", "Later", "No date", "Done"];
 const PRIORITY_GROUPS = ["Urgent", "High", "Medium", "Low"];
 
 /** Section headers for a sorted list. Tasks keep their incoming order inside
@@ -655,6 +683,7 @@ export function groupTasks(
     case "due":
       labels = DUE_GROUPS;
       labelOf = (t) => {
+        if (t.status === Status.Done) return "Done";
         if (!t.dueDate) return "No date";
         const days = dayOffset(t.dueDate, now);
         if (days < 0) return "Overdue";
@@ -826,10 +855,56 @@ export function listWidthFor(ratio: number, width: number): number {
   return Math.round(width * clampRatio(ratio, width));
 }
 
-/** "auto" follows the terminal height; the other two are explicit. */
-export function isDense(density: Density, height: number): boolean {
-  if (density === "auto") return height < 30;
+/** Panel borders, rail indent and the scrollbar gutter around a list row. */
+const META_CHROME = 8;
+/** Below this the one-line layout has no title left. */
+const DENSE_MIN_META = 56;
+
+/** Columns a list of `width` leaves to a row's metadata cells. */
+export function metaWidthFor(width: number): number {
+  return Math.max(width - META_CHROME, 10);
+}
+
+/** Whether rows collapse to one line: the caller asked for density and the
+ * list is wide enough to hold the title and its cells side by side. */
+export function isOneLine(width: number, dense: boolean): boolean {
+  return dense && metaWidthFor(width) >= DENSE_MIN_META;
+}
+
+/** "auto" is dense whenever the rows would gain from it: a short terminal
+ * shows more of them, and a wide list fits the metadata beside the title
+ * instead of leaving most of a second line blank. */
+export function isDense(
+  density: Density,
+  height: number,
+  listWidth: number,
+): boolean {
+  if (density === "auto") {
+    return height < 30 || metaWidthFor(listWidth) >= DENSE_MIN_META;
+  }
   return density === "dense";
+}
+
+/** Blank line between rows. It is the density that decides, not the height:
+ * "comfortable" keeps the line on a short terminal, which is the point of
+ * asking for it. */
+export function rowGap(density: Density, height: number): number {
+  if (density === "comfortable") return 1;
+  if (density === "dense") return 0;
+  return height < 30 ? 0 : 1;
+}
+
+/** How many chip labels fit in `available` columns, given each chip's one
+ * column of padding on both sides and the gap after it. */
+export function fitChips(labels: readonly string[], available: number): number {
+  let used = 0;
+  let n = 0;
+  for (const label of labels) {
+    used += label.length + 3;
+    if (used > available) break;
+    n++;
+  }
+  return n;
 }
 
 export function cycleDensity(density: Density): Density {
@@ -998,4 +1073,140 @@ export function hintSpecs(ctx: HintContext): HintSpec[] {
     { key: "f", label: "focus", action: "focus" },
     ...HINT_TAIL,
   ];
+}
+
+/** One help block: a heading and its key / meaning rows. */
+export type HelpSection = [string, [string, string][]];
+
+// Global first: a first-time user at 80×24 sees help, palette and quit
+// without scrolling. The rows describe the key map the app routes, and
+// `hintKeysMissingFromHelp` keeps them honest against `hintSpecs`.
+export const HELP_SECTIONS: HelpSection[] = [
+  [
+    "Global",
+    [
+      ["?", "This help"],
+      ["^k", "Command palette"],
+      ["1 2 3 4", "Active / Done / All / Journal"],
+      ["u", "Undo"],
+      ["R", "Reload from disk"],
+      ["T", "Light / dark theme"],
+      ["P", "Settings"],
+      ["S", "Statistics"],
+      ["f", "Start / stop focus"],
+      ["z", "Density"],
+      ["< >, drag", "Resize panels"],
+      ["y / n", "Confirm / cancel a dialog"],
+      ["q, ctrl+c", "Quit (asks while focus runs)"],
+    ],
+  ],
+  [
+    "Navigation",
+    [
+      ["j k ↑ ↓", "Move selection"],
+      ["g G Home End", "First / last"],
+      ["PgUp PgDn ^u ^d", "Page up / down"],
+      ["h l ← →", "Switch panel"],
+      ["enter", "Open detail / edit row"],
+      ["esc", "Back to list, then clear filter"],
+      ["click, wheel", "Select row, scroll"],
+    ],
+  ],
+  [
+    "Detail panel",
+    [
+      ["space", "Toggle subtask"],
+      ["enter, e", "Edit subtask, note or log"],
+      ["d", "Delete row"],
+      ["t n L", "Add subtask / note / log"],
+      ["h, esc", "Back to list"],
+    ],
+  ],
+  [
+    "Tasks",
+    [
+      ["a", "Add task"],
+      ["e", "Edit task"],
+      ["d", "Delete (undo with u)"],
+      ["space", "Mark done / reopen"],
+      ["s", "Start / stop"],
+      ["+ -", "Priority up / down"],
+      ["@", "Due date"],
+      ["#", "Tag picker"],
+      ["t", "Add subtask"],
+      ["n", "Add note"],
+      ["L", "Log time (\"45m note\")"],
+      ["b B", "Block on… / remove blocker…"],
+      ["m", "Mark for bulk action"],
+      ["o, F1 F2 F3", "Sort: cycle, created, due, priority"],
+    ],
+  ],
+  [
+    "Journal",
+    [
+      ["a", "Add entry to today"],
+      ["A", "Add entry to selected day"],
+      ["e", "Edit entry"],
+      ["d", "Delete entry"],
+      ["x", "Hide note"],
+      ["H", "Show hidden"],
+      ["/", "Search entries"],
+    ],
+  ],
+  [
+    "Views & filters",
+    [
+      ["/", "Filter: text, #tag, !high,"],
+      ["", "due:today, is:blocked"],
+      ["v", "Cycle view: all, today, overdue,"],
+      ["", "week, blocked"],
+      ["#", "Tag picker"],
+      ["esc", "Clear filter"],
+    ],
+  ],
+];
+
+/** Every surface the status bar draws hints for, so the check below sees the
+ * same keys the user does. */
+const HINT_CONTEXTS: HintContext[] = [
+  { tab: "active", panel: 0, compact: false, searching: false },
+  { tab: "active", panel: 0, compact: true, searching: false },
+  { tab: "active", panel: 0, compact: false, searching: false, marked: 2 },
+  { tab: "active", panel: 1, compact: false, searching: false, row: null },
+  { tab: "active", panel: 1, compact: false, searching: false, row: "subtask" },
+  { tab: "active", panel: 1, compact: false, searching: false, row: "note" },
+  { tab: "active", panel: 1, compact: false, searching: false, row: "timelog" },
+  { tab: "journal", panel: 0, compact: false, searching: false },
+  { tab: "journal", panel: 0, compact: true, searching: false },
+  { tab: "journal", panel: 1, compact: false, searching: false },
+  { tab: "active", panel: 0, compact: false, searching: true },
+];
+
+/** Hint keys the help overlay does not document. Both tables are written by
+ * hand — this is what keeps a new hint from silently missing its help row. */
+export function hintKeysMissingFromHelp(): string[] {
+  const tokens = new Set<string>();
+  for (const [, rows] of HELP_SECTIONS) {
+    for (const [key] of rows) {
+      for (const part of key.split(/[\s,]+/)) if (part !== "") tokens.add(part);
+    }
+  }
+  // A multi-key hint such as "+ -" or "↑↓" counts as documented once every
+  // key it names appears somewhere in the table.
+  const documented = (key: string) =>
+    key
+      .split(/\s+/)
+      .every(
+        (part) => tokens.has(part) || [...part].every((ch) => tokens.has(ch)),
+      );
+
+  const missing: string[] = [];
+  for (const ctx of HINT_CONTEXTS) {
+    for (const spec of hintSpecs(ctx)) {
+      if (!documented(spec.key) && !missing.includes(spec.key)) {
+        missing.push(spec.key);
+      }
+    }
+  }
+  return missing;
 }

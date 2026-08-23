@@ -33,7 +33,6 @@ interface ConfirmDialogProps {
   excerpt?: string;
   detail?: string;
   confirmLabel?: string;
-  danger?: boolean;
   screenWidth: number;
   screenHeight: number;
   onConfirm: () => void;
@@ -48,7 +47,6 @@ export function ConfirmDialog({
   excerpt,
   detail,
   confirmLabel = "Delete",
-  danger = true,
   screenWidth,
   screenHeight,
   onConfirm,
@@ -56,9 +54,9 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   useKeyboard((key: KeyEvent) => {
     if (key.name === "escape" || key.name === "n") onCancel();
-    // Enter is too easy to press by reflex to let it destroy things; only
-    // an explicit y confirms a destructive dialog.
-    if (key.name === "y" || (key.name === "return" && !danger)) onConfirm();
+    // Enter is too easy to press by reflex to let it destroy things, and
+    // every confirm in this app is destructive: only y goes through.
+    if (key.name === "y") onConfirm();
   });
 
   return (
@@ -68,8 +66,8 @@ export function ConfirmDialog({
       width={58}
       screenWidth={screenWidth}
       screenHeight={screenHeight}
-      accent={danger ? theme.danger : theme.accent}
-      footer={danger ? "y confirm · n / esc cancel" : "y / enter confirm · n cancel"}
+      accent={theme.danger}
+      footer="y confirm · n / esc cancel"
       onBackdropClick={onCancel}
     >
       <box paddingTop={1} paddingBottom={1} flexDirection="column">
@@ -91,13 +89,7 @@ export function ConfirmDialog({
         ) : null}
       </box>
       <box flexDirection="row" paddingBottom={1}>
-        <Button
-          theme={theme}
-          label={confirmLabel}
-          danger={danger}
-          primary={!danger}
-          onPress={onConfirm}
-        />
+        <Button theme={theme} label={confirmLabel} danger onPress={onConfirm} />
         <Button theme={theme} label="Cancel" onPress={onCancel} />
       </box>
     </Overlay>
@@ -105,7 +97,8 @@ export function ConfirmDialog({
 }
 
 export interface PromptChip {
-  /** Single character that submits the chip while the field is empty. */
+  /** Single character that submits the chip while the field still holds the
+   * value it opened with. */
   key: string;
   label: string;
   value: string;
@@ -120,8 +113,8 @@ interface PromptDialogProps {
   /** Multiline prompts keep enter as a new line; ctrl+s saves. Single-line
    * prompts still wrap long text into view, but enter submits. */
   multiline?: boolean;
-  /** Quick answers under the field. Clicking one, or pressing its key while
-   * the field is empty, submits its value as-is. */
+  /** Quick answers under the field. Clicking one, or pressing its key before
+   * the field is edited, submits its value as-is. */
   chips?: PromptChip[];
   /** Keep the dialog open after each accepted value and clear the field, so
    * a series can be entered without reopening; esc ends it. */
@@ -203,7 +196,12 @@ export function PromptDialog({
       submit();
       return;
     }
-    if (!chips || key.ctrl || key.meta || currentValue() !== "") return;
+    if (!chips || key.ctrl || key.meta) return;
+    // A prompt pre-filled with the current value — re-dating a task that
+    // already has a due date — must answer the chip letters too; they stop
+    // firing as soon as the user types over what was there.
+    const text = currentValue();
+    if (text !== "" && text !== initial) return;
     const chip = chips.find((c) => c.key === key.sequence);
     if (chip) {
       // Claim the key before the textarea inserts it as text.

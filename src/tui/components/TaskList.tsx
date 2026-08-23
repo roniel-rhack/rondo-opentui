@@ -12,7 +12,14 @@ import {
 import type { GoTime } from "../../core/time.ts";
 import { DueLevel } from "../../core/ui/overdue.ts";
 import { useSmoothScrollIntoView } from "../hooks/useSmoothScroll.ts";
-import { groupTasks, relativeDue, type SortKey, type TaskGroup } from "../state.ts";
+import {
+  groupTasks,
+  isOneLine,
+  metaWidthFor,
+  relativeDue,
+  type SortKey,
+  type TaskGroup,
+} from "../state.ts";
 import { mix, priorityColors, type TuiTheme } from "../theme.ts";
 import { EmptyState } from "./primitives.tsx";
 
@@ -24,8 +31,8 @@ interface TaskListProps {
   focused: boolean;
   /** Outer width of the list panel, borders included. */
   width: number;
-  /** Terminal height: decides the breathing room between rows. */
-  height: number;
+  /** Blank lines between rows; the caller resolves it from the density. */
+  gap: number;
   /** One-line rows when the width allows it; decided by the caller. */
   dense: boolean;
   sort: SortKey;
@@ -76,18 +83,11 @@ const MAX_VISIBLE_TAGS = 2;
 /** Fixed columns around the title: panel borders, rail, glyph box, the
  * trailing padding and the scrollbar gutter. */
 const ROW_CHROME = 2 + 1 + 3 + 1 + 1;
-/** Panel borders, rail indent and the scrollbar gutter. */
-const META_CHROME = 8;
-/** Below this the one-line layout has no title left. */
-const DENSE_MIN_META = 56;
+/** Recurrence and priority, two columns each: a one-line row holds both open
+ * even when empty, or its metadata cells would not line up. */
+const TRAILING_GLYPHS = 4;
 /** The one-line layout shows the first tag only, in a column this wide. */
 const DENSE_MAX_TAG = 14;
-
-/** Whether rows collapse to one line: the caller asked for density and the
- * list is wide enough to hold the title and its cells side by side. */
-export function isOneLine(width: number, dense: boolean): boolean {
-  return dense && Math.max(width - META_CHROME, 10) >= DENSE_MIN_META;
-}
 
 /** Four-dot progress, easier to scan than a tiny bar. */
 function progressDots(completed: number, total: number): string {
@@ -203,9 +203,13 @@ const TaskRow = memo(function TaskRow({
   const dueTone = dueColorFor(theme, dueLevel, selected);
   const progressTone = theme.dark ? theme.textDim : theme.accent;
 
-  // Fixed cells on the title line eat into the title's room.
+  // Fixed cells on the title line eat into the title's room. One-line rows
+  // reserve the trailing glyph columns whether or not this row uses them.
   const extras =
-    (blocked ? 2 : 0) + (recurring ? 2 : 0) + (priorityGlyph ? 2 : 0);
+    (blocked ? 2 : 0) +
+    (dense
+      ? TRAILING_GLYPHS
+      : (recurring ? 2 : 0) + (priorityGlyph ? 2 : 0));
   const shownTitle = fit(title, Math.max(titleSpace - extras, 0));
 
   // Second line, left-packed: an empty due cell does not hold its column.
@@ -291,16 +295,16 @@ const TaskRow = memo(function TaskRow({
           </text>
         ) : null}
 
-        {recurring ? (
+        {dense || recurring ? (
           <text flexShrink={0} fg={done ? theme.textMuted : theme.secondary}>
-            {" ↻"}
+            {recurring ? " ↻" : "  "}
           </text>
         ) : null}
 
-        {priorityGlyph ? (
+        {dense || priorityGlyph ? (
           <box flexShrink={0} paddingLeft={1}>
             <text fg={priorityColor} attributes={TextAttributes.BOLD}>
-              {priorityGlyph}
+              {priorityGlyph ?? " "}
             </text>
           </box>
         ) : null}
@@ -344,7 +348,7 @@ export const TaskList = memo(function TaskList({
   selected,
   focused,
   width,
-  height,
+  gap,
   dense,
   sort,
   now,
@@ -396,7 +400,7 @@ export const TaskList = memo(function TaskList({
     );
   }
 
-  const metaWidth = Math.max(width - META_CHROME, 10);
+  const metaWidth = metaWidthFor(width);
   const oneLine = isOneLine(width, dense);
   // Below this the second line has no room for anything meaningful.
   const showMeta = width > 30;
@@ -422,7 +426,7 @@ export const TaskList = memo(function TaskList({
       focused={focused}
       dense={oneLine}
       showMeta={showMeta}
-      gap={height < 30 ? 0 : 1}
+      gap={gap}
       titleSpace={titleSpace}
       metaWidth={metaWidth}
       tagWidth={tagWidth}

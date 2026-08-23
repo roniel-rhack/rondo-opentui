@@ -29,6 +29,25 @@ export function overlayTop(screenHeight: number): number {
   return Math.max(Math.floor(screenHeight / 8), 1);
 }
 
+/** Height a fixed-height overlay actually gets. The status bar and the row
+ * above it stay clear, so the hint row, its hairline and the panel border
+ * below the overlay are never painted over. */
+export function fixedOverlayHeight(
+  screenHeight: number,
+  height: number,
+): number {
+  return Math.min(height, Math.max(screenHeight - STATUS_BAR_ROWS - 1, 6));
+}
+
+/** Rows the body of a fixed-height overlay can use: the box without its
+ * border, title row and footer. */
+export function fixedOverlayBodyRows(
+  screenHeight: number,
+  height: number,
+): number {
+  return fixedOverlayHeight(screenHeight, height) - 4;
+}
+
 /** Rows available to the body of an auto-height overlay (border, title and
  * footer already taken out), so list dialogs can size their window. */
 export function overlayBodyRows(screenHeight: number): number {
@@ -60,10 +79,12 @@ export function Overlay({
   const boxWidth = Math.min(width, Math.max(screenWidth - 4, 20));
   const left = Math.max(Math.floor((screenWidth - boxWidth) / 2), 0);
   const boxHeight = height
-    ? Math.min(height, Math.max(screenHeight - 2, 6))
+    ? fixedOverlayHeight(screenHeight, height)
     : undefined;
+  // Centered inside the rows the status bar leaves, so a tall overlay stops
+  // above it instead of centering across it.
   const top = boxHeight
-    ? Math.max(Math.floor((screenHeight - boxHeight) / 2), 0)
+    ? Math.max(Math.floor((screenHeight - STATUS_BAR_ROWS - boxHeight) / 2), 0)
     : overlayTop(screenHeight);
   // Auto-height overlays grow with their content; the clamp keeps a long one
   // from running past the status bar instead of painting over it.

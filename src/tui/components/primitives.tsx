@@ -52,7 +52,10 @@ interface ChipButtonProps {
 export function ChipButton({ theme, label, onPress }: ChipButtonProps) {
   const [hover, setHover] = useState(false);
   return (
+    // Fixed width and no wrapping: a row of chips wider than its column would
+    // otherwise break a label across two lines and steal a row from the form.
     <box
+      flexShrink={0}
       paddingLeft={1}
       paddingRight={1}
       marginRight={1}
@@ -63,7 +66,9 @@ export function ChipButton({ theme, label, onPress }: ChipButtonProps) {
       onMouseOut={() => setHover(false)}
       onMouseDown={onPress}
     >
-      <text fg={theme.accent}>{label}</text>
+      <text fg={theme.accent} wrapMode="none">
+        {label}
+      </text>
     </box>
   );
 }
