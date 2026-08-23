@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { RGBA } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act, type ReactNode } from "react";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CapturedFrame, CapturedSpan } from "@opentui/core";
@@ -11,7 +11,7 @@ import {
   formatDate,
   formatDateShort,
 } from "../src/core/config/config.ts";
-import { openMemory } from "../src/core/database/db.ts";
+import { open, openMemory } from "../src/core/database/db.ts";
 import { Minute } from "../src/core/duration.ts";
 import { RecurFreq } from "../src/core/task/recur.ts";
 import { newTask } from "../src/core/task/store.ts";
@@ -32,16 +32,19 @@ import {
   type TaskDetailHandle,
 } from "../src/tui/components/TaskDetail.tsx";
 import { RondoData } from "../src/tui/data.ts";
-import { TABS, type TabId, type Hint } from "../src/tui/state.ts";
+import { TABS, collectTags, type TabId, type Hint } from "../src/tui/state.ts";
 import { mix, priorityColors, tuiTheme } from "../src/tui/theme.ts";
 import { TaskList } from "../src/tui/components/TaskList.tsx";
 import { StatusBar, TagBar } from "../src/tui/components/Panels.tsx";
 
 initTheme(true);
 
-// The app persists theme and panel ratio through saveConfig, so every test in
-// this file must point RONDO_HOME away from the real ~/.todo-app.
-process.env.RONDO_HOME = mkdtempSync(join(tmpdir(), "rondo-tui-render-"));
+// The app persists theme, panel ratio and its session state, so every test in
+// this file must point RONDO_HOME away from the real ~/.todo-app — and each
+// mount gets a directory of its own, or one test's saved tab would be the
+// next test's starting tab.
+const freshHome = () => mkdtempSync(join(tmpdir(), "rondo-tui-render-"));
+process.env.RONDO_HOME = freshHome();
 
 // OpenTUI's React root re-renders itself once the renderer is ready, outside of
 // act(). The warning is library-internal noise, so keep it out of the report.
@@ -91,7 +94,9 @@ async function mount(
   height = 30,
   cfg = defaultConfig(),
   fixture?: RondoData | ((data: RondoData) => void),
+  home = freshHome(),
 ) {
+  process.env.RONDO_HOME = home;
   const data = fixture instanceof RondoData ? fixture : seed(cfg);
   if (typeof fixture === "function") fixture(data);
   // Wrapping the initial mount keeps React's act() warnings out of the output.
@@ -449,21 +454,25 @@ describe("TUI flows", () => {
     renderer.destroy();
   });
 
-  test("# toggles the tag bar and filters by tag", async () => {
-    const { captureCharFrame, press, click, renderer } = await mount();
+  test("# opens the tag picker and filters by the picked tag", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
 
     await press("#");
     const frame = captureCharFrame();
+    expect(frame).toContain("Filter by tag");
     expect(frame).toContain("#work");
     expect(frame).toContain("#code");
 
-    const row = frame.split("\n").findIndex((l) => l.includes("tags "));
-    const column = frame.split("\n")[row]!.indexOf("#work");
-    await click(column + 1, row);
+    await type("wo");
+    await press("RETURN");
 
     const filtered = captureCharFrame();
+    expect(filtered).not.toContain("Filter by tag");
     expect(filtered).toContain("Write the report");
-    expect(filtered).not.toContain("Buy oat milk");
+    expect(filtered).not.toContain("Refactor the parser");
+    // The bar appears with the filter so the active tag stays visible.
+    expect(filtered).toContain("tags ");
+    expect(filtered).toContain("1 of 2");
     renderer.destroy();
   });
 
@@ -910,7 +919,7 @@ describe("TUI review fixes", () => {
     const { captureCharFrame, press, renderer } = await mount();
 
     await press("k", { ctrl: true });
-    for (let i = 0; i < 30; i++) await press("n", { ctrl: true });
+    for (let i = 0; i < 60; i++) await press("n", { ctrl: true });
 
     expect(captureCharFrame()).toContain("Go to Journal");
     renderer.destroy();
@@ -1885,7 +1894,7 @@ describe("TUI review 3 — dialogs", () => {
     expect(frame).toMatch(/│    ┃ New task\s+a/);
     expect(frame).not.toContain("Task     New task");
 
-    for (let i = 0; i < 40; i++) await press("n", { ctrl: true });
+    for (let i = 0; i < 60; i++) await press("n", { ctrl: true });
     frame = captureCharFrame();
     expect(frame).toMatch(/│  APP\s+│/);
     expect(frame).toContain("Quit");
@@ -2664,11 +2673,13 @@ describe("TUI review 3 — panels", () => {
     }
   });
 
-  test("1.1: / and # at 60×20 keep tabs and clock with 12 tasks", async () => {
-    const { captureCharFrame, press, renderer } = await mount(60, 20, defaultConfig(), seedMany(12));
+  test("1.1: / and the tag bar at 60×20 keep tabs and clock with 12 tasks", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount(60, 20, defaultConfig(), seedMany(12));
 
     // 60 columns is the compact header: brand glyph, text tabs and the clock.
-    await press("#");
+    await press("k", { ctrl: true });
+    await type("toggle tag bar");
+    await press("RETURN");
     let header = captureCharFrame().split("\n")[0]!;
     expect(header).toContain("◆");
     expect(header).toContain("Active");
@@ -2721,7 +2732,7 @@ describe("TUI review 3 — panels", () => {
       const setup = await mountComponent(
         <TagBar
           theme={theme}
-          tasks={tasks}
+          tags={collectTags(tasks)}
           activeTag={null}
           width={w}
           onSelect={() => {}}
@@ -2752,7 +2763,7 @@ describe("TUI review 3 — panels", () => {
     const setup = await mountComponent(
       <TagBar
         theme={theme}
-        tasks={seedTags().tasks.list()}
+        tags={collectTags(seedTags().tasks.list())}
         activeTag="hotel"
         width={60}
         onSelect={() => {}}
@@ -2770,7 +2781,7 @@ describe("TUI review 3 — panels", () => {
     const setup = await mountComponent(
       <TagBar
         theme={theme}
-        tasks={seedTags().tasks.list()}
+        tags={collectTags(seedTags().tasks.list())}
         activeTag={null}
         width={80}
         onSelect={() => {}}
@@ -3313,13 +3324,11 @@ describe("TUI review 3 — keys and selection", () => {
   });
 
   test("3.12: a task created inside a tag filter inherits the tag", async () => {
-    const { captureCharFrame, press, click, type, data, renderer } = await mount();
+    const { captureCharFrame, press, type, data, renderer } = await mount();
 
     await press("#");
-    const frame = captureCharFrame();
-    const row = frame.split("\n").findIndex((l) => l.includes("tags "));
-    const column = frame.split("\n")[row]!.indexOf("#work");
-    await click(column + 1, row);
+    await type("work");
+    await press("RETURN");
     expect(captureCharFrame()).toContain("1 of 2");
 
     await press("a");
@@ -3390,15 +3399,21 @@ describe("TUI review 3 — keys and selection", () => {
   });
 
   test("5.3: an active tag filter keeps its bar until the tag is cleared", async () => {
-    const { captureCharFrame, press, click, renderer } = await mount();
+    const { captureCharFrame, press, click, type, renderer } = await mount();
 
-    await press("#");
+    const toggleBar = async () => {
+      await press("k", { ctrl: true });
+      await type("toggle tag bar");
+      await press("RETURN");
+    };
+    await toggleBar();
     const frame = captureCharFrame();
     const row = frame.split("\n").findIndex((l) => l.includes("tags "));
     const column = frame.split("\n")[row]!.indexOf("#work");
     await click(column + 1, row);
+    expect(captureCharFrame()).toContain("1 of 2");
 
-    await press("#");
+    await toggleBar();
     expect(captureCharFrame()).toContain("tags ");
     expect(captureCharFrame()).toContain("1 of 2");
 
@@ -3417,7 +3432,7 @@ describe("TUI review 3 — keys and selection", () => {
     renderer.destroy();
   });
 
-  test("1.6: z cycles the density for the session", async () => {
+  test("1.6: z cycles the density and remembers it", async () => {
     const { captureCharFrame, press, renderer } = await mount(
       160,
       40,
@@ -3444,6 +3459,11 @@ describe("TUI review 3 — keys and selection", () => {
     expect(captureCharFrame()).not.toMatch(oneLine);
     await press("z");
     expect(captureCharFrame()).toContain("Density: auto");
+    await press("z");
+    await new Promise((r) => setTimeout(r, 500));
+    expect(
+      JSON.parse(readFileSync(join(process.env.RONDO_HOME!, "tui-state.json"), "utf8")).density,
+    ).toBe("dense");
     renderer.destroy();
   });
 
@@ -3760,6 +3780,376 @@ describe("TUI review 3 — mutations and undo", () => {
 
     await press("F1");
     expect(captureCharFrame()).toContain("Sorted by created (filter active)");
+    renderer.destroy();
+  });
+});
+
+describe("TUI review 3 — filters, views, marks and persistence", () => {
+  const statusRow = (frame: string, height: number) => frame.split("\n")[height - 2] ?? "";
+  /** The rail glyph of a list row: the cell between the panel border and
+   * the status glyph, on the line whose list column names `title`. */
+  const railOf = (frame: string, title: string) =>
+    frame
+      .split("\n")
+      .map((l) => l.match(/^│(.) [○◐✓] (.*)$/))
+      .find((m) => m !== null && m[2]!.includes(title))?.[1];
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /** Three more tasks spread over yesterday, today and next month. */
+  function seedDue(data: RondoData) {
+    const today = GoTime.now();
+    data.tasks.create(newTask({ title: "Pay rent", dueDate: today.addDate(0, 0, -1) }));
+    data.tasks.create(newTask({ title: "Standup", dueDate: today }));
+    data.tasks.create(newTask({ title: "Renew passport", dueDate: today.addDate(0, 1, 0) }));
+  }
+
+  test("3.7: picking all in the tag picker clears the tag filter", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
+
+    await press("#");
+    await type("code");
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("1 of 2");
+
+    await press("#");
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("2 tasks");
+    expect(captureCharFrame()).not.toContain("tags ");
+    renderer.destroy();
+  });
+
+  test("3.7: ] and [ cycle the tags while the bar is visible", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
+
+    // Without the bar the bracket keys do nothing.
+    await press("]");
+    expect(captureCharFrame()).toContain("2 tasks");
+
+    await press("k", { ctrl: true });
+    await type("toggle tag bar");
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("tags ");
+
+    await press("]");
+    expect(captureCharFrame()).toContain("Refactor the parser");
+    expect(captureCharFrame()).not.toContain("Write the report");
+    await press("]");
+    expect(captureCharFrame()).toContain("Write the report");
+    expect(captureCharFrame()).not.toContain("Refactor the parser");
+    await press("]");
+    expect(captureCharFrame()).toContain("2 tasks");
+    await press("[");
+    expect(captureCharFrame()).toContain("Write the report");
+    expect(captureCharFrame()).not.toContain("Refactor the parser");
+    renderer.destroy();
+  });
+
+  test("3.7: the detail Tags chips set the filter", async () => {
+    const { captureCharFrame, press, click, renderer } = await mount();
+
+    await press("j");
+    const lines = captureCharFrame().split("\n");
+    const row = lines.findIndex((l) => l.includes("Tags") && l.includes("#work"));
+    expect(row).toBeGreaterThan(0);
+    await click(lines[row]!.indexOf("#work") + 1, row);
+
+    const frame = captureCharFrame();
+    expect(frame).toContain("1 of 2");
+    expect(frame).toContain("tags ");
+    expect(frame).not.toContain("Refactor the parser");
+    renderer.destroy();
+  });
+
+  test("3.7: the +N chip on the tag bar opens the picker", async () => {
+    const { captureCharFrame, press, type, click, renderer } = await mount(
+      80,
+      24,
+      defaultConfig(),
+      (d) => {
+        for (const tag of ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"]) {
+          d.tasks.create(newTask({ title: `Tagged ${tag}`, tags: [tag] }));
+        }
+      },
+    );
+
+    await press("k", { ctrl: true });
+    await type("toggle tag bar");
+    await press("RETURN");
+    const lines = captureCharFrame().split("\n");
+    const row = lines.findIndex((l) => l.includes("tags "));
+    const more = lines[row]!.search(/\+\d/);
+    expect(more).toBeGreaterThan(0);
+
+    await click(more, row);
+    expect(captureCharFrame()).toContain("Filter by tag");
+    expect(captureCharFrame()).toContain("#hotel");
+    renderer.destroy();
+  });
+
+  test("3.8: v cycles the views with counts in the subtitle", async () => {
+    const { captureCharFrame, press, renderer } = await mount(100, 30, defaultConfig(), seedDue);
+
+    expect(captureCharFrame()).toContain("5 tasks");
+    await press("v");
+    let frame = captureCharFrame();
+    expect(frame).toContain("View: Today");
+    expect(frame).toContain("1 today of 5");
+    expect(frame).toContain("Standup");
+    expect(frame).not.toContain("Pay rent");
+
+    await press("v");
+    frame = captureCharFrame();
+    expect(frame).toContain("View: Overdue");
+    expect(frame).toContain("1 overdue of 5");
+    expect(frame).toContain("Pay rent");
+    expect(frame).not.toContain("Standup");
+
+    await press("v");
+    expect(captureCharFrame()).toContain("1 this week of 5");
+    await press("v");
+    expect(captureCharFrame()).toContain("0 blocked of 5");
+    expect(captureCharFrame()).toContain("No matches");
+    await press("v");
+    expect(captureCharFrame()).toContain("View: All");
+    expect(captureCharFrame()).toContain("5 tasks");
+    renderer.destroy();
+  });
+
+  test("3.8: esc leaves the detail, then clears the query, then the view", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount(100, 30, defaultConfig(), seedDue);
+
+    await press("v");
+    await press("v");
+    await press("/");
+    await type("zzz");
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("0 overdue of 5");
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("● Details");
+
+    await press("ESCAPE");
+    expect(captureCharFrame()).toContain("● Active");
+    expect(captureCharFrame()).toContain("0 overdue of 5");
+    await press("ESCAPE");
+    expect(captureCharFrame()).toContain("1 overdue of 5");
+    expect(captureCharFrame()).toContain("Pay rent");
+    await press("ESCAPE");
+    expect(captureCharFrame()).toContain("5 tasks");
+    renderer.destroy();
+  });
+
+  test("3.8: the palette lists every view by name", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount(100, 30, defaultConfig(), seedDue);
+
+    await press("k", { ctrl: true });
+    await type("view: overdue");
+    expect(captureCharFrame()).toContain("View: overdue");
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("1 overdue of 5");
+    renderer.destroy();
+  });
+
+  test("3.13: the palette jumps to a task, widening the tab when needed", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount();
+
+    await press("k", { ctrl: true });
+    await type("oat milk");
+    expect(captureCharFrame()).toMatch(/#2\s+Buy oat milk/);
+    await press("RETURN");
+
+    let frame = captureCharFrame();
+    expect(frame).toContain("● Details");
+    expect(frame).toContain("#2 · updated");
+    expect(frame).toContain("3 tasks");
+    expect(railOf(frame, "Buy oat milk")).toBe("┃");
+
+    await press("k", { ctrl: true });
+    await type("#3");
+    await press("RETURN");
+    frame = captureCharFrame();
+    expect(frame).toContain("#3 · updated");
+    expect(railOf(frame, "Refactor the parser")).toBe("┃");
+    renderer.destroy();
+  });
+
+  test("3.15: m marks tasks and space completes them all with one undo", async () => {
+    const { captureCharFrame, press, data, renderer } = await mount();
+
+    await press("m");
+    await press("j");
+    let frame = captureCharFrame();
+    expect(frame).toContain("2 tasks · 1 marked");
+    // The cursor rail wins on the selected row; a marked row behind it
+    // shows the mark.
+    expect(railOf(frame, "Refactor the parser")).toBe("▌");
+    expect(railOf(frame, "Write the report")).toBe("┃");
+    expect(statusRow(frame, 30)).toContain(" esc  clear marks ");
+
+    await press("m");
+    expect(captureCharFrame()).toContain("2 marked");
+
+    await press(" ");
+    frame = captureCharFrame();
+    expect(frame).toContain("2 tasks → Done · u undo");
+    expect(frame).toContain("No tasks yet");
+    expect(frame).not.toContain("marked");
+    expect(data.listTasks().filter((t) => t.status === Status.Done)).toHaveLength(3);
+
+    await press("u");
+    frame = captureCharFrame();
+    expect(frame).toContain("Refactor the parser");
+    expect(frame).toContain("Write the report");
+    expect(data.listTasks().filter((t) => t.status === Status.Done)).toHaveLength(1);
+    renderer.destroy();
+  });
+
+  test("3.15: esc clears the marks before anything else", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("m");
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("● Details");
+    await press("ESCAPE");
+    expect(captureCharFrame()).toContain("● Details");
+    expect(captureCharFrame()).not.toContain("marked");
+    await press("ESCAPE");
+    expect(captureCharFrame()).toContain("● Active");
+    renderer.destroy();
+  });
+
+  test("3.15: + @ and d apply to every marked task", async () => {
+    const { captureCharFrame, press, data, renderer } = await mount();
+    const today = GoTime.now().format("2006-01-02");
+
+    await press("m");
+    await press("j");
+    await press("m");
+    await press("+");
+    expect(captureCharFrame()).toContain("1 task → priority up · u undo");
+    expect(data.tasks.getById(1)!.priority).toBe(Priority.Urgent);
+    expect(data.tasks.getById(3)!.priority).toBe(Priority.Urgent);
+
+    await press("m");
+    await press("k");
+    await press("m");
+    await press("@");
+    expect(captureCharFrame()).toContain("Due date for 2 tasks");
+    await press("t");
+    expect(captureCharFrame()).toContain(`2 tasks → due ${today} · u undo`);
+    expect(data.tasks.getById(1)!.dueDate!.format("2006-01-02")).toBe(today);
+    expect(data.tasks.getById(3)!.dueDate!.format("2006-01-02")).toBe(today);
+
+    await press("m");
+    await press("j");
+    await press("m");
+    await press("d");
+    expect(captureCharFrame()).toContain("2 tasks → deleted · u undo");
+    expect(captureCharFrame()).toContain("No tasks yet");
+    await press("u");
+    expect(data.listTasks()).toHaveLength(3);
+    expect(captureCharFrame()).toContain("Refactor the parser");
+    renderer.destroy();
+  });
+
+  test("4.1: tab, sort, density and the selection survive a relaunch", async () => {
+    const home = freshHome();
+    const first = await mount(100, 30, defaultConfig(), undefined, home);
+
+    await first.press("j");
+    await first.press("F3");
+    await first.press("z");
+    await wait(500);
+    const saved = JSON.parse(readFileSync(join(home, "tui-state.json"), "utf8"));
+    expect(saved).toMatchObject({
+      tab: "active",
+      sort: "priority",
+      density: "dense",
+      selectedTaskId: 1,
+      tag: null,
+      view: "all",
+    });
+    await first.press("2");
+    await wait(500);
+    expect(JSON.parse(readFileSync(join(home, "tui-state.json"), "utf8")).tab).toBe("done");
+    first.renderer.destroy();
+
+    const second = await mount(100, 30, defaultConfig(), undefined, home);
+    const frame = second.captureCharFrame();
+    expect(frame).toContain("● Done");
+    expect(frame).toContain("⇅ Priority");
+    second.renderer.destroy();
+
+    // Back on Active the remembered task is under the cursor, not row 0.
+    writeFileSync(
+      join(home, "tui-state.json"),
+      JSON.stringify({ ...saved, tab: "active", density: "auto" }),
+    );
+    const third = await mount(100, 30, defaultConfig(), undefined, home);
+    expect(railOf(third.captureCharFrame(), "Write the report")).toBe("┃");
+    expect(railOf(third.captureCharFrame(), "Refactor the parser")).not.toBe("┃");
+    third.renderer.destroy();
+  });
+
+  test("4.1: a saved tag and view come back; a missing task falls back to row 0", async () => {
+    const home = freshHome();
+    writeFileSync(
+      join(home, "tui-state.json"),
+      JSON.stringify({ tag: "work", view: "week", selectedTaskId: 999, tagBar: true }),
+    );
+    const { captureCharFrame, press, renderer } = await mount(100, 30, defaultConfig(), undefined, home);
+
+    let frame = captureCharFrame();
+    expect(frame).toContain("tags ");
+    expect(frame).toContain("0 this week of 2");
+    await press("ESCAPE");
+    await press("ESCAPE");
+    frame = captureCharFrame();
+    expect(frame).toContain("2 tasks");
+    expect(railOf(frame, "Refactor the parser")).toBe("┃");
+    renderer.destroy();
+  });
+
+  test("4.2: a commit from another connection shows up within a poll", async () => {
+    const home = freshHome();
+    process.env.RONDO_HOME = home;
+    const path = join(home, "todo.db");
+    const mine = new RondoData(open(path), defaultConfig());
+    mine.tasks.create(newTask({ title: "Local task" }));
+    const { captureCharFrame, flush, renderer } = await mount(100, 30, defaultConfig(), mine, home);
+    expect(captureCharFrame()).toContain("Local task");
+
+    const theirs = new RondoData(open(path), defaultConfig());
+    theirs.tasks.create(newTask({ title: "Added by the CLI" }));
+    expect(captureCharFrame()).not.toContain("Added by the CLI");
+
+    await act(async () => {
+      await wait(2600);
+    });
+    await flush();
+    const frame = captureCharFrame();
+    expect(frame).toContain("Added by the CLI");
+    expect(frame).toContain("Refreshed — changed outside");
+    renderer.destroy();
+  });
+
+  test("4.2: R reloads on demand", async () => {
+    const { captureCharFrame, press, data, renderer } = await mount();
+
+    data.tasks.create(newTask({ title: "Slipped in quietly" }));
+    expect(captureCharFrame()).not.toContain("Slipped in quietly");
+    await press("R");
+    expect(captureCharFrame()).toContain("Slipped in quietly");
+    expect(captureCharFrame()).toContain("Reloaded");
+    renderer.destroy();
+  });
+
+  test("the list hints name the view and tag keys", async () => {
+    const { captureCharFrame, renderer } = await mount(160, 40);
+    const status = statusRow(captureCharFrame(), 40);
+    expect(status).toContain(" v  view ");
+    expect(status).toContain(" #  tag ");
+    expect(status).toContain(" m  mark ");
+    expect(status).toMatch(/\^k  palette .* \?  help/);
     renderer.destroy();
   });
 });

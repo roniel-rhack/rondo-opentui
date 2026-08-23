@@ -12,7 +12,13 @@ import {
   save as saveConfig,
   type Config,
 } from "../core/config/config.ts";
-import type { Density } from "../core/config/tui-state.ts";
+import {
+  loadTuiState,
+  saveTuiState,
+  tuiStatePath,
+  type Density,
+  type TuiState,
+} from "../core/config/tui-state.ts";
 import { Minute } from "../core/duration.ts";
 import { SessionKind } from "../core/focus/focus.ts";
 import type { Note } from "../core/journal/journal.ts";
@@ -27,15 +33,20 @@ import { formatDuration } from "../core/task/timelog.ts";
 import { DateOnly, GoTime } from "../core/time.ts";
 import { initTheme, isDark } from "../core/ui/colors.ts";
 import type { RondoData, TaskDraft, UndoAction } from "./data.ts";
+import { useClock } from "./hooks/useClock.ts";
 import { usePomodoro } from "./hooks/usePomodoro.ts";
 import {
   DUE_CHIPS,
   TABS,
+  VIEWS,
+  VIEW_LABELS,
   blockedIds,
+  bulkToast,
   clampIndex,
   clampRatio,
   collectTags,
   cycleDensity,
+  cycleTag,
   detailRows,
   doneToday,
   emptyFilters,
@@ -49,26 +60,33 @@ import {
   indexOfNoteDate,
   isDense,
   listWidthFor,
+  nextView,
   openFirst,
   pageSize,
   parseDueInput,
   parseTimeLogInput,
   plural,
+  restoreTuiState,
   sortToast,
   statusToast,
   stepPriority,
   tabCounts,
   timeLogInput,
   toastDuration,
+  toggleInSet,
   uniquePath,
+  viewSubtitle,
+  viewToast,
   visibleNotes,
   visibleTasks,
+  withTasks,
   type Filters,
   type Hint,
   type HintAction,
   type SortKey,
   type TabId,
   type ToastKind,
+  type View,
 } from "./state.ts";
 import { tuiTheme } from "./theme.ts";
 import { Header } from "./components/Header.tsx";
@@ -88,6 +106,7 @@ import {
   CommandPalette,
   ConfirmDialog,
   PromptDialog,
+  TagPickerDialog,
   TaskPickerDialog,
   type PaletteAction,
   type PromptChip,
@@ -127,10 +146,18 @@ type Modal =
       tasks: Task[];
       onPick: (taskId: number) => void;
     }
+  | { type: "tag-pick" }
   | { type: "palette" }
   | { type: "help" }
-  | { type: "stats" }
+  | { type: "stats"; snapshot: StatsSnapshot }
   | { type: "settings" };
+
+/** Focus figures read once when the overlay opens, not on every render. */
+interface StatsSnapshot {
+  completionsByDay: Record<string, number>;
+  todayFocus: number;
+  streakDays: number;
+}
 
 interface Toast {
   id: number;
@@ -151,6 +178,10 @@ const DETAIL_CHROME = 5;
 /** Milliseconds the panel ratio waits before it is written to config.json,
  * so a drag or a run of `<` presses ends in one write. */
 const RATIO_SAVE_MS = 400;
+/** Milliseconds of quiet before the session state reaches tui-state.json. */
+const STATE_SAVE_MS = 400;
+/** How often the database is asked whether another connection committed. */
+const CHANGE_POLL_MS = 2000;
 
 function toDraft(values: TaskFormValues): TaskDraft {
   return {
@@ -203,7 +234,12 @@ export function App({ data, onQuit }: AppProps) {
   const [notes, setNotes] = useState<Note[]>(() => data.listNotes(false));
   const [showHidden, setShowHidden] = useState(false);
 
-  const [tab, setTab] = useState<TabId>("active");
+  // Where the last session left off; the path is fixed at mount so a save
+  // that fires late can never land in a directory chosen afterwards.
+  const [restored] = useState(() => restoreTuiState(loadTuiState()));
+  const statePath = useRef(tuiStatePath());
+
+  const [tab, setTab] = useState<TabId>(restored.tab);
   const [panel, setPanel] = useState<0 | 1>(0);
   const [taskIndex, setTaskIndex] = useState(0);
   const [detailIndex, setDetailIndex] = useState(0);
@@ -211,15 +247,22 @@ export function App({ data, onQuit }: AppProps) {
   const [entryIndex, setEntryIndex] = useState(0);
   // The selection is remembered by identity, not row number: a re-sort, a
   // filter, a create or a reload looks the task (or the day) up again.
-  const selectedTaskId = useRef<number | null>(null);
-  const selectedNoteDate = useRef<string | null>(null);
+  const selectedTaskId = useRef<number | null>(restored.selectedTaskId);
+  const selectedNoteDate = useRef<string | null>(restored.selectedNoteDate);
 
-  const [sort, setSort] = useState<SortKey>("due");
-  const [filters, setFilters] = useState<Filters>(emptyFilters);
+  const [sort, setSort] = useState<SortKey>(restored.sort);
+  const [filters, setFilters] = useState<Filters>({
+    ...emptyFilters,
+    tag: restored.tag,
+    view: restored.view,
+  });
   const [searching, setSearching] = useState(false);
-  const [tagBar, setTagBar] = useState(false);
+  const [tagBar, setTagBar] = useState(restored.tagBar);
   const [ratio, setRatio] = useState(cfg.panelRatio);
-  const [density, setDensity] = useState<Density>("auto");
+  const [density, setDensity] = useState<Density>(restored.density);
+  const [marked, setMarked] = useState<ReadonlySet<number>>(() => new Set());
+  // Coarse clock: due labels and groups only care about the calendar day.
+  const now = useClock();
 
   const [modal, setModal] = useState<Modal>({ type: "none" });
   const [toast, setToast] = useState<Toast | null>(null);
@@ -244,6 +287,35 @@ export function App({ data, onQuit }: AppProps) {
     [data, showHidden],
   );
 
+  const reloadAll = useCallback(() => {
+    reloadTasks();
+    reloadNotes();
+  }, [reloadNotes, reloadTasks]);
+
+  // A single-task mutation swaps that task only; every other row keeps its
+  // identity and its memoized render.
+  const refreshTasks = useCallback(
+    (ids: readonly number[]) => {
+      const fresh = new Map(ids.map((id) => [id, data.refreshTask(id)]));
+      setTasks((prev) => withTasks(prev, fresh));
+    },
+    [data],
+  );
+
+  // The CLI and the agent skill write the same database; a foreign commit
+  // shows up within a poll. The baseline is taken once, at mount.
+  useEffect(() => {
+    data.changed();
+  }, [data]);
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (!data.changed()) return;
+      reloadAll();
+      notify("Refreshed — changed outside", "info");
+    }, CHANGE_POLL_MS);
+    return () => clearInterval(id);
+  }, [data, notify, reloadAll]);
+
   useEffect(() => {
     if (!toast) return;
     const id = setTimeout(() => setToast(null), toastDuration(toast.kind));
@@ -258,7 +330,7 @@ export function App({ data, onQuit }: AppProps) {
       // for the user to type it in again.
       const duration = cfg.focus.workDuration * Minute;
       data.logTime(taskId, duration, "focus session");
-      reloadTasks();
+      refreshTasks([taskId]);
       notify(
         `Focus complete · ${formatDuration(duration)} logged to #${taskId}`,
         "success",
@@ -270,14 +342,16 @@ export function App({ data, onQuit }: AppProps) {
   });
 
   const shown = useMemo(
-    () => visibleTasks(tasks, tab, filters, sort),
-    [tasks, tab, filters, sort],
+    () => visibleTasks(tasks, tab, filters, sort, now),
+    [tasks, tab, filters, sort, now],
   );
   // Baseline for "N of M" and search counters: the tab without any filter.
   const tabTotal = useMemo(
-    () => visibleTasks(tasks, tab, emptyFilters, sort).length,
-    [tasks, tab, sort],
+    () => visibleTasks(tasks, tab, emptyFilters, sort, now).length,
+    [tasks, tab, sort, now],
   );
+  const knownTags = useMemo(() => collectTags(tasks), [tasks]);
+  const tagNames = useMemo(() => knownTags.map((t) => t.tag), [knownTags]);
   const shownNotes = useMemo(
     () => visibleNotes(notes, filters.query),
     [notes, filters.query],
@@ -367,6 +441,34 @@ export function App({ data, onQuit }: AppProps) {
 
   const closeModal = useCallback(() => setModal({ type: "none" }), []);
 
+  // Session state is written after a short quiet period; the mount only
+  // restores. A state file that cannot be written is not worth a toast.
+  const selectedId = selectedTask?.id ?? null;
+  const selectedDate = selectedNote?.date.format(DateOnly) ?? null;
+  const stateSeen = useRef(false);
+  useEffect(() => {
+    if (!stateSeen.current) {
+      stateSeen.current = true;
+      return;
+    }
+    const state: TuiState = {
+      tab,
+      sort,
+      tagBar,
+      tag: filters.tag,
+      view: filters.view,
+      selectedTaskId: selectedId,
+      selectedNoteDate: selectedDate,
+      density,
+    };
+    const id = setTimeout(() => {
+      try {
+        saveTuiState(state, statePath.current);
+      } catch {}
+    }, STATE_SAVE_MS);
+    return () => clearTimeout(id);
+  }, [density, filters.tag, filters.view, selectedDate, selectedId, sort, tab, tagBar]);
+
   // ---------------------------------------------------------------- actions
 
   const openAddTask = useCallback(() => {
@@ -426,10 +528,11 @@ export function App({ data, onQuit }: AppProps) {
       result: { status: Status; spawnedId: number | null; undo: UndoAction },
     ) => {
       pushUndo(result.undo);
-      reloadTasks();
+      if (result.spawnedId !== null) reloadTasks();
+      else refreshTasks([task.id]);
       notify(statusToast(task.id, result.status, result.spawnedId), "success");
     },
-    [notify, pushUndo, reloadTasks],
+    [notify, pushUndo, refreshTasks, reloadTasks],
   );
 
   const toggleDone = useCallback(
@@ -493,10 +596,10 @@ export function App({ data, onQuit }: AppProps) {
       }
       const action = data.setPriority(selectedTask, next);
       pushUndo(action);
-      reloadTasks();
+      refreshTasks([selectedTask.id]);
       notify(`${action.label} · u undo`, "success");
     },
-    [data, notify, pushUndo, reloadTasks, selectedTask],
+    [data, notify, pushUndo, refreshTasks, selectedTask],
   );
 
   const openDuePrompt = useCallback(() => {
@@ -519,11 +622,11 @@ export function App({ data, onQuit }: AppProps) {
         const action = data.setDue(task, due);
         pushUndo(action);
         closeModal();
-        reloadTasks();
+        refreshTasks([task.id]);
         notify(`${action.label} · u undo`, "success");
       },
     });
-  }, [closeModal, data, notify, pushUndo, reloadTasks, selectedTask]);
+  }, [closeModal, data, notify, pushUndo, refreshTasks, selectedTask]);
 
   // Enter adds and keeps the prompt, so a list of steps goes in at once.
   const addSubtask = useCallback(() => {
@@ -537,19 +640,19 @@ export function App({ data, onQuit }: AppProps) {
       stayOpen: true,
       onSubmit: (value) => {
         data.addSubtask(taskId, value);
-        reloadTasks();
+        refreshTasks([taskId]);
       },
     });
-  }, [data, reloadTasks, selectedTask]);
+  }, [data, refreshTasks, selectedTask]);
 
   const toggleSubtaskAt = useCallback(
     (index: number) => {
       const subtask = selectedTask?.subtasks[index];
       if (!subtask) return;
       data.toggleSubtask(subtask.id);
-      reloadTasks();
+      refreshTasks([selectedTask.id]);
     },
-    [data, reloadTasks, selectedTask],
+    [data, refreshTasks, selectedTask],
   );
 
   const toggleDetailRow = useCallback(() => {
@@ -570,7 +673,7 @@ export function App({ data, onQuit }: AppProps) {
         onSubmit: (value) => {
           data.editSubtask(subtask.id, value);
           closeModal();
-          reloadTasks();
+          refreshTasks([task.id]);
           notify("Subtask updated", "success");
         },
       });
@@ -588,7 +691,7 @@ export function App({ data, onQuit }: AppProps) {
         onSubmit: (value) => {
           data.editTaskNote(note.id, value);
           closeModal();
-          reloadTasks();
+          refreshTasks([task.id]);
           notify("Note updated", "success");
         },
       });
@@ -611,11 +714,11 @@ export function App({ data, onQuit }: AppProps) {
         }
         pushUndo(data.replaceTimeLog(task.id, log, parsed.duration, parsed.note));
         closeModal();
-        reloadTasks();
+        refreshTasks([task.id]);
         notify("Time log updated · u undo", "success");
       },
     });
-  }, [closeModal, data, detailRow, notify, pushUndo, reloadTasks, selectedTask]);
+  }, [closeModal, data, detailRow, notify, pushUndo, refreshTasks, selectedTask]);
 
   // The cursor is clamped where it is read, so the row after the deleted
   // one (or the last) ends up under it without bookkeeping here.
@@ -641,8 +744,8 @@ export function App({ data, onQuit }: AppProps) {
         `Deleted the ${formatDuration(log.duration)} log`,
       );
     }
-    reloadTasks();
-  }, [data, detailRow, reloadTasks, selectedTask, undoableDelete]);
+    refreshTasks([task.id]);
+  }, [data, detailRow, refreshTasks, selectedTask, undoableDelete]);
 
   const addTaskNote = useCallback(() => {
     if (!selectedTask) return;
@@ -656,11 +759,11 @@ export function App({ data, onQuit }: AppProps) {
       onSubmit: (value) => {
         data.addTaskNote(taskId, value);
         closeModal();
-        reloadTasks();
+        refreshTasks([taskId]);
         notify("Note added", "success");
       },
     });
-  }, [closeModal, data, notify, reloadTasks, selectedTask]);
+  }, [closeModal, data, notify, refreshTasks, selectedTask]);
 
   const logTime = useCallback(() => {
     if (!selectedTask) return;
@@ -679,11 +782,11 @@ export function App({ data, onQuit }: AppProps) {
         }
         data.logTime(taskId, parsed.duration, parsed.note);
         closeModal();
-        reloadTasks();
+        refreshTasks([taskId]);
         notify(`Logged ${value}`, "success");
       },
     });
-  }, [closeModal, data, notify, reloadTasks, selectedTask]);
+  }, [closeModal, data, notify, refreshTasks, selectedTask]);
 
   // `a` always writes to today, which is what a morning without a note yet
   // needs; `A` keeps the selected day for catching up on the past.
@@ -748,10 +851,9 @@ export function App({ data, onQuit }: AppProps) {
     // A restored task keeps its id, so the cursor can go back to it.
     if (action.kind === "task") selectedTaskId.current = action.task.id;
     setUndoStack(rest);
-    reloadTasks();
-    reloadNotes();
+    reloadAll();
     notify("Undone", "success");
-  }, [data, notify, reloadNotes, reloadTasks, undoStack]);
+  }, [data, notify, reloadAll, undoStack]);
 
   const saveSettings = useCallback(
     (next: Config) => {
@@ -941,10 +1043,10 @@ export function App({ data, onQuit }: AppProps) {
         } catch (err) {
           notify((err as Error).message, "error");
         }
-        reloadTasks();
+        refreshTasks([target.id, blockerId]);
       },
     });
-  }, [closeModal, data, notify, reloadTasks, selectedTask, tasks]);
+  }, [closeModal, data, notify, refreshTasks, selectedTask, tasks]);
 
   const openUnblockPicker = useCallback(() => {
     if (!selectedTask) return;
@@ -965,10 +1067,10 @@ export function App({ data, onQuit }: AppProps) {
         closeModal();
         data.removeDependency(target.id, blockerId);
         notify(`#${target.id} unblocked from #${blockerId}`, "success");
-        reloadTasks();
+        refreshTasks([target.id, blockerId]);
       },
     });
-  }, [closeModal, data, notify, reloadTasks, selectedTask, tasks]);
+  }, [closeModal, data, notify, refreshTasks, selectedTask, tasks]);
 
   const startSearch = useCallback(() => {
     // The filter bar lives in the list panel; typing into it from the
@@ -982,6 +1084,176 @@ export function App({ data, onQuit }: AppProps) {
     if (!keep) setFilters((f) => ({ ...f, query: "" }));
   }, []);
 
+  const setTagFilter = useCallback((tag: string | null) => {
+    setFilters((f) => ({ ...f, tag }));
+  }, []);
+
+  const openTagPicker = useCallback(() => {
+    if (knownTags.length === 0) {
+      notify("No tags yet — add one with e", "info");
+      return;
+    }
+    setModal({ type: "tag-pick" });
+  }, [knownTags.length, notify]);
+
+  const setView = useCallback(
+    (view: View) => {
+      setFilters((f) => ({ ...f, view }));
+      notify(viewToast(view), "info");
+    },
+    [notify],
+  );
+
+  const cycleView = useCallback(() => {
+    setView(nextView(filters.view));
+  }, [filters.view, setView]);
+
+  const reloadFromDisk = useCallback(() => {
+    reloadAll();
+    notify("Reloaded", "info");
+  }, [notify, reloadAll]);
+
+  // Marks turn the one-key edits into bulk edits: every marked task goes
+  // through the same store call and the results fold into one undo entry.
+  const markedTasks = useMemo(
+    () => tasks.filter((t) => marked.has(t.id)),
+    [marked, tasks],
+  );
+
+  const toggleMark = useCallback(() => {
+    if (!selectedTask) return;
+    setMarked((m) => toggleInSet(m, selectedTask.id));
+  }, [selectedTask]);
+
+  const clearMarks = useCallback(() => setMarked(new Set()), []);
+
+  const bulk = useCallback(
+    (
+      what: string,
+      apply: (task: Task) => UndoAction | null,
+      kind: ToastKind = "success",
+    ) => {
+      const actions: UndoAction[] = [];
+      for (const task of markedTasks) {
+        const action = apply(task);
+        if (action) actions.push(action);
+      }
+      if (actions.length === 0) {
+        notify(`Nothing to change: ${what}`, "info");
+        return;
+      }
+      pushUndo({
+        kind: "bulk",
+        label: `${plural(actions.length, "task")} → ${what}`,
+        actions,
+      });
+      setMarked(new Set());
+      reloadTasks();
+      notify(bulkToast(actions.length, what), kind);
+    },
+    [markedTasks, notify, pushUndo, reloadTasks],
+  );
+
+  const bulkDone = useCallback(() => {
+    // A mixed selection completes; only an all-done one reopens.
+    const reopen = markedTasks.every((t) => t.status === Status.Done);
+    const status = reopen ? Status.Pending : Status.Done;
+    bulk(statusString(status), (t) =>
+      t.status === status ? null : data.setStatus(t, status).undo,
+    );
+  }, [bulk, data, markedTasks]);
+
+  const bulkPriority = useCallback(
+    (delta: 1 | -1) => {
+      bulk(delta > 0 ? "priority up" : "priority down", (t) => {
+        const next = stepPriority(t.priority, delta);
+        return next === null ? null : data.setPriority(t, next);
+      });
+    },
+    [bulk, data],
+  );
+
+  const bulkDelete = useCallback(() => {
+    bulk("deleted", (t) => data.deleteTask(t), "undo");
+  }, [bulk, data]);
+
+  const openBulkDuePrompt = useCallback(() => {
+    setModal({
+      type: "prompt",
+      title: "Due date",
+      label: `Due date for ${plural(markedTasks.length, "task")}`,
+      placeholder: "YYYY-MM-DD · today · +3d · none",
+      chips: DUE_CHIPS,
+      onSubmit: (value) => {
+        let due: GoTime | null;
+        try {
+          due = parseDueInput(value, GoTime.now());
+        } catch {
+          return "Use YYYY-MM-DD, today, tomorrow, +3d, +1w or none";
+        }
+        closeModal();
+        bulk(due ? `due ${due.format(DateOnly)}` : "due cleared", (t) =>
+          data.setDue(t, due),
+        );
+      },
+    });
+  }, [bulk, closeModal, data, markedTasks.length]);
+
+  // Bulk keys take over the list while marks exist; the detail panel keeps
+  // acting on its own rows.
+  const bulkActive = !isJournalTab && panel === 0 && marked.size > 0;
+
+  const pressDone = useCallback(() => {
+    if (bulkActive) bulkDone();
+    else toggleDone(selectedTask);
+  }, [bulkActive, bulkDone, selectedTask, toggleDone]);
+
+  const pressDue = useCallback(() => {
+    if (bulkActive) openBulkDuePrompt();
+    else openDuePrompt();
+  }, [bulkActive, openBulkDuePrompt, openDuePrompt]);
+
+  const pressDelete = useCallback(() => {
+    if (bulkActive) bulkDelete();
+    else deleteSelectedTask();
+  }, [bulkActive, bulkDelete, deleteSelectedTask]);
+
+  const pressPriority = useCallback(
+    (delta: 1 | -1) => {
+      if (bulkActive) bulkPriority(delta);
+      else stepPriorityBy(delta);
+    },
+    [bulkActive, bulkPriority, stepPriorityBy],
+  );
+
+  // A task outside the current tab or filter is reached by widening both;
+  // the selection effect then finds it by id.
+  const goToTask = useCallback(
+    (id: number) => {
+      const index = shown.findIndex((t) => t.id === id);
+      if (index !== -1) {
+        selectTaskAt(index);
+      } else {
+        selectedTaskId.current = id;
+        setTab("all");
+        setFilters(emptyFilters);
+      }
+      setPanel(1);
+    },
+    [selectTaskAt, shown],
+  );
+
+  const openStats = useCallback(() => {
+    setModal({
+      type: "stats",
+      snapshot: {
+        completionsByDay: data.focus.completionsByDay(30),
+        todayFocus: data.focus.todayWorkCount(),
+        streakDays: data.focus.streak(),
+      },
+    });
+  }, [data]);
+
   // -------------------------------------------------------------- palette
 
   const paletteActions = useMemo<PaletteAction[]>(() => {
@@ -993,33 +1265,57 @@ export function App({ data, onQuit }: AppProps) {
         : [
             { id: "task.add", group: "Task", label: "New task", hint: "a", run: openAddTask },
             { id: "task.edit", group: "Task", label: "Edit selected task", hint: "e", run: openEditTask },
-            { id: "task.done", group: "Task", label: "Mark done / reopen", hint: "space", run: () => toggleDone(selectedTask) },
+            { id: "task.done", group: "Task", label: "Mark done / reopen", hint: "space", run: pressDone },
             { id: "task.start", group: "Task", label: "Start / stop", hint: "s", run: () => toggleInProgress(selectedTask) },
-            { id: "task.delete", group: "Task", label: "Delete selected task", hint: "d", run: deleteSelectedTask },
-            { id: "task.priorityUp", group: "Task", label: "Priority up", hint: "+", run: () => stepPriorityBy(1) },
-            { id: "task.priorityDown", group: "Task", label: "Priority down", hint: "-", run: () => stepPriorityBy(-1) },
-            { id: "task.due", group: "Task", label: "Set due date", hint: "@", run: openDuePrompt },
+            { id: "task.delete", group: "Task", label: "Delete selected task", hint: "d", run: pressDelete },
+            { id: "task.priorityUp", group: "Task", label: "Priority up", hint: "+", run: () => pressPriority(1) },
+            { id: "task.priorityDown", group: "Task", label: "Priority down", hint: "-", run: () => pressPriority(-1) },
+            { id: "task.due", group: "Task", label: "Set due date", hint: "@", run: pressDue },
             { id: "task.subtask", group: "Task", label: "Add subtask", hint: "t", run: addSubtask },
             { id: "task.note", group: "Task", label: "Add note", hint: "n", run: addTaskNote },
             { id: "task.time", group: "Task", label: "Log time", hint: "L", run: logTime },
             { id: "task.block", group: "Task", label: "Block on…", hint: "b", run: openBlockPicker },
             { id: "task.unblock", group: "Task", label: "Remove blocker…", hint: "B", run: openUnblockPicker },
+            { id: "task.mark", group: "Task", label: "Mark for bulk action", hint: "m", run: toggleMark },
+            ...(marked.size > 0
+              ? [{ id: "task.unmark", group: "Task", label: "Clear marks", hint: "esc", run: clearMarks }]
+              : []),
             { id: "view.sort", group: "View", label: "Cycle sort order", hint: "o", run: cycleSort },
-            { id: "view.tags", group: "View", label: "Toggle tag bar", hint: "#", run: () => setTagBar((v) => !v) },
+            { id: "view.sort.created", group: "View", label: "Sort by created", hint: "F1", run: () => applySort("created") },
+            { id: "view.sort.due", group: "View", label: "Sort by due date", hint: "F2", run: () => applySort("due") },
+            { id: "view.sort.priority", group: "View", label: "Sort by priority", hint: "F3", run: () => applySort("priority") },
+            { id: "view.tag", group: "View", label: "Filter by tag…", hint: "#", run: openTagPicker },
+            { id: "view.tags", group: "View", label: "Toggle tag bar", hint: "[ ]", run: () => setTagBar((v) => !v) },
+            { id: "view.cycle", group: "View", label: "Cycle view", hint: "v", run: cycleView },
+            ...VIEWS.map<PaletteAction>((view) => ({
+              id: `view.${view}`,
+              group: "View",
+              label: `View: ${VIEW_LABELS[view].toLowerCase()}`,
+              run: () => setView(view),
+            })),
           ];
+    const journalActions: PaletteAction[] =
+      tab === "journal"
+        ? [
+            { id: "journal.hide", group: "Journal", label: "Hide / show note", hint: "x", run: toggleNoteHidden },
+            { id: "journal.hidden", group: "Journal", label: "Show hidden notes", hint: "H", run: toggleHiddenNotes },
+          ]
+        : [];
     const actions: PaletteAction[] = [
       ...taskActions,
       { id: "journal.add", group: "Journal", label: "Add journal entry for today", hint: "a", run: () => addJournalEntry("today") },
       { id: "journal.addDay", group: "Journal", label: "Add entry to selected day", hint: "A", run: () => addJournalEntry("selected") },
+      ...journalActions,
       { id: "view.search", group: "View", label: "Filter", hint: "/", run: startSearch },
       { id: "view.density", group: "View", label: "Cycle row density", hint: "z", run: toggleDensity },
       { id: "view.widen", group: "View", label: "Widen task list", hint: ">", run: () => resizePanels(0.05) },
       { id: "view.narrow", group: "View", label: "Narrow task list", hint: "<", run: () => resizePanels(-0.05) },
       { id: "view.theme", group: "View", label: "Toggle light / dark", hint: "T", run: toggleTheme },
-      { id: "view.stats", group: "View", label: "Show statistics", hint: "S", run: () => setModal({ type: "stats" }) },
+      { id: "view.stats", group: "View", label: "Show statistics", hint: "S", run: openStats },
       { id: "view.help", group: "View", label: "Show help", hint: "?", run: () => setModal({ type: "help" }) },
       { id: "focus.toggle", group: "Focus", label: "Start / stop focus timer", hint: "f", run: toggleFocus },
       { id: "app.undo", group: "App", label: "Undo", hint: "u", run: undo },
+      { id: "app.reload", group: "App", label: "Reload from disk", hint: "R", run: reloadFromDisk },
       { id: "app.settings", group: "App", label: "Settings", hint: "P", run: () => setModal({ type: "settings" }) },
       { id: "app.export.md", group: "App", label: "Export everything to Markdown", run: () => exportTo("md", "all") },
       { id: "app.export.json", group: "App", label: "Export everything to JSON", run: () => exportTo("json", "all") },
@@ -1041,25 +1337,36 @@ export function App({ data, onQuit }: AppProps) {
     addJournalEntry,
     addSubtask,
     addTaskNote,
+    applySort,
+    clearMarks,
     cycleSort,
-    deleteSelectedTask,
+    cycleView,
     exportTo,
     logTime,
+    marked.size,
     openAddTask,
     openBlockPicker,
-    openDuePrompt,
     openEditTask,
+    openStats,
+    openTagPicker,
     openUnblockPicker,
+    pressDelete,
+    pressDone,
+    pressDue,
+    pressPriority,
+    reloadFromDisk,
     requestQuit,
     resizePanels,
     selectedTask,
+    setView,
     startSearch,
-    stepPriorityBy,
     tab,
     toggleDensity,
-    toggleDone,
     toggleFocus,
+    toggleHiddenNotes,
     toggleInProgress,
+    toggleMark,
+    toggleNoteHidden,
     toggleTheme,
     undo,
   ]);
@@ -1210,14 +1517,14 @@ export function App({ data, onQuit }: AppProps) {
         setPanel(1);
         return;
       case "escape":
-        // Leave the detail panel first; a second escape clears the filter.
-        if (panel === 1) setPanel(0);
-        else if (
-          filters.query !== "" ||
-          filters.tag !== null ||
-          filters.view !== "all"
-        ) {
-          setFilters(emptyFilters);
+        // One step back per press: marks, then the detail panel, then the
+        // query and tag, and the view last.
+        if (marked.size > 0) clearMarks();
+        else if (panel === 1) setPanel(0);
+        else if (filters.query !== "" || filters.tag !== null) {
+          setFilters((f) => ({ ...f, query: "", tag: null }));
+        } else if (filters.view !== "all") {
+          setFilters((f) => ({ ...f, view: "all" }));
         }
         return;
       case "return":
@@ -1230,7 +1537,7 @@ export function App({ data, onQuit }: AppProps) {
       case "space":
         if (tab !== "journal") {
           if (panel === 1) toggleDetailRow();
-          else toggleDone(selectedTask);
+          else pressDone();
         }
         return;
       case "u":
@@ -1279,19 +1586,34 @@ export function App({ data, onQuit }: AppProps) {
         if (tab === "journal") {
           if (panel === 1) deleteJournalEntry();
         } else if (panel === 1) deleteDetailRow();
-        else deleteSelectedTask();
+        else pressDelete();
         break;
       case "s":
         if (tab !== "journal") toggleInProgress(selectedTask);
         break;
       case "+":
-        if (tab !== "journal") stepPriorityBy(1);
+        if (tab !== "journal") pressPriority(1);
         break;
       case "-":
-        if (tab !== "journal") stepPriorityBy(-1);
+        if (tab !== "journal") pressPriority(-1);
         break;
       case "@":
-        if (tab !== "journal") openDuePrompt();
+        if (tab !== "journal") pressDue();
+        break;
+      case "m":
+        if (tab !== "journal") toggleMark();
+        break;
+      case "v":
+        if (tab !== "journal") cycleView();
+        break;
+      case "R":
+        reloadFromDisk();
+        break;
+      case "[":
+      case "]":
+        if (showTagBar) {
+          setTagFilter(cycleTag(knownTags, filters.tag, key.sequence === "]" ? 1 : -1));
+        }
         break;
       case "t":
         if (tab !== "journal") addSubtask();
@@ -1327,7 +1649,7 @@ export function App({ data, onQuit }: AppProps) {
         resizePanels(0.05);
         break;
       case "S":
-        setModal({ type: "stats" });
+        openStats();
         break;
       case "z":
         toggleDensity();
@@ -1336,7 +1658,7 @@ export function App({ data, onQuit }: AppProps) {
         setModal({ type: "help" });
         break;
       case "#":
-        if (!isJournalTab) setTagBar((v) => !v);
+        if (!isJournalTab) openTagPicker();
         break;
       default:
         break;
@@ -1385,15 +1707,19 @@ export function App({ data, onQuit }: AppProps) {
           ? deleteJournalEntry()
           : panel === 1
             ? deleteDetailRow()
-            : deleteSelectedTask(),
-      done: () => toggleDone(selectedTask),
+            : pressDelete(),
+      done: pressDone,
       start: () => toggleInProgress(selectedTask),
-      due: openDuePrompt,
+      due: pressDue,
       toggle: toggleDetailRow,
       subtask: addSubtask,
       note: addTaskNote,
       time: logTime,
       filter: startSearch,
+      view: cycleView,
+      tag: openTagPicker,
+      mark: toggleMark,
+      clearMarks,
       focus: toggleFocus,
       block: openBlockPicker,
       back: () => setPanel(0),
@@ -1409,26 +1735,30 @@ export function App({ data, onQuit }: AppProps) {
       addJournalEntry,
       addSubtask,
       addTaskNote,
+      clearMarks,
+      cycleView,
       deleteDetailRow,
       deleteJournalEntry,
-      deleteSelectedTask,
       editDetailRow,
       editJournalEntry,
       isJournal,
       logTime,
       openAddTask,
       openBlockPicker,
-      openDuePrompt,
       openEditTask,
+      openTagPicker,
       panel,
+      pressDelete,
+      pressDone,
+      pressDue,
       selectedTask,
       startSearch,
       stopSearch,
       toggleDetailRow,
-      toggleDone,
       toggleFocus,
       toggleHiddenNotes,
       toggleInProgress,
+      toggleMark,
       toggleNoteHidden,
     ],
   );
@@ -1441,19 +1771,20 @@ export function App({ data, onQuit }: AppProps) {
         compact,
         searching,
         row: detailRow?.kind ?? null,
+        marked: marked.size,
       }).map((h) => ({
         key: h.key,
         label: h.label,
         run: h.action ? hintActions[h.action] : undefined,
       })),
-    [compact, detailRow?.kind, hintActions, panel, searching, tab],
+    [compact, detailRow?.kind, hintActions, marked.size, panel, searching, tab],
   );
 
   const tabLabel = TABS.find((t) => t.id === tab)?.label ?? "Tasks";
 
   const finishedToday = useMemo(
-    () => (tab === "done" ? doneToday(tasks, GoTime.now()) : 0),
-    [tab, tasks],
+    () => (tab === "done" ? doneToday(tasks, now) : 0),
+    [now, tab, tasks],
   );
 
   let listSubtitle: string;
@@ -1462,6 +1793,8 @@ export function App({ data, onQuit }: AppProps) {
       shownNotes.length === notes.length
         ? plural(notes.length, "day")
         : `${shownNotes.length} of ${notes.length}`;
+  } else if (filters.view !== "all") {
+    listSubtitle = viewSubtitle(filters.view, shown.length, tabTotal);
   } else if (shown.length !== tabTotal) {
     listSubtitle = `${shown.length} of ${tabTotal}`;
   } else if (tab === "done") {
@@ -1469,6 +1802,7 @@ export function App({ data, onQuit }: AppProps) {
   } else {
     listSubtitle = plural(tabTotal, "task");
   }
+  if (!isJournal && marked.size > 0) listSubtitle += ` · ${marked.size} marked`;
   // In one column the other panel is off screen; say how to reach it.
   if (compact) listSubtitle += isJournal ? " · l entries" : " · l details";
 
@@ -1486,6 +1820,18 @@ export function App({ data, onQuit }: AppProps) {
     !isJournal && selectedTask
       ? `#${selectedTask.id} · updated ${formatDateTime(cfg, selectedTask.updatedAt)}`
       : undefined;
+
+  // Memoized children only skip work when their callbacks hold still.
+  const focusList = useCallback(() => setPanel(0), []);
+  const toggleRowStatus = useCallback(
+    (index: number) => toggleDone(shown[index] ?? null),
+    [shown, toggleDone],
+  );
+  const selectDetailRow = useCallback((index: number) => {
+    setDetailIndex(index);
+    setPanel(1);
+  }, []);
+  const filtered = filters.query !== "" || filters.tag !== null || filters.view !== "all";
 
   return (
     <box
@@ -1510,10 +1856,11 @@ export function App({ data, onQuit }: AppProps) {
       {showTagBar ? (
         <TagBar
           theme={theme}
-          tasks={tasks}
+          tags={knownTags}
           activeTag={filters.tag}
           width={width}
-          onSelect={(tag) => setFilters((f) => ({ ...f, tag }))}
+          onSelect={setTagFilter}
+          onMore={openTagPicker}
         />
       ) : null}
 
@@ -1571,20 +1918,16 @@ export function App({ data, onQuit }: AppProps) {
                 // Due groups label finished tasks "overdue"; the Done tab
                 // reads as a log, so it stays flat whatever the sort.
                 sort={tab === "done" ? "created" : sort}
-                now={GoTime.now()}
+                now={now}
                 blocked={blocked}
-                marked={undefined}
+                marked={marked}
                 onSelect={selectTaskAt}
-                onActivate={() => setPanel(0)}
-                onToggleStatus={(index) => toggleDone(shown[index] ?? null)}
-                emptyIcon={filters.query !== "" || filters.tag ? "⌕" : "✦"}
-                emptyTitle={
-                  filters.query !== "" || filters.tag
-                    ? "No matches"
-                    : "No tasks yet"
-                }
+                onActivate={focusList}
+                onToggleStatus={toggleRowStatus}
+                emptyIcon={filtered ? "⌕" : "✦"}
+                emptyTitle={filtered ? "No matches" : "No tasks yet"}
                 emptyHint={
-                  filters.query !== "" || filters.tag
+                  filtered
                     ? "Press esc to clear the filter"
                     : "Press a to create your first task"
                 }
@@ -1627,12 +1970,10 @@ export function App({ data, onQuit }: AppProps) {
                   task={selectedTask}
                   focused={panel === 1}
                   cursor={detailCursor}
-                  onSelectRow={(i) => {
-                    setDetailIndex(i);
-                    setPanel(1);
-                  }}
+                  onSelectRow={selectDetailRow}
                   onToggleSubtask={toggleSubtaskAt}
                   blockedByTitles={taskTitles}
+                  onFilterTag={setTagFilter}
                 />
               )}
             </Panel>
@@ -1657,7 +1998,7 @@ export function App({ data, onQuit }: AppProps) {
           theme={theme}
           title={modal.title}
           initial={modal.initial}
-          knownTags={collectTags(tasks).map((t) => t.tag)}
+          knownTags={tagNames}
           screenWidth={width}
           screenHeight={height}
           onSubmit={(values) => submitTaskForm(values, modal.taskId)}
@@ -1710,12 +2051,28 @@ export function App({ data, onQuit }: AppProps) {
         />
       ) : null}
 
+      {modal.type === "tag-pick" ? (
+        <TagPickerDialog
+          theme={theme}
+          tags={knownTags}
+          screenWidth={width}
+          screenHeight={height}
+          onPick={(tag) => {
+            closeModal();
+            setTagFilter(tag);
+          }}
+          onClose={closeModal}
+        />
+      ) : null}
+
       {modal.type === "palette" ? (
         <CommandPalette
           theme={theme}
           actions={paletteActions}
+          tasks={tasks}
           screenWidth={width}
           screenHeight={height}
+          onPickTask={goToTask}
           onClose={closeModal}
         />
       ) : null}
@@ -1744,10 +2101,10 @@ export function App({ data, onQuit }: AppProps) {
         <StatsOverlay
           theme={theme}
           tasks={tasks}
-          completionsByDay={data.focus.completionsByDay(30)}
-          todayFocus={data.focus.todayWorkCount()}
+          completionsByDay={modal.snapshot.completionsByDay}
+          todayFocus={modal.snapshot.todayFocus}
           focusGoal={cfg.focus.dailyGoal}
-          streakDays={data.focus.streak()}
+          streakDays={modal.snapshot.streakDays}
           screenWidth={width}
           screenHeight={height}
           onClose={closeModal}

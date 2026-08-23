@@ -52,6 +52,8 @@ interface TaskDetailProps {
   /** Index inside `task.subtasks`, not the unified cursor. */
   onToggleSubtask: (subIndex: number) => void;
   blockedByTitles: Map<number, string>;
+  /** Clicking a tag chip filters the list by it. */
+  onFilterTag?: (tag: string) => void;
   ref?: Ref<TaskDetailHandle>;
 }
 
@@ -258,6 +260,7 @@ function TaskBody({
   onSelectRow,
   onToggleSubtask,
   blockedByTitles,
+  onFilterTag,
   ref,
 }: Omit<TaskDetailProps, "task"> & { task: Task }) {
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
@@ -421,12 +424,23 @@ function TaskBody({
           <Field theme={theme} label="Logged" value={formatDuration(logged)} />
         ) : null}
         {task.tags.length > 0 ? (
-          <Field
-            theme={theme}
-            label="Tags"
-            value={task.tags.map((t) => `#${t}`).join("  ")}
-            color={theme.secondary}
-          />
+          <box flexDirection="row">
+            <text fg={theme.textMuted} flexShrink={0}>
+              {"Tags".padEnd(11)}
+            </text>
+            <box flexDirection="row" flexWrap="wrap" flexGrow={1}>
+              {task.tags.map((t) => (
+                <box key={t} flexDirection="row" marginRight={1}>
+                  <Chip
+                    theme={theme}
+                    label={`#${t}`}
+                    color={theme.secondary}
+                    onPress={() => onFilterTag?.(t)}
+                  />
+                </box>
+              ))}
+            </box>
+          </box>
         ) : null}
         {task.metadata ? (
           <Field

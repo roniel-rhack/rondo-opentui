@@ -1,5 +1,5 @@
 import type { Config } from "../core/config/config.ts";
-import type { Density } from "../core/config/tui-state.ts";
+import type { Density, TuiState } from "../core/config/tui-state.ts";
 import { writeJSON, writeNotes, writeTasks } from "../core/export/export.ts";
 import { SessionKind } from "../core/focus/focus.ts";
 import { dateTitle, type Note } from "../core/journal/journal.ts";
@@ -58,6 +58,93 @@ export interface Filters {
 }
 
 export const emptyFilters: Filters = { query: "", tag: null, view: "all" };
+
+export function nextView(view: View): View {
+  return VIEWS[(VIEWS.indexOf(view) + 1) % VIEWS.length]!;
+}
+
+export function viewToast(view: View): string {
+  return `View: ${VIEW_LABELS[view]}`;
+}
+
+/** "3 overdue of 12" for a narrowed view; the caller handles "all". */
+export function viewSubtitle(view: View, shown: number, total: number): string {
+  return `${shown} ${VIEW_LABELS[view].toLowerCase()} of ${total}`;
+}
+
+/** The tag after (or before) `current` in `tags`, with null for "all" at
+ * both ends of the cycle, so `]` from the last tag clears the filter. */
+export function cycleTag(
+  tags: readonly { tag: string }[],
+  current: string | null,
+  delta: 1 | -1,
+): string | null {
+  const ring: (string | null)[] = [null, ...tags.map((t) => t.tag)];
+  const at = ring.indexOf(current);
+  const from = at === -1 ? 0 : at;
+  return ring[(from + delta + ring.length) % ring.length] ?? null;
+}
+
+/** A copy of `set` with `id` added or removed. */
+export function toggleInSet(set: ReadonlySet<number>, id: number): Set<number> {
+  const next = new Set(set);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return next;
+}
+
+/** "3 tasks → Done · u undo": one toast for a bulk action. */
+export function bulkToast(count: number, what: string): string {
+  return `${plural(count, "task")} → ${what} · u undo`;
+}
+
+/** `tasks` with the entries for `fresh` ids swapped for their new copies
+ * and the ones that came back null dropped; every other object keeps its
+ * identity, so memoized rows stay put. */
+export function withTasks(
+  tasks: readonly Task[],
+  fresh: ReadonlyMap<number, Task | null>,
+): Task[] {
+  const out: Task[] = [];
+  for (const t of tasks) {
+    if (!fresh.has(t.id)) {
+      out.push(t);
+      continue;
+    }
+    const next = fresh.get(t.id);
+    if (next) out.push(next);
+  }
+  return out;
+}
+
+export interface RestoredTuiState {
+  tab: TabId;
+  sort: SortKey;
+  tagBar: boolean;
+  tag: string | null;
+  view: View;
+  selectedTaskId: number | null;
+  selectedNoteDate: string | null;
+  density: Density;
+}
+
+const SORT_KEYS: readonly SortKey[] = ["created", "due", "priority"];
+
+/** Narrows a saved state to values the app knows; anything else falls back
+ * to the default, so an edited file cannot put the app in a state it has no
+ * key for. */
+export function restoreTuiState(saved: TuiState): RestoredTuiState {
+  return {
+    tab: TABS.some((t) => t.id === saved.tab) ? (saved.tab as TabId) : "active",
+    sort: SORT_KEYS.includes(saved.sort as SortKey) ? (saved.sort as SortKey) : "due",
+    tagBar: saved.tagBar,
+    tag: saved.tag,
+    view: VIEWS.includes(saved.view as View) ? (saved.view as View) : "all",
+    selectedTaskId: saved.selectedTaskId,
+    selectedNoteDate: saved.selectedNoteDate,
+    density: saved.density,
+  };
+}
 
 /** Case-insensitive subsequence match with a simple locality score. */
 export function fuzzyScore(needle: string, haystack: string): number | null {
@@ -784,6 +871,10 @@ export type HintAction =
   | "note"
   | "time"
   | "filter"
+  | "view"
+  | "tag"
+  | "mark"
+  | "clearMarks"
   | "focus"
   | "block"
   | "back"
@@ -810,6 +901,8 @@ export interface HintContext {
   /** Kind of the detail row under the cursor; null or absent when the
    * detail panel has no rows to walk. */
   row?: DetailRow["kind"] | null;
+  /** Tasks marked for a bulk action; the list keys then act on all of them. */
+  marked?: number;
 }
 
 const HINT_TAIL: HintSpec[] = [
@@ -876,6 +969,17 @@ export function hintSpecs(ctx: HintContext): HintSpec[] {
       ...HINT_TAIL,
     ];
   }
+  if ((ctx.marked ?? 0) > 0) {
+    return [
+      { key: "space", label: "done", action: "done" },
+      { key: "d", label: "delete", action: "delete" },
+      { key: "+ -", label: "priority", action: null },
+      { key: "@", label: "due", action: "due" },
+      { key: "esc", label: "clear marks", action: "clearMarks" },
+      { key: "m", label: "mark", action: "mark" },
+      ...HINT_TAIL,
+    ];
+  }
   return [
     ...(ctx.compact ? [{ key: "l", label: "details", action: "details" as const }] : []),
     { key: "a", label: "add", action: "add" },
@@ -885,8 +989,11 @@ export function hintSpecs(ctx: HintContext): HintSpec[] {
     { key: "d", label: "delete", action: "delete" },
     { key: "t", label: "subtask", action: "subtask" },
     { key: "/", label: "filter", action: "filter" },
+    { key: "v", label: "view", action: "view" },
+    { key: "#", label: "tag", action: "tag" },
     { key: "@", label: "due", action: "due" },
     { key: "+ -", label: "priority", action: null },
+    { key: "m", label: "mark", action: "mark" },
     { key: "b", label: "block", action: "block" },
     { key: "f", label: "focus", action: "focus" },
     ...HINT_TAIL,

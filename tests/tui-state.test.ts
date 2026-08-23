@@ -47,8 +47,17 @@ import {
   relativeDue,
   tabCounts,
   visibleTasks,
+  nextView,
+  viewToast,
+  viewSubtitle,
+  cycleTag,
+  toggleInSet,
+  bulkToast,
+  withTasks,
+  restoreTuiState,
   type Hint,
 } from "../src/tui/state.ts";
+import { defaultTuiState } from "../src/core/config/tui-state.ts";
 
 function task(fields: Parameters<typeof newTask>[0]) {
   return newTask({ createdAt: GoTime.now(), ...fields });
@@ -799,5 +808,95 @@ describe("mutation helpers (3.1, 3.3, 3.16, 2.14)", () => {
     expect(parseDueInput("tomorrow", now)!.format(DateOnly)).toBe("2026-08-23");
     expect(parseDueInput("+1w", now)!.format(DateOnly)).toBe("2026-08-29");
     expect(parseDueInput("none", now)).toBeNull();
+  });
+});
+
+describe("views, tags and marks (3.7, 3.8, 3.15)", () => {
+  test("nextView walks the ring and wraps", () => {
+    expect(nextView("all")).toBe("today");
+    expect(nextView("blocked")).toBe("all");
+    expect(viewToast("week")).toBe("View: This week");
+  });
+
+  test("viewSubtitle counts the narrowed view against the tab", () => {
+    expect(viewSubtitle("overdue", 3, 12)).toBe("3 overdue of 12");
+    expect(viewSubtitle("week", 0, 5)).toBe("0 this week of 5");
+  });
+
+  test("cycleTag walks all → tags → all in both directions", () => {
+    const tags = [{ tag: "code" }, { tag: "work" }];
+    expect(cycleTag(tags, null, 1)).toBe("code");
+    expect(cycleTag(tags, "code", 1)).toBe("work");
+    expect(cycleTag(tags, "work", 1)).toBeNull();
+    expect(cycleTag(tags, null, -1)).toBe("work");
+    expect(cycleTag(tags, "code", -1)).toBeNull();
+    // A tag that no longer exists restarts from "all".
+    expect(cycleTag(tags, "gone", 1)).toBe("code");
+    expect(cycleTag([], null, 1)).toBeNull();
+  });
+
+  test("toggleInSet never mutates its input", () => {
+    const set = new Set([1]);
+    const added = toggleInSet(set, 2);
+    expect([...added]).toEqual([1, 2]);
+    expect([...toggleInSet(added, 1)]).toEqual([2]);
+    expect([...set]).toEqual([1]);
+  });
+
+  test("bulkToast names the count and the undo key", () => {
+    expect(bulkToast(3, "Done")).toBe("3 tasks → Done · u undo");
+    expect(bulkToast(1, "High")).toBe("1 task → High · u undo");
+  });
+});
+
+describe("withTasks (6.5)", () => {
+  test("swaps only the refreshed tasks and drops the deleted ones", () => {
+    const fresh = task({ id: 1, title: "Write report (v2)" });
+    const out = withTasks(sample, new Map([[1, fresh], [2, null]]));
+    expect(out.map((t) => t.id)).toEqual([1, 3]);
+    expect(out[0]).toBe(fresh);
+    expect(out[1]).toBe(sample[2]);
+  });
+});
+
+describe("restoreTuiState (4.1)", () => {
+  test("keeps known values and falls back on unknown ones", () => {
+    const saved = {
+      ...defaultTuiState(),
+      tab: "done",
+      sort: "priority",
+      tagBar: true,
+      tag: "work",
+      view: "overdue",
+      selectedTaskId: 7,
+      selectedNoteDate: "2026-08-22",
+      density: "dense" as const,
+    };
+    expect(restoreTuiState(saved)).toEqual({
+      tab: "done",
+      sort: "priority",
+      tagBar: true,
+      tag: "work",
+      view: "overdue",
+      selectedTaskId: 7,
+      selectedNoteDate: "2026-08-22",
+      density: "dense",
+    });
+    const odd = restoreTuiState({ ...saved, tab: "nope", sort: "title", view: "soon" });
+    expect(odd.tab).toBe("active");
+    expect(odd.sort).toBe("due");
+    expect(odd.view).toBe("all");
+  });
+});
+
+describe("hintSpecs with marks (3.15)", () => {
+  test("marked tasks turn the list hints into bulk keys", () => {
+    const specs = hintSpecs({ tab: "active", panel: 0, compact: false, searching: false, marked: 2 });
+    expect(specs.map((h) => h.key)).toEqual(["space", "d", "+ -", "@", "esc", "m", "^k", "?"]);
+    expect(specs.find((h) => h.key === "esc")?.action).toBe("clearMarks");
+    const plain = hintSpecs({ tab: "active", panel: 0, compact: false, searching: false, marked: 0 });
+    expect(plain.map((h) => h.key)).toContain("v");
+    expect(plain.map((h) => h.key)).toContain("#");
+    expect(plain.map((h) => h.key)).toContain("m");
   });
 });

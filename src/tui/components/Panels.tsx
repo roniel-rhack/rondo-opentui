@@ -1,12 +1,11 @@
 import { TextAttributes, type KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
-import { useState, type ReactNode } from "react";
+import { memo, useState, type ReactNode } from "react";
 import { Status, type Task } from "../../core/task/task.ts";
 import { formatDuration, totalDuration } from "../../core/task/timelog.ts";
 import { GoTime } from "../../core/time.ts";
 import { computeStreak } from "../../core/ui/stats.ts";
 import {
-  collectTags,
   fitHints,
   fitTags,
   loggedSince,
@@ -20,6 +19,7 @@ import { mix, priorityColors, type TuiTheme } from "../theme.ts";
 import { useCountdown } from "../hooks/useTween.ts";
 import { Overlay } from "./Overlay.tsx";
 import { AnimatedMeter, KeyHint, Meter } from "./primitives.tsx";
+import type { TagCount } from "./Dialogs.tsx";
 
 interface PanelProps {
   theme: TuiTheme;
@@ -81,7 +81,8 @@ export function PanelDivider({ theme, onDrag }: PanelDividerProps) {
 
 interface TagBarProps {
   theme: TuiTheme;
-  tasks: readonly Task[];
+  /** Tags in use, most used first; the caller memoizes them per task list. */
+  tags: readonly TagCount[];
   activeTag: string | null;
   width: number;
   onSelect: (tag: string | null) => void;
@@ -125,15 +126,14 @@ function TagChip({
 }
 
 /** Horizontal, clickable tag filter chips. */
-export function TagBar({
+export const TagBar = memo(function TagBar({
   theme,
-  tasks,
+  tags,
   activeTag,
   width,
   onSelect,
   onMore,
 }: TagBarProps) {
-  const tags = collectTags(tasks);
   if (tags.length === 0) return null;
 
   const available = width - 2;
@@ -185,7 +185,7 @@ export function TagBar({
       ) : null}
     </box>
   );
-}
+});
 
 interface SearchBarProps {
   theme: TuiTheme;
