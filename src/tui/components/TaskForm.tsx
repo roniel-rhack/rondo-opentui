@@ -5,9 +5,9 @@ import type { TextareaRenderable } from "@opentui/core";
 import { RecurFreq, recurFreqString } from "../../core/task/recur.ts";
 import { Priority, priorityString } from "../../core/task/task.ts";
 import { DateOnly, GoTime } from "../../core/time.ts";
-import { parseDueInput } from "../state.ts";
+import { fitChips, parseDueInput, parseQuickAdd, type QuickAdd } from "../state.ts";
 import { mix, priorityColors, type TuiTheme } from "../theme.ts";
-import { Button, Overlay } from "./Overlay.tsx";
+import { Button, Overlay, fixedOverlayBodyRows } from "./Overlay.tsx";
 import { ChipButton } from "./primitives.tsx";
 
 export interface TaskFormValues {
@@ -82,6 +82,19 @@ const DATE_SHORTCUTS: { label: string; days: number | null }[] = [
   { label: "none", days: null },
 ];
 
+/** The full form needs 28 rows; below this many the labels move into the
+ * frame borders and the buttons row goes, so 20-row terminals still fit. */
+const COMPACT_BELOW = 30;
+const FULL_HEIGHT = 28;
+const COMPACT_HEIGHT = 20;
+/** Overlay width the two segmented controls were designed for. */
+const FULL_WIDTH = 76;
+const DUE_PREVIEW = "Mon, Jan 02";
+/** Rows the fields themselves need, before the chip rows and the error: four
+ * three-row frames, plus a label above each of them in the full layout. */
+const COMPACT_FIELD_ROWS = 12;
+const FULL_FIELD_ROWS = 18;
+
 interface Problem {
   field: FieldId;
   message: string;
@@ -104,6 +117,69 @@ function validate(values: TaskFormValues): Problem | null {
   return null;
 }
 
+function splitTags(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((t) => t.trim())
+    .filter((t) => t !== "");
+}
+
+/** Inline tokens win over the widgets; tags from both sides are merged. */
+function applyQuickAdd(values: TaskFormValues, quick: QuickAdd): TaskFormValues {
+  const tags = splitTags(values.tags);
+  for (const tag of quick.tags) if (!tags.includes(tag)) tags.push(tag);
+  return {
+    ...values,
+    title: quick.title,
+    tags: tags.join(", "),
+    priority: quick.priority ?? values.priority,
+    due:
+      quick.due === undefined
+        ? values.due
+        : quick.due === null
+          ? ""
+          : quick.due.format(DateOnly),
+    recur: quick.recur ?? values.recur,
+  };
+}
+
+function quickAddPreview(quick: QuickAdd): string | null {
+  const parts = quick.tags.map((t) => `#${t}`);
+  if (quick.due !== undefined) {
+    parts.push(quick.due === null ? "no due" : quick.due.format(DUE_PREVIEW));
+  }
+  if (quick.priority !== null) parts.push(priorityString(quick.priority));
+  if (quick.recur !== null) {
+    parts.push(
+      quick.recur === RecurFreq.None ? "no repeat" : recurFreqString(quick.recur),
+    );
+  }
+  return parts.length === 0 ? null : `→ ${parts.join(" · ")}`;
+}
+
+function duePreview(
+  due: string,
+  now: GoTime,
+): { text: string; valid: boolean } | null {
+  if (due.trim() === "") return null;
+  try {
+    const parsed = parseDueInput(due, now);
+    return {
+      text: parsed ? `→ ${parsed.format(DUE_PREVIEW)}` : "→ no due",
+      valid: true,
+    };
+  } catch {
+    return { text: "→ invalid", valid: false };
+  }
+}
+
+interface Option {
+  label: string;
+  active: boolean;
+  color: string;
+  onPress: () => void;
+}
+
 /** Modal form used for creating and editing tasks. */
 export function TaskForm({
   theme,
@@ -124,28 +200,85 @@ export function TaskForm({
   const field: FieldId = FIELDS[fieldIndex] ?? "title";
   const focus = (id: FieldId) => setFieldIndex(FIELDS.indexOf(id));
 
+  const compact = screenHeight < COMPACT_BELOW;
+  const narrow = screenWidth - 4 < FULL_WIDTH;
+
+  // The overlay cannot grow past the status bar, so the optional rows are
+  // budgeted against what is left: the error message always wins, and the
+  // chips are what yields when the terminal is too short for both.
+  const bodyRows = fixedOverlayBodyRows(
+    screenHeight,
+    compact ? COMPACT_HEIGHT : FULL_HEIGHT,
+  );
+  const errorRows = error ? (compact ? 1 : 2) : 0;
+  const spareRows =
+    bodyRows - (compact ? COMPACT_FIELD_ROWS : FULL_FIELD_ROWS) - errorRows;
+  // Each column of the due/tags row keeps its own chips on one line; what
+  // does not fit is dropped rather than wrapped.
+  const columnWidth =
+    Math.floor((Math.min(FULL_WIDTH, screenWidth - 4) - 6) / 2) - 1;
+  const dateChips = spareRows >= 1
+    ? DATE_SHORTCUTS.slice(
+        0,
+        fitChips(
+          DATE_SHORTCUTS.map((shortcut) => shortcut.label),
+          columnWidth,
+        ),
+      )
+    : [];
+  const tagChips = spareRows >= 1
+    ? knownTags
+        .slice(0, 4)
+        .slice(
+          0,
+          fitChips(
+            knownTags.slice(0, 4).map((t) => `#${t}`),
+            columnWidth,
+          ),
+        )
+    : [];
+
   // Editing continues at the end of the title, like the old input did.
   useEffect(() => {
     const area = titleRef.current;
     if (area) area.cursorOffset = area.plainText.length;
   }, []);
 
-  const submit = () => {
-    // The textareas own their buffers, so read the latest text from the refs.
-    // The title is conceptually one line: whatever enter left behind in the
-    // buffer collapses back into spaces.
-    const rawTitle = titleRef.current?.plainText ?? values.title;
-    const title = rawTitle.replace(/\s+/g, " ").trim();
-    const description = descriptionRef.current?.plainText ?? values.description;
-    const values2 = { ...values, title, description };
-    setValues(values2);
+  // The textareas own their buffers, so read the latest text from the refs.
+  // The title is conceptually one line: whatever enter left behind in the
+  // buffer collapses back into spaces.
+  const current = (): TaskFormValues => ({
+    ...values,
+    title: (titleRef.current?.plainText ?? values.title)
+      .replace(/\s+/g, " ")
+      .trim(),
+    description: descriptionRef.current?.plainText ?? values.description,
+  });
 
-    const problem = validate(values2);
+  const submit = () => {
+    const latest = current();
+    setValues(latest);
+
+    const merged = applyQuickAdd(latest, parseQuickAdd(latest.title, GoTime.now()));
+    const problem = validate(merged);
     if (problem) {
       setError(problem);
       return;
     }
-    onSubmit(values2);
+    onSubmit(merged);
+  };
+
+  /** A stray click on the scrim only closes the form while nothing was typed. */
+  const isPristine = () => {
+    const latest = current();
+    return (
+      latest.title === initial.title.replace(/\s+/g, " ").trim() &&
+      latest.description === initial.description &&
+      latest.due === initial.due &&
+      latest.tags === initial.tags &&
+      latest.priority === initial.priority &&
+      latest.recur === initial.recur
+    );
   };
 
   const clearError = () => setError(null);
@@ -158,8 +291,9 @@ export function TaskForm({
     if (!area) return;
     const text = area.plainText;
     if (text.includes("\n")) {
-      const collapsed = text.replace(/\s*\n\s*/g, " ");
-      const flat = collapsed.trim() === "" ? "" : collapsed;
+      // Enter at the end of the line would otherwise leave a trailing space
+      // that reads as a new title and wipes the error it just caused.
+      const flat = text.replace(/\s*\n\s*/g, " ").replace(/\s+$/, "");
       area.setText(flat);
       area.cursorOffset = flat.length;
       return;
@@ -172,20 +306,17 @@ export function TaskForm({
   };
 
   const appendTag = (tag: string) => {
-    const current = values.tags
-      .split(",")
-      .map((t) => t.trim())
-      .filter((t) => t !== "");
-    if (current.includes(tag)) return;
-    setValues({ ...values, tags: [...current, tag].join(", ") });
+    const tags = splitTags(values.tags);
+    if (tags.includes(tag)) return;
+    setValues({ ...values, tags: [...tags, tag].join(", ") });
   };
 
-  const cycle = (delta: number) => {
-    if (field === "priority") {
+  const cycleField = (id: FieldId, delta: number) => {
+    if (id === "priority") {
       const idx = PRIORITIES.indexOf(values.priority);
       const next = (idx + delta + PRIORITIES.length) % PRIORITIES.length;
       setValues({ ...values, priority: PRIORITIES[next]! });
-    } else if (field === "recur") {
+    } else if (id === "recur") {
       const idx = RECURRENCES.indexOf(values.recur);
       const next = (idx + delta + RECURRENCES.length) % RECURRENCES.length;
       setValues({ ...values, recur: RECURRENCES[next]! });
@@ -226,41 +357,71 @@ export function TaskForm({
       }
     }
     if (field === "priority" || field === "recur") {
-      if (key.name === "left") cycle(-1);
-      if (key.name === "right") cycle(1);
-      if (key.name === "space") cycle(1);
+      if (key.name === "left") cycleField(field, -1);
+      if (key.name === "right") cycleField(field, 1);
+      if (key.name === "space") cycleField(field, 1);
       if (key.name === "return") submit();
     }
   });
 
-  const label = (id: FieldId, text: string, hint?: string) => (
-    <box flexDirection="row">
-      <text
-        fg={field === id ? theme.accent : theme.textMuted}
-        attributes={field === id ? TextAttributes.BOLD : undefined}
-      >
-        {text}
-      </text>
-      {hint ? <text fg={theme.textMuted}>{`  ${hint}`}</text> : null}
-    </box>
-  );
+  const quick = parseQuickAdd(values.title, GoTime.now());
+  const tokenPreview = quickAddPreview(quick);
+  const due = duePreview(values.due, GoTime.now());
 
-  const frame = (id: FieldId, height: number, children: ReactNode) => (
+  const labelColor = (id: FieldId) =>
+    error?.field === id
+      ? theme.danger
+      : field === id
+        ? theme.accent
+        : theme.textMuted;
+
+  const frameColor = (id: FieldId) =>
+    error?.field === id
+      ? theme.danger
+      : field === id
+        ? theme.accent
+        : theme.border;
+
+  /** Full layout: a label row above each frame, with an optional hint. */
+  const label = (id: FieldId, text: string, hint?: string, hintColor?: string) =>
+    compact ? null : (
+      <box flexDirection="row" flexShrink={0}>
+        <text
+          fg={labelColor(id)}
+          attributes={field === id ? TextAttributes.BOLD : undefined}
+        >
+          {text}
+        </text>
+        {hint ? (
+          <text fg={hintColor ?? theme.textMuted}>{`  ${hint}`}</text>
+        ) : null}
+      </box>
+    );
+
+  /** Compact layout: the label rides on the frame's top border instead. */
+  const frameTitle = (text: string, extra?: string) =>
+    compact ? ` ${text}${extra ? ` ${extra}` : ""} ` : undefined;
+
+  const frame = (
+    id: FieldId,
+    layout: { height?: number; grow?: boolean; title?: string; titleColor?: string; bottomTitle?: string },
+    children: ReactNode,
+  ) => (
     <box
       border
       borderStyle="rounded"
       // The offending field wears the error, not just the message below.
-      borderColor={
-        error?.field === id
-          ? theme.danger
-          : field === id
-            ? theme.accent
-            : theme.border
-      }
+      borderColor={frameColor(id)}
+      title={layout.title}
+      titleColor={layout.titleColor ?? labelColor(id)}
+      bottomTitle={layout.bottomTitle ? ` ${layout.bottomTitle} ` : undefined}
       backgroundColor={
         field === id ? mix(theme.surfaceAlt, theme.accentSoft, 0.5) : theme.surfaceAlt
       }
-      height={height}
+      height={layout.grow ? undefined : layout.height}
+      minHeight={layout.grow ? 3 : undefined}
+      flexGrow={layout.grow ? 1 : undefined}
+      flexShrink={layout.grow ? undefined : 0}
       onMouseDown={() => focus(id)}
     >
       {children}
@@ -272,10 +433,11 @@ export function TaskForm({
     placeholder: string,
     value: string,
     onInput: (v: string) => void,
+    layout: { title?: string; titleColor?: string } = {},
   ) =>
     frame(
       id,
-      3,
+      { height: 3, ...layout },
       <input
         focused={field === id}
         value={value}
@@ -292,26 +454,38 @@ export function TaskForm({
       />,
     );
 
-  const segmented = (
-    id: FieldId,
-    options: { label: string; active: boolean; color: string; onPress: () => void }[],
-  ) => (
+  // Not overflow="hidden": OpenTUI clips the hit grid with the scissor rect
+  // and clicks inside stop landing. Narrow overlays switch to steppers
+  // instead, so the segmented options never outgrow the frame.
+  const controlFrame = (id: FieldId, title: string, children: ReactNode) => (
     <box
       flexDirection="row"
       border
       borderStyle="rounded"
       borderColor={field === id ? theme.accent : theme.border}
+      title={frameTitle(title)}
+      titleColor={labelColor(id)}
       backgroundColor={theme.surfaceAlt}
       height={3}
+      flexShrink={0}
       paddingLeft={1}
       paddingRight={1}
       onMouseDown={() => focus(id)}
     >
-      {options.map((option) => (
+      {children}
+    </box>
+  );
+
+  const segmented = (id: FieldId, title: string, options: Option[]) =>
+    controlFrame(
+      id,
+      title,
+      options.map((option) => (
         <box
           key={option.label}
           paddingLeft={1}
           paddingRight={1}
+          flexShrink={0}
           backgroundColor={option.active ? option.color : undefined}
           onMouseDown={() => {
             focus(id);
@@ -325,33 +499,69 @@ export function TaskForm({
             {option.label}
           </text>
         </box>
-      ))}
-    </box>
-  );
+      )),
+    );
+
+  /** Narrow terminals get the same ←/→ model the keyboard uses, as arrows. */
+  const stepper = (id: FieldId, title: string, options: Option[]) => {
+    const active = options.find((o) => o.active) ?? options[0]!;
+    const arrow = (glyph: string, delta: number) => (
+      <box
+        flexShrink={0}
+        onMouseDown={() => {
+          focus(id);
+          cycleField(id, delta);
+        }}
+      >
+        <text fg={field === id ? theme.accent : theme.textDim}>{glyph}</text>
+      </box>
+    );
+    return controlFrame(
+      id,
+      title,
+      <>
+        {arrow("◂ ", -1)}
+        <box flexShrink={0} backgroundColor={active.color}>
+          <text fg={theme.textOn} attributes={TextAttributes.BOLD}>
+            {active.label}
+          </text>
+        </box>
+        {arrow(" ▸", 1)}
+      </>,
+    );
+  };
+
+  const control = narrow ? stepper : segmented;
 
   return (
     <Overlay
       theme={theme}
       title={title}
-      subtitle="tab move · ←→ choose · ctrl+s save"
-      width={76}
-      height={Math.min(screenHeight - 2, 28)}
+      width={FULL_WIDTH}
+      height={compact ? COMPACT_HEIGHT : FULL_HEIGHT}
       screenWidth={screenWidth}
       screenHeight={screenHeight}
-      footer="tab / shift+tab field · ctrl+s save · esc cancel"
-      onBackdropClick={onCancel}
+      footer="enter (title) / ctrl+s save · tab field · esc cancel"
+      onBackdropClick={() => {
+        if (isPristine()) onCancel();
+      }}
+      onClose={onCancel}
     >
       {label("title", "Title")}
       {/* A textarea so long titles wrap into view instead of scrolling away
           under the cursor; enter still submits. */}
       {frame(
         "title",
-        5,
+        {
+          height: compact ? 3 : 5,
+          title: frameTitle("Title"),
+          bottomTitle: tokenPreview ?? undefined,
+        },
         <textarea
           ref={titleRef}
           focused={field === "title"}
           initialValue={values.title}
-          placeholder="What needs doing?"
+          placeholder="What needs doing?  #tag @tomorrow !3 ~w"
           wrapMode="word"
           onContentChange={handleTitleChange}
           backgroundColor="transparent"
@@ -364,7 +574,7 @@ export function TaskForm({
       {label("description", "Description", "markdown · multiline")}
       {frame(
         "description",
-        6,
+        { grow: true, title: frameTitle("Description") },
         <textarea
           ref={descriptionRef}
           focused={field === "description"}
@@ -383,14 +593,27 @@ export function TaskForm({
         />,
       )}
 
-      <box flexDirection="row">
+      <box flexDirection="row" flexShrink={0}>
         <box flexGrow={1} paddingRight={1} flexDirection="column">
-          {label("due", "Due date", "or today / +3d")}
-          {textInput("due", "YYYY-MM-DD", values.due, (v) =>
-            setValues({ ...values, due: v }),
+          {label(
+            "due",
+            "Due date",
+            due ? due.text : "or today / +3d",
+            due ? (due.valid ? theme.text : theme.danger) : undefined,
           )}
-          <box flexDirection="row">
-            {DATE_SHORTCUTS.map((shortcut) => (
+          {textInput(
+            "due",
+            "YYYY-MM-DD",
+            values.due,
+            (v) => setValues({ ...values, due: v }),
+            {
+              title: frameTitle("Due date", due?.text),
+              titleColor: due && !due.valid ? theme.danger : undefined,
+            },
+          )}
+          {dateChips.length > 0 ? (
+          <box flexDirection="row" flexShrink={0}>
+            {dateChips.map((shortcut) => (
               <ChipButton
                 key={shortcut.label}
                 theme={theme}
@@ -411,16 +634,21 @@ export function TaskForm({
               />
             ))}
           </box>
+          ) : null}
         </box>
 
         <box flexGrow={1} flexDirection="column">
           {label("tags", "Tags", "comma separated")}
-          {textInput("tags", "work, home", values.tags, (v) =>
-            setValues({ ...values, tags: v }),
+          {textInput(
+            "tags",
+            "work, home",
+            values.tags,
+            (v) => setValues({ ...values, tags: v }),
+            { title: frameTitle("Tags") },
           )}
-          {knownTags.length > 0 ? (
-            <box flexDirection="row">
-              {knownTags.slice(0, 4).map((tag) => (
+          {tagChips.length > 0 ? (
+            <box flexDirection="row" flexShrink={0}>
+              {tagChips.map((tag) => (
                 <ChipButton
                   key={tag}
                   theme={theme}
@@ -436,11 +664,12 @@ export function TaskForm({
         </box>
       </box>
 
-      <box flexDirection="row">
+      <box flexDirection="row" flexShrink={0}>
         <box flexDirection="column" flexGrow={1} paddingRight={1}>
           {label("priority", "Priority")}
-          {segmented(
+          {control(
             "priority",
+            "Priority",
             PRIORITIES.map((p) => ({
               label: priorityString(p),
               active: values.priority === p,
@@ -452,8 +681,9 @@ export function TaskForm({
 
         <box flexDirection="column" flexGrow={1}>
           {label("recur", "Repeats")}
-          {segmented(
+          {control(
             "recur",
+            "Repeats",
             RECURRENCES.map((r) => ({
               label: RECUR_LABELS[r] ?? recurFreqString(r),
               active: values.recur === r,
@@ -465,17 +695,19 @@ export function TaskForm({
       </box>
 
       {error ? (
-        <box paddingTop={1}>
+        <box height={compact ? 1 : 2} paddingTop={compact ? 0 : 1} flexShrink={0}>
           <text fg={theme.danger} attributes={TextAttributes.BOLD}>
             {`⚠ ${error.message}`}
           </text>
         </box>
       ) : null}
 
-      <box flexDirection="row" paddingTop={1}>
-        <Button theme={theme} label="Save" primary onPress={submit} />
-        <Button theme={theme} label="Cancel" onPress={onCancel} />
-      </box>
+      {compact ? null : (
+        <box flexDirection="row" paddingTop={1} flexShrink={0}>
+          <Button theme={theme} label="Save" primary onPress={submit} />
+          <Button theme={theme} label="Cancel" onPress={onCancel} />
+        </box>
+      )}
     </Overlay>
   );
 }

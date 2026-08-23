@@ -108,7 +108,8 @@ const LIGHT: TuiTheme = {
   danger: "#be123c",
   info: "#1d4ed8",
 
-  selectionBg: "#dde7f5",
+  // 1.27:1 on bg and 1.16 against hover; #dde7f5 measured 1.18 and 1.07.
+  selectionBg: "#d3dff2",
   hoverBg: "#eaeef7",
   scrim: "#c9cfdd",
   track: "#dde2ec",
@@ -159,10 +160,12 @@ export function meter(ratio: number, width: number): { full: string; partial: st
   const clamped = Math.min(Math.max(ratio, 0), 1);
   const exact = clamped * width;
   const full = Math.floor(exact);
-  const remainder = Math.round((exact - full) * 8);
+  // A fraction above 15/16 rounds to a whole block, which is past the end of
+  // the table; the clamp keeps the lookup inside it.
+  const remainder = Math.min(Math.round((exact - full) * 8), EIGHTHS.length - 1);
   return {
     full: "█".repeat(full),
-    partial: remainder > 0 ? EIGHTHS[remainder]! : "",
+    partial: remainder > 0 ? (EIGHTHS[remainder] ?? "") : "",
     rest: Math.max(width - full - (remainder > 0 ? 1 : 0), 0),
   };
 }

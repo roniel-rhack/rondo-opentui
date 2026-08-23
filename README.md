@@ -67,35 +67,95 @@ RONDO_HOME=/tmp/rondo-demo bun run start
 
 ## TUI
 
-Everything is reachable with both keyboard and mouse.
+Everything is reachable with both keyboard and mouse; `?` opens the same
+key map in-app.
+
+**Global**
 
 | Key | Action |
 |-----|--------|
-| `j` / `k`, `↑` / `↓` | Move selection |
-| `h` / `l`, `1` / `2` | Switch panel |
-| `tab` / `shift+tab` | Switch view (All / Active / Done / Journal) |
-| `a` / `e` / `d` | Add / edit / delete |
-| `space`, `s` | Cycle task status (or toggle a subtask) |
-| `t` / `n` / `L` | Add subtask / note / time log |
-| `/` | Live filter (fuzzy) |
-| `#` | Tag filter bar |
-| `o` | Cycle sort order |
-| `f` | Start / stop the pomodoro timer |
-| `u` | Undo the last delete |
-| `S` / `?` | Statistics / help |
-| `T` | Toggle light / dark |
-| `ctrl+k` | Command palette |
+| `?` | This help |
+| `ctrl+k` | Command palette (tasks and actions, fuzzy) |
+| `1` `2` `3` `4` | Active / Done / All / Journal |
+| `u` | Undo (status, edit, delete — everything is undoable) |
+| `R` | Reload from disk (also polled automatically) |
+| `T` | Light / dark theme |
 | `P` | Focus (pomodoro) settings |
-| `<` / `>`, drag | Resize the panels |
-| `F1` / `F2` / `F3` | Sort by created / due / priority |
-| `q`, `ctrl+c` | Quit |
+| `S` | Statistics |
+| `f` | Start / stop focus |
+| `z` | Density (auto / dense / comfortable) |
+| `<` `>`, drag | Resize panels |
+| `q`, `ctrl+c` | Quit (asks while focus runs) |
+
+**Navigation**
+
+| Key | Action |
+|-----|--------|
+| `j` `k` `↑` `↓` | Move selection |
+| `g` `G`, `Home` `End` | First / last |
+| `PgUp` `PgDn`, `ctrl+u` `ctrl+d` | Page up / down |
+| `h` `l` `←` `→` | Switch panel |
+| `enter` | Open detail / edit the row under the cursor |
+| `esc` | Back out one step: marks, detail, query + tag, view |
+
+**Tasks**
+
+| Key | Action |
+|-----|--------|
+| `a` / `e` | Add / edit (quick-add tokens work in the title, see below) |
+| `space` | Mark done / reopen |
+| `s` | Start / stop |
+| `d` | Delete — undo with `u` (confirms only if it blocks another task) |
+| `+` `-` | Priority up / down |
+| `@` | Due date (`t` `m` `w` `n` chips, or a typed date) |
+| `#` | Tag picker |
+| `t` `n` `L` | Add subtask / note / time log |
+| `b` `B` | Block on… / remove blocker… |
+| `m` | Mark for a bulk action, then `space`/`+`/`-`/`@`/`d` apply to all |
+| `o`, `F1` `F2` `F3` | Cycle sort / by created / due / priority |
+| `v` | Cycle view: all → today → overdue → week → blocked |
+| `/` | Filter: free text, `#tag`, `!high`, `due:today`, `is:blocked` |
+
+**Detail panel**
+
+| Key | Action |
+|-----|--------|
+| `space` | Toggle subtask |
+| `enter`, `e` | Edit the subtask, note or log under the cursor |
+| `d` | Delete row |
+| `t` `n` `L` | Add subtask / note / log |
+| `h`, `esc` | Back to list |
+
+**Journal**
+
+| Key | Action |
+|-----|--------|
+| `a` | Add entry to today |
+| `A` | Add entry to the selected day |
+| `e` / `d` | Edit / delete the selected entry |
+| `x` / `H` | Hide a note / show hidden notes |
+| `/` | Search entries |
+
+Quick-add tokens work in the title field of `a`/`e` — `#tag` (repeatable),
+`@today` / `@tomorrow` / `@+3d` / `@2026-09-01`, `!low` / `!med` / `!high` /
+`!urgent`, `~d` / `~w` / `~m` / `~y` for recurrence — stripped from the
+stored title and previewed live as you type.
 
 Inside dialogs: `tab` / `shift+tab` move between fields, `←` / `→` pick a
-segmented option, `ctrl+s` saves (multiline fields keep `enter` for new lines),
-`esc` cancels.
+segmented option, `ctrl+s` saves (multiline fields keep `enter` for new
+lines), `esc` cancels.
 
-Mouse: click tabs and rows, click a status glyph or subtask to toggle it, drag
-the divider to resize the panels, scroll with the wheel.
+Mouse: click tabs, rows, tags and status glyphs, drag the divider to resize
+the panels, scroll with the wheel.
+
+### Session and live data
+
+The TUI remembers the tab, sort order, tag filter, view and selected row
+across restarts in `~/.todo-app/tui-state.json` — a TS-only file kept
+separate from `config.json` so the Go build never sees or drops it. It also
+polls the database for changes made from another terminal — the CLI, the
+agent skill, or a second `rondo-opentui` — and reloads with a toast when
+something else committed; `R` reloads on demand.
 
 ### Design
 
@@ -131,9 +191,13 @@ the divider to resize the panels, scroll with the wheel.
 | No mouse | Click, hover, drag-to-resize, wheel scroll |
 | Filtering through the list widget | Live fuzzy filter with match count |
 | Static rendering | Eased meters, fading overlays, draining toast timer |
-| — | Command palette (`ctrl+k`) over every action |
+| — | Command palette (`ctrl+k`) over every action, tasks included |
 | — | Responsive single-column layout on narrow terminals |
 | — | Runtime light/dark switch |
+| One-shot status cycling, deletes need a confirm | Every edit and delete is one key, undoable with `u` |
+| Sort only | Views (today / overdue / week / blocked), tag picker, marks for bulk edits |
+| Nothing survives a restart | Tab, sort, tag, view and selection restored from `tui-state.json` |
+| Reads the database once | Polls for changes made by the CLI or another session and reloads |
 
 ## CLI
 

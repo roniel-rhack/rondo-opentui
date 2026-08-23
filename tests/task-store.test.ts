@@ -240,4 +240,71 @@ describe("restore", () => {
     expect(got.subtasks.length).toBe(1);
     expect(got.subtasks[0]!.completed).toBe(true);
   });
+
+  test("keeps the original id and brings back notes, logs and dependencies", () => {
+    const store = newTestStore();
+    const blocker = createTestTask(store, "blocker");
+    const task = createTestTask(store, "restore me");
+    const blocked = createTestTask(store, "blocked");
+    store.addNote(task.id, "a note");
+    store.addTimeLog(task.id, 90_000_000_000, "logged");
+    store.setBlocker(task.id, blocker.id);
+    store.setBlocker(blocked.id, task.id);
+    const snapshot = store.getById(task.id)!;
+    store.delete(task.id);
+    expect(store.getById(blocked.id)!.blockedByIds).toEqual([]);
+
+    store.restore(snapshot);
+
+    const got = store.getById(task.id)!;
+    expect(got.id).toBe(task.id);
+    expect(got.notes.map((n) => n.body)).toEqual(["a note"]);
+    expect(got.notes[0]!.createdAt.equal(snapshot.notes[0]!.createdAt)).toBe(true);
+    expect(got.timeLogs.map((l) => [l.duration, l.note])).toEqual([
+      [90_000_000_000, "logged"],
+    ]);
+    expect(got.timeLogs[0]!.loggedAt.equal(snapshot.timeLogs[0]!.loggedAt)).toBe(true);
+    expect(got.blockedByIds).toEqual([blocker.id]);
+    expect(got.blocksIds).toEqual([blocked.id]);
+    expect(store.getById(blocked.id)!.blockedByIds).toEqual([task.id]);
+  });
+
+  test("skips dependencies whose other task is gone", () => {
+    const store = newTestStore();
+    const blocker = createTestTask(store, "blocker");
+    const task = createTestTask(store, "restore me");
+    const blocked = createTestTask(store, "blocked");
+    store.setBlocker(task.id, blocker.id);
+    store.setBlocker(blocked.id, task.id);
+    const snapshot = store.getById(task.id)!;
+    store.delete(task.id);
+    store.delete(blocker.id);
+    store.delete(blocked.id);
+
+    store.restore(snapshot);
+
+    const got = store.getById(task.id)!;
+    expect(got.blockedByIds).toEqual([]);
+    expect(got.blocksIds).toEqual([]);
+  });
+});
+
+describe("time logs", () => {
+  test("deleteTimeLog removes one log and restoreTimeLog brings it back", () => {
+    const store = newTestStore();
+    const task = createTestTask(store, "t");
+    store.addTimeLog(task.id, 60_000_000_000, "first");
+    store.addTimeLog(task.id, 120_000_000_000, "second");
+    const [first] = store.listTimeLogs(task.id).filter((l) => l.note === "first");
+
+    store.deleteTimeLog(first!.id);
+    expect(store.listTimeLogs(task.id).map((l) => l.note)).toEqual(["second"]);
+
+    store.restoreTimeLog(task.id, first!.duration, first!.note, first!.loggedAt);
+    const logs = store.listTimeLogs(task.id);
+    expect(logs.map((l) => l.note).sort()).toEqual(["first", "second"]);
+    const back = logs.find((l) => l.note === "first")!;
+    expect(back.duration).toBe(60_000_000_000);
+    expect(back.loggedAt.equal(first!.loggedAt)).toBe(true);
+  });
 });

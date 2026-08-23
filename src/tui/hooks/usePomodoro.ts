@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Config } from "../../core/config/config.ts";
 import { Minute } from "../../core/duration.ts";
 import {
   SessionKind,
-  formatTimer,
   sessionKindLabel,
   type Session,
 } from "../../core/focus/focus.ts";
+import { formatDuration } from "../../core/task/timelog.ts";
 import { GoTime } from "../../core/time.ts";
 import type { RondoData } from "../data.ts";
 
@@ -14,11 +14,13 @@ export interface PomodoroState {
   running: boolean;
   kind: SessionKind;
   cyclePos: number;
-  remainingMs: number;
-  /** 0 → just started, 1 → finished. Drives the header meter. */
-  progress: number;
+  /** Wall-clock end of the running session (ms since epoch), null when idle. */
+  endAt: number | null;
+  /** Length of the running session, or of the one `f` would start. */
+  durationMs: number;
   label: string;
-  timer: string | null;
+  /** What `f` starts next, e.g. "Focus 25m" or "Break 5m". */
+  nextLabel: string;
   /** Task the running session is attached to, or null when idle. */
   taskId: number | null;
   start: (taskId: number) => void;
@@ -40,18 +42,21 @@ function durationFor(cfg: Config, kind: SessionKind): number {
 /**
  * Pomodoro cycle: work → short break → … → long break every N work sessions.
  * Completed sessions are persisted so streaks and stats stay accurate.
+ *
+ * The hook holds no per-second state: the remaining time is derived from
+ * `endAt` by whichever leaf displays it, and completion is a single timeout.
+ * That keeps a running session from re-rendering the whole app every second.
  */
 export function usePomodoro(
   data: RondoData,
   cfg: Config,
-  onFinish: (kind: SessionKind) => void,
+  onFinish: (kind: SessionKind, taskId: number) => void,
 ): PomodoroState {
   const [session, setSession] = useState<Session | null>(null);
   const [kind, setKind] = useState<SessionKind>(SessionKind.Work);
   const [cyclePos, setCyclePos] = useState(1);
-  const [remainingMs, setRemainingMs] = useState(0);
-  // Wall-clock end of the running session. Remaining time is always derived
-  // from it, so a busy event loop cannot make the timer drift.
+  // Wall-clock end of the running session, so a busy event loop cannot make
+  // the timer drift.
   const [endAt, setEndAt] = useState<number | null>(null);
   const finishRef = useRef(onFinish);
   finishRef.current = onFinish;
@@ -71,7 +76,6 @@ export function usePomodoro(
       data.focus.create(created);
       setSession(created);
       setKind(nextKind);
-      setRemainingMs(duration / 1e6);
       setEndAt(Date.now() + duration / 1e6);
     },
     [cfg, cyclePos, data],
@@ -82,19 +86,16 @@ export function usePomodoro(
     if (session) data.focus.delete(session.id);
     setSession(null);
     setEndAt(null);
-    setRemainingMs(0);
+    // Stopping also drops a queued break: the next `f` is a fresh focus
+    // session, not whatever the last cycle left behind.
+    setKind(SessionKind.Work);
   }, [data, session]);
 
   useEffect(() => {
     if (!session || endAt === null) return;
-    const id = setInterval(() => {
-      const remaining = Math.max(endAt - Date.now(), 0);
-      setRemainingMs(remaining);
-      if (remaining > 0) return;
-
-      clearInterval(id);
+    const id = setTimeout(() => {
       data.focus.complete(session.id);
-      finishRef.current(session.kind);
+      finishRef.current(session.kind, session.taskId);
 
       // Advance the cycle: work → break → work…
       if (session.kind === SessionKind.Work) {
@@ -115,8 +116,8 @@ export function usePomodoro(
         setEndAt(null);
         setKind(SessionKind.Work);
       }
-    }, 1000);
-    return () => clearInterval(id);
+    }, Math.max(endAt - Date.now(), 0));
+    return () => clearTimeout(id);
   }, [session, endAt, cfg, cyclePos, data, start]);
 
   const toggle = useCallback(
@@ -127,19 +128,40 @@ export function usePomodoro(
     [session, kind, start, stop],
   );
 
-  const totalMs = (session?.duration ?? durationFor(cfg, kind)) / 1e6;
+  const startCurrent = useCallback(
+    (taskId: number) => start(taskId, kind),
+    [start, kind],
+  );
 
-  return {
-    running: session !== null,
-    kind,
-    cyclePos,
-    remainingMs,
-    progress: totalMs > 0 ? 1 - remainingMs / totalMs : 0,
-    label: sessionKindLabel(kind),
-    timer: session ? formatTimer(remainingMs * 1e6) : null,
-    taskId: session ? session.taskId : null,
-    start: (taskId: number) => start(taskId, kind),
-    stop,
-    toggle,
-  };
+  const durationMs = (session?.duration ?? durationFor(cfg, kind)) / 1e6;
+  const taskId = session ? session.taskId : null;
+  const nextLabel = `${sessionKindLabel(kind)} ${formatDuration(durationFor(cfg, kind))}`;
+
+  return useMemo(
+    () => ({
+      running: session !== null,
+      kind,
+      cyclePos,
+      endAt,
+      durationMs,
+      label: sessionKindLabel(kind),
+      nextLabel,
+      taskId,
+      start: startCurrent,
+      stop,
+      toggle,
+    }),
+    [
+      session,
+      kind,
+      cyclePos,
+      endAt,
+      durationMs,
+      nextLabel,
+      taskId,
+      startCurrent,
+      stop,
+      toggle,
+    ],
+  );
 }

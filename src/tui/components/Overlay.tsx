@@ -15,7 +15,43 @@ interface OverlayProps {
   accent?: string;
   footer?: string;
   onBackdropClick?: () => void;
+  /** Handler for the ✕ button; defaults to `onBackdropClick`. Data-entry
+   * overlays keep ✕ working while the backdrop stops closing them. */
+  onClose?: () => void;
   children?: ReactNode;
+}
+
+/** Status bar rows an auto-height overlay must never paint over. */
+const STATUS_BAR_ROWS = 2;
+
+/** Row where an auto-height overlay starts. */
+export function overlayTop(screenHeight: number): number {
+  return Math.max(Math.floor(screenHeight / 8), 1);
+}
+
+/** Height a fixed-height overlay actually gets. The status bar and the row
+ * above it stay clear, so the hint row, its hairline and the panel border
+ * below the overlay are never painted over. */
+export function fixedOverlayHeight(
+  screenHeight: number,
+  height: number,
+): number {
+  return Math.min(height, Math.max(screenHeight - STATUS_BAR_ROWS - 1, 6));
+}
+
+/** Rows the body of a fixed-height overlay can use: the box without its
+ * border, title row and footer. */
+export function fixedOverlayBodyRows(
+  screenHeight: number,
+  height: number,
+): number {
+  return fixedOverlayHeight(screenHeight, height) - 4;
+}
+
+/** Rows available to the body of an auto-height overlay (border, title and
+ * footer already taken out), so list dialogs can size their window. */
+export function overlayBodyRows(screenHeight: number): number {
+  return screenHeight - overlayTop(screenHeight) - STATUS_BAR_ROWS - 4;
 }
 
 /**
@@ -34,6 +70,7 @@ export function Overlay({
   accent,
   footer,
   onBackdropClick,
+  onClose = onBackdropClick,
   children,
 }: OverlayProps) {
   const entrance = useEntrance();
@@ -42,11 +79,18 @@ export function Overlay({
   const boxWidth = Math.min(width, Math.max(screenWidth - 4, 20));
   const left = Math.max(Math.floor((screenWidth - boxWidth) / 2), 0);
   const boxHeight = height
-    ? Math.min(height, Math.max(screenHeight - 2, 6))
+    ? fixedOverlayHeight(screenHeight, height)
     : undefined;
+  // Centered inside the rows the status bar leaves, so a tall overlay stops
+  // above it instead of centering across it.
   const top = boxHeight
-    ? Math.max(Math.floor((screenHeight - boxHeight) / 2), 0)
-    : Math.max(Math.floor(screenHeight / 8), 1);
+    ? Math.max(Math.floor((screenHeight - STATUS_BAR_ROWS - boxHeight) / 2), 0)
+    : overlayTop(screenHeight);
+  // Auto-height overlays grow with their content; the clamp keeps a long one
+  // from running past the status bar instead of painting over it.
+  const maxHeight = boxHeight
+    ? undefined
+    : Math.max(screenHeight - top - STATUS_BAR_ROWS, 4);
 
   return (
     <>
@@ -70,6 +114,8 @@ export function Overlay({
         top={top}
         width={boxWidth}
         height={boxHeight}
+        maxHeight={maxHeight}
+        overflow="hidden"
         zIndex={101}
         border
         borderStyle="rounded"
@@ -95,7 +141,7 @@ export function Overlay({
           ) : (
             <box flexGrow={1} />
           )}
-          <box onMouseDown={onBackdropClick} paddingLeft={1}>
+          <box onMouseDown={onClose} paddingLeft={1}>
             <text fg={theme.textMuted}>✕</text>
           </box>
         </box>
@@ -116,7 +162,7 @@ export function Overlay({
             paddingRight={2}
             backgroundColor={theme.surfaceAlt}
           >
-            <text fg={theme.textMuted} truncate>
+            <text fg={theme.textMuted} wrapMode="none" truncate>
               {footer}
             </text>
           </box>

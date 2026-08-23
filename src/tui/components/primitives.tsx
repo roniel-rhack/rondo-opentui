@@ -1,13 +1,14 @@
 import { TextAttributes } from "@opentui/core";
 import { useState, type ReactNode } from "react";
 import { meter, mix, type TuiTheme } from "../theme.ts";
-import { useTween } from "../hooks/useTween.ts";
+import { useEntrance, useTween } from "../hooks/useTween.ts";
 
 interface ChipProps {
   theme: TuiTheme;
   label: string;
   color?: string;
-  /** Filled chips use `color` as background, outlined ones as foreground. */
+  /** Filled chips use `color` as background; outlined ones sit on a raised
+   * surface with `color` as text, like a keycap. */
   filled?: boolean;
   bold?: boolean;
   onPress?: () => void;
@@ -26,7 +27,7 @@ export function Chip({
   return (
     <box
       flexDirection="row"
-      backgroundColor={filled ? tone : undefined}
+      backgroundColor={filled ? tone : theme.surfaceAlt}
       paddingLeft={1}
       paddingRight={1}
       onMouseDown={onPress}
@@ -51,7 +52,10 @@ interface ChipButtonProps {
 export function ChipButton({ theme, label, onPress }: ChipButtonProps) {
   const [hover, setHover] = useState(false);
   return (
+    // Fixed width and no wrapping: a row of chips wider than its column would
+    // otherwise break a label across two lines and steal a row from the form.
     <box
+      flexShrink={0}
       paddingLeft={1}
       paddingRight={1}
       marginRight={1}
@@ -62,7 +66,9 @@ export function ChipButton({ theme, label, onPress }: ChipButtonProps) {
       onMouseOut={() => setHover(false)}
       onMouseDown={onPress}
     >
-      <text fg={theme.accent}>{label}</text>
+      <text fg={theme.accent} wrapMode="none">
+        {label}
+      </text>
     </box>
   );
 }
@@ -107,10 +113,22 @@ export function Meter({
   );
 }
 
+interface AnimatedMeterProps extends MeterProps {
+  /** Fill from empty on mount, for meters that appear with an overlay. */
+  animateIn?: boolean;
+  /** When this changes the meter snaps instead of easing from the old value. */
+  resetKey?: unknown;
+}
+
 /** Meter that eases towards its target, so progress changes read as motion. */
-export function AnimatedMeter(props: MeterProps) {
-  const ratio = useTween(props.ratio, 260);
-  return <Meter {...props} ratio={ratio} />;
+export function AnimatedMeter({
+  animateIn = false,
+  resetKey,
+  ...props
+}: AnimatedMeterProps) {
+  const ratio = useTween(props.ratio, 260, resetKey);
+  const entrance = useEntrance(animateIn ? 260 : 0);
+  return <Meter {...props} ratio={ratio * entrance} />;
 }
 
 interface SectionProps {
@@ -151,14 +169,31 @@ interface KeyHintProps {
 
 /** Keycap + action pair shown in the status bar and overlay footers. */
 export function KeyHint({ theme, keyLabel, action, onPress }: KeyHintProps) {
+  const [hover, setHover] = useState(false);
+  const lit = hover && onPress !== undefined;
   return (
-    <box flexDirection="row" paddingRight={1} onMouseDown={onPress}>
-      <box backgroundColor={theme.surfaceAlt} paddingLeft={1} paddingRight={1}>
+    <box
+      flexDirection="row"
+      flexShrink={0}
+      paddingRight={1}
+      onMouseOver={() => setHover(true)}
+      onMouseOut={() => setHover(false)}
+      onMouseDown={onPress}
+    >
+      <box
+        backgroundColor={
+          lit ? mix(theme.surfaceAlt, theme.accentSoft, 0.5) : theme.surfaceAlt
+        }
+        paddingLeft={1}
+        paddingRight={1}
+      >
         <text fg={theme.accent} attributes={TextAttributes.BOLD}>
           {keyLabel}
         </text>
       </box>
-      <text fg={theme.textMuted}>{` ${action}`}</text>
+      {action !== "" ? (
+        <text fg={lit ? theme.text : theme.textMuted}>{` ${action}`}</text>
+      ) : null}
     </box>
   );
 }
