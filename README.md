@@ -1,11 +1,16 @@
 # RonDO · OpenTUI + React
 
+[![CI](https://github.com/roniel-rhack/rondo-opentui/actions/workflows/ci.yml/badge.svg)](https://github.com/roniel-rhack/rondo-opentui/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/roniel-rhack/rondo-opentui)](https://github.com/roniel-rhack/rondo-opentui/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Terminal productivity app — tasks, journal and pomodoro — rebuilt on
 [OpenTUI](https://github.com/anomalyco/opentui) + React + Bun, ported from the
-original Go/Bubbletea implementation.
+original Go/Bubbletea [rondo](https://github.com/roniel-rhack/rondo).
 
 Same data, same CLI, new interface: real mouse support, layered overlays,
-flexbox layout, a command palette and live filtering.
+flexbox layout, a command palette, live filtering and an installable skill so
+AI coding agents can drive it too.
 
 <p align="center">
   <img src="assets/demo.gif" width="820" alt="RonDO demo: filtering, the task form, the command palette and the journal">
@@ -20,7 +25,6 @@ flexbox layout, a command palette and live filtering.
   <img src="assets/journal.png" width="820" alt="Journal view">
 </p>
 <p align="center"><em>One note per day, timestamped entries, smart date labels</em></p>
-
 
 ## Install
 
@@ -43,32 +47,42 @@ it if you prefer the short name:
 alias rondo=rondo-opentui
 ```
 
-## Develop
-
-Requires [Bun](https://bun.sh) ≥ 1.4.
+## Quick start
 
 ```bash
-bun install
-
-bun run start          # launch the TUI
-bun run dev            # TUI with hot reload
-bun run start list     # any argument dispatches to the CLI instead
-bun run test           # 301 tests
-bun run typecheck      # tsc --noEmit
-bun run build          # single binary at dist/rondo-opentui
+rondo-opentui                                  # the TUI
+rondo-opentui add "Write the report" --due +3d --priority high --tags work
+rondo-opentui list                             # any argument runs the CLI instead
+rondo-opentui skill install                    # let Claude Code manage your tasks
 ```
 
-Data lives in `~/.todo-app/todo.db` (shared with the Go build). Set
-`RONDO_HOME` to use a different directory — useful for throwaway profiles:
+Data lives in `~/.todo-app/todo.db`. Set `RONDO_HOME` to use another
+directory — handy for a throwaway profile:
 
 ```bash
-RONDO_HOME=/tmp/rondo-demo bun run start
+RONDO_HOME=$(mktemp -d) rondo-opentui
 ```
 
 ## TUI
 
-Everything is reachable with both keyboard and mouse; `?` opens the same
-key map in-app.
+Everything is reachable with both keyboard and mouse; `?` opens the full key
+map in-app. The keys you will use most:
+
+| Key | Action |
+|-----|--------|
+| `a` / `e` | Add / edit a task (quick-add tokens work in the title, see below) |
+| `space` | Mark done / reopen |
+| `+` `-` `@` `#` | Priority up / down, due date, tag picker |
+| `d` then `u` | Delete, undo — every edit is undoable |
+| `/` | Filter: free text, `#tag`, `!high`, `due:today`, `is:blocked` |
+| `v` | Cycle view: all → today → overdue → week → blocked |
+| `ctrl+k` | Command palette over every action and task |
+| `1` `2` `3` `4` | Active / Done / All / Journal |
+| `f` | Start / stop a focus session |
+| `?` | Help |
+
+<details>
+<summary><strong>Full key map</strong></summary>
 
 **Global**
 
@@ -77,6 +91,7 @@ key map in-app.
 | `?` | This help |
 | `ctrl+k` | Command palette (tasks and actions, fuzzy) |
 | `1` `2` `3` `4` | Active / Done / All / Journal |
+| `tab` `shift+tab` | Next / previous tab |
 | `u` | Undo (status, edit, delete — everything is undoable) |
 | `R` | Reload from disk (also polled automatically) |
 | `T` | Light / dark theme |
@@ -85,6 +100,7 @@ key map in-app.
 | `f` | Start / stop focus |
 | `z` | Density (auto / dense / comfortable) |
 | `<` `>`, drag | Resize panels |
+| `y` / `n` | Confirm / cancel a dialog |
 | `q`, `ctrl+c` | Quit (asks while focus runs) |
 
 **Navigation**
@@ -102,13 +118,14 @@ key map in-app.
 
 | Key | Action |
 |-----|--------|
-| `a` / `e` | Add / edit (quick-add tokens work in the title, see below) |
+| `a` / `e` | Add / edit |
 | `space` | Mark done / reopen |
 | `s` | Start / stop |
 | `d` | Delete — undo with `u` (confirms only if it blocks another task) |
 | `+` `-` | Priority up / down |
 | `@` | Due date (`t` `m` `w` `n` chips, or a typed date) |
 | `#` | Tag picker |
+| `[` `]` | Previous / next tag |
 | `t` `n` `L` | Add subtask / note / time log |
 | `b` `B` | Block on… / remove blocker… |
 | `m` | Mark for a bulk action, then `space`/`+`/`-`/`@`/`d` apply to all |
@@ -136,10 +153,12 @@ key map in-app.
 | `x` / `H` | Hide a note / show hidden notes |
 | `/` | Search entries |
 
+</details>
+
 Quick-add tokens work in the title field of `a`/`e` — `#tag` (repeatable),
-`@today` / `@tomorrow` / `@+3d` / `@2026-09-01`, `!low` / `!med` / `!high` /
-`!urgent`, `~d` / `~w` / `~m` / `~y` for recurrence — stripped from the
-stored title and previewed live as you type.
+`@today` / `@tomorrow` / `@+3d` / `@+1w` / `@2026-09-01`, `!low` / `!med` /
+`!high` / `!urgent` (or `!1`–`!4`), `~d` / `~w` / `~m` / `~y` for recurrence —
+stripped from the stored title and previewed live as you type.
 
 Inside dialogs: `tab` / `shift+tab` move between fields, `←` / `→` pick a
 segmented option, `ctrl+s` saves (multiline fields keep `enter` for new
@@ -150,12 +169,21 @@ the panels, scroll with the wheel.
 
 ### Session and live data
 
-The TUI remembers the tab, sort order, tag filter, view and selected row
-across restarts in `~/.todo-app/tui-state.json` — a TS-only file kept
-separate from `config.json` so the Go build never sees or drops it. It also
-polls the database for changes made from another terminal — the CLI, the
-agent skill, or a second `rondo-opentui` — and reloads with a toast when
+The TUI remembers the tab, sort order, tag filter, view, selected row and
+density across restarts in `~/.todo-app/tui-state.json`. It also polls the
+database for changes made from another terminal — the CLI, an agent running
+the skill, or a second `rondo-opentui` — and reloads with a toast when
 something else committed; `R` reloads on demand.
+
+### Running next to the Go build
+
+Both builds share `~/.todo-app/todo.db` and `config.json`, and can run at the
+same time. Two TS-only pieces survive that:
+
+- `config set theme dark|light|auto` stores a `theme` key the Go build ignores
+  and drops when it rewrites `config.json` — harmless, just re-set it.
+- The TUI session lives in its own `tui-state.json`, which the Go build never
+  reads or touches.
 
 ### Design
 
@@ -201,16 +229,21 @@ something else committed; `R` reloads on demand.
 
 ## CLI
 
-The CLI is a faithful port — same commands, flags, exit codes and JSON shapes.
+A faithful port — same commands, flags, exit codes and JSON shapes as the Go
+build — plus a few additions: `block` / `unblock`, `version`, `skill`,
+`config set theme`, relative due dates and JSON output on mutations.
 
 ```bash
 rondo-opentui add "Write the report" --priority high --due 2026-03-15 --tags work
+rondo-opentui add "Call back" --due tomorrow          # today, yesterday, +Nd, +Nw
 rondo-opentui list --status active --sort priority --json
 rondo-opentui show 1
 rondo-opentui edit 1 --title "New title" --clear-due
 rondo-opentui done 1 2
 rondo-opentui delete 3 --force --cascade
 rondo-opentui status 1 active
+rondo-opentui block 2 1                               # 2 waits for 1
+rondo-opentui unblock 2 1
 
 rondo-opentui subtask add 1 "Collect numbers"
 rondo-opentui note add 1 "Talked to design"
@@ -225,38 +258,73 @@ rondo-opentui focus start --duration 25m
 rondo-opentui stats --json
 rondo-opentui export --format md --journal --output report.md
 rondo-opentui config set date_format european
+rondo-opentui config set theme light                  # dark, light or auto
 echo '{"cmd":"add","args":["From batch"]}' | rondo-opentui batch
 rondo-opentui completion zsh
-rondo-opentui skill install
+rondo-opentui version
 ```
 
-Global flags: `--json`, `--format table|json`, `--quiet`/`-q`, `--no-color`.
-Color is disabled automatically when stdout is not a terminal.
+Global flags: `--json`, `--format table|json|plain`, `--quiet`/`-q`,
+`--no-color`. Color is disabled automatically when stdout is not a terminal.
+Exit codes: `0` ok, `1` error, `3` not found.
 
-## Layout
+## AI agents
 
-```
-src/
-  core/           # Domain + persistence, no UI dependencies
-    time.ts       # Go-compatible time layouts, AddDate, RFC3339
-    duration.ts   # Nanosecond durations, Go duration parsing
-    task/         # Model, recurrence, time logs, dependencies, SQLite store
-    journal/      # Notes and entries
-    focus/        # Pomodoro sessions, streaks
-    config/       # ~/.todo-app/config.json, format presets
-    database/     # Connection + daily VACUUM INTO backups
-    export/       # Markdown and JSON exporters
-    ui/           # Palette, markdown renderer, sparklines, due dates
-  cli/            # Cobra-style command tree, printer, commands
-  tui/            # OpenTUI + React interface
-    app.tsx       # State, keyboard routing, layout
-    state.ts      # Pure selectors: filtering, sorting, fuzzy matching
-    data.ts       # Store facade used by the UI
-    components/   # Header, lists, detail, overlays, forms, dialogs
-tests/            # bun:test — core, CLI and live TUI rendering
+The CLI is built to be driven by an agent, and it ships the skill that teaches
+one how:
+
+```bash
+rondo-opentui skill install                   # Claude Code: ~/.claude/skills/rondo-opentui/
+rondo-opentui skill install --provider codex  # OpenAI Codex: ~/.agents/skills/
+rondo-opentui skill install --project         # into ./.claude/skills/ of the current repo
+rondo-opentui skill status                    # where it is installed, and whether it is current
 ```
 
-## Demo
+What makes it agent-safe:
+
+- `--json` on every command: reads return data, mutations return the affected
+  object, so `add --json` hands back the new id.
+- Destructive commands never prompt when stdin is not a TTY — they fail and
+  ask for `--force` instead of hanging.
+- `done` is idempotent, so a retried call never spawns a recurring task twice.
+- `batch` takes one JSON command per line on stdin for bulk work.
+- `RONDO_HOME` sandboxes everything to a throwaway directory.
+
+The reasoning behind the CLI surface is in [`docs/cli-review.md`](docs/cli-review.md).
+
+## Develop
+
+Requires [Bun](https://bun.sh) ≥ 1.4.
+
+```bash
+bun install
+
+bun run start          # launch the TUI
+bun run dev            # TUI with hot reload
+bun run start list     # any argument dispatches to the CLI instead
+bun test               # core, CLI and live TUI rendering (~1 min)
+bun run typecheck      # tsc --noEmit
+bun run build          # single binary at dist/rondo-opentui
+```
+
+Never point a dev build at your real database:
+
+```bash
+RONDO_HOME=$(mktemp -d) bun run start
+```
+
+`src/core/` is the domain and persistence layer (no UI imports), `src/cli/`
+the Cobra-style command tree, `src/tui/` the OpenTUI + React interface;
+[`CLAUDE.md`](CLAUDE.md) has the full layout, the compatibility rules shared
+with the Go build and the OpenTUI gotchas worth knowing before touching the
+TUI. The design history lives in [`docs/`](docs/): three TUI review passes and
+one CLI review, each opening with its resolution status and the deviations
+taken from the original fix notes.
+
+Tests run against in-memory SQLite; the TUI ones render through OpenTUI's test
+renderer with simulated keyboard and mouse input and assert on the frame text.
+
+### Demo
 
 The recording is generated with [VHS](https://github.com/charmbracelet/vhs) from
 a seeded throwaway profile, so it never touches your own database:
@@ -269,7 +337,7 @@ PATH="$PWD/dist:$PATH" vhs assets/demo.tape
 `scripts/demo-seed.sh` fills `$RONDO_HOME` with sample tasks, subtasks, notes,
 time logs and journal entries, with due dates relative to today.
 
-## Releases
+### Releases
 
 Tagging `vX.Y.Z` builds standalone binaries for macOS (arm64/x64) and Linux
 (arm64/x64) on native runners, publishes them with `checksums-sha256.txt`, and
@@ -277,7 +345,7 @@ asks [roniel-rhack/homebrew-tap](https://github.com/roniel-rhack/homebrew-tap)
 to refresh `Formula/rondo-opentui.rb`.
 
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
 The tap update needs a `HOMEBREW_TAP_TOKEN` repository secret with `repo`
@@ -285,16 +353,9 @@ scope on the tap. Without it the release still publishes and the formula can be
 refreshed by hand:
 
 ```bash
-gh workflow run update-rondo-opentui.yml -R roniel-rhack/homebrew-tap -f version=0.1.0
+gh workflow run update-rondo-opentui.yml -R roniel-rhack/homebrew-tap -f version=X.Y.Z
 ```
 
-## Tests
+## License
 
-```bash
-bun test
-```
-
-Covers the ported Go suites (task store, dependencies, recurrence, time logs,
-focus, config, backups, export, UI helpers, CLI unit + integration) plus new
-ones for the time engine, the journal store, TUI selectors and the TUI itself —
-rendered through OpenTUI's test renderer with simulated keyboard and mouse input.
+[MIT](LICENSE)

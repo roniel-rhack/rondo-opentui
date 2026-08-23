@@ -11,7 +11,7 @@ bun install
 bun run start          # TUI
 bun run start list     # any argument dispatches to the CLI instead
 bun run dev            # TUI with --watch
-bun test               # 664 tests
+bun test               # ~1 min; bun test tests/tui-state.test.ts for one file
 bun run typecheck      # tsc --noEmit
 bun run build          # dist/rondo-opentui (single binary, ad-hoc signed)
 ```
@@ -46,17 +46,23 @@ src/
     command.ts     Flags, arg validators, subcommand resolution
     printer.ts     Tables (bordered / tab-aligned), JSON, success lines
     commands/      tasks · journal · subtasks · timelog · note · misc · config · skill
+                   skill-content.ts embeds the SKILL.md that `skill install` writes
   tui/             OpenTUI + React
     app.tsx        State, keyboard routing, layout, modals
     state.ts       Tabs (Active first, All last) and pure selectors:
                    filtering, sorting, fuzzy matching
     data.ts        Store facade the components talk to
     theme.ts       Design tokens (dark + light), mix(), meter()
-    hooks/         usePomodoro · useClock · useToast · useTaskData ·
-                   useTween/useEntrance/useCountdown · useSmoothScrollIntoView
+    hooks/         usePomodoro · useClock · useToast · useTaskData · useUndo ·
+                   useSessionState · useTween/useEntrance/useCountdown ·
+                   useSmoothScrollIntoView
+    palette.ts     Command-palette action table, pure and renderer-free
     components/    Header · TaskList · TaskDetail · JournalPanel · Panels ·
                    Dialogs · TaskForm · Settings · Overlay · primitives
 tests/             bun:test — core, CLI, TUI selectors, live TUI rendering
+docs/              Review passes (tui-review*.md, cli-review.md); each opens
+                   with its resolution status and conscious deviations
+.github/workflows/ ci.yml (typecheck + tests on push/PR) · release.yml
 assets/            demo.tape + generated demo.gif / tasks.png / journal.png
 scripts/           demo-seed.sh
 ```
@@ -75,12 +81,13 @@ constrains a few things:
 - **CLI output is a contract**: same commands, flags, exit codes (`3` for not
   found), JSON field names and table headers. Color auto-disables when stdout
   is not a TTY. TS-only additions are fine (`block`/`unblock`, `version`,
-  `skill status`, `config theme`, relative due tokens, JSON on mutations);
-  two conscious divergences: `done` is idempotent for recurring tasks, and
-  journal misses exit `3` instead of `1`.
-- **`config.json` may carry a TS-only `theme` key** ("dark" / "light"). The Go
-  build ignores it on read and drops it when it rewrites the file — losing it
-  is fine, inventing more keys like it needs the same care.
+  `skill status`, `config set theme dark|light|auto`, relative due tokens,
+  JSON on mutations); two conscious divergences: `done` is idempotent for
+  recurring tasks, and journal misses exit `3` instead of `1`.
+- **`config.json` may carry a TS-only `theme` key** ("dark" / "light";
+  "auto" is stored as the key's absence). The Go build ignores it on read and
+  drops it when it rewrites the file — losing it is fine, inventing more keys
+  like it needs the same care.
 - **The session state lives in its own file.** `~/.todo-app/tui-state.json`
   holds the tab, sort, view, tag, selection and density the TUI restores. It
   is deliberately not in `config.json`, which the Go build rewrites without
@@ -182,19 +189,33 @@ Hard-won, all of them cost time once:
   so a sort, filter or create never leaves the cursor on the wrong task.
 - Every mutation pushes an `UndoAction`; `u` pops the stack in `useUndo.ts`.
   A new mutation kind needs its own `UndoAction` case, not a silent gap.
-- Status-bar hints come from `hintSpecs` in `state.ts` and must match
-  `HELP_SECTIONS` in `Panels.tsx` — `hintKeysMissingFromHelp()` fails a test
-  when a hint has no help row.
+- Status-bar hints come from `hintSpecs` and must match `HELP_SECTIONS`, both
+  in `state.ts` — `hintKeysMissingFromHelp()` fails a test when a hint has no
+  help row.
 - `tui-state.json` is written debounced (400 ms) through the `RondoData`-free
   helpers in `core/config/tui-state.ts`, flushed on quit; it never touches
   `config.json`.
+
+## When a key binding or CLI flag changes
+
+The key map is documented in five places; update all of them or a test or a
+user will catch the gap: `hintSpecs` + `HELP_SECTIONS` in `state.ts`, the
+`hint` strings in `palette.ts`, the README key tables, and the demo:
+
+```bash
+bun run build && PATH="$PWD/dist:$PATH" vhs assets/demo.tape
+```
+
+A CLI change must also land in `skill-content.ts` — `skill status` reports an
+installed copy as stale by comparing it byte-for-byte against that embed —
+and in the README CLI examples.
 
 ## Releases
 
 Tag `vX.Y.Z` on `main`:
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
 `release.yml` builds on native runners (macOS arm64/x64, Linux arm64/x64), runs
