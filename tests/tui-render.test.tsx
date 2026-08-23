@@ -10,13 +10,14 @@ import {
   defaultConfig,
   formatDate,
   formatDateShort,
+  formatNoteTitle,
 } from "../src/core/config/config.ts";
 import { open, openMemory } from "../src/core/database/db.ts";
 import { Minute } from "../src/core/duration.ts";
 import { RecurFreq } from "../src/core/task/recur.ts";
 import { newTask } from "../src/core/task/store.ts";
 import { Priority, Status, type Task } from "../src/core/task/task.ts";
-import { GoTime } from "../src/core/time.ts";
+import { DateOnly, GoTime } from "../src/core/time.ts";
 import { initTheme } from "../src/core/ui/colors.ts";
 import { App } from "../src/tui/app.tsx";
 import {
@@ -140,7 +141,7 @@ async function mount(
   };
 
   /**
-   * Walks to a tab with TAB, which cycles All → Active → Done → Journal. The
+   * Walks to a tab with TAB, which cycles Active → Done → All → Journal. The
    * app opens on Active, so everything is measured from there.
    */
   const goToTab = async (id: TabId) => {
@@ -284,7 +285,7 @@ describe("TUI rendering", () => {
     expect(
       data.listTasks().some((t) => t.title === "Refactor the parser"),
     ).toBe(false);
-    expect(frame).toContain('Deleted "Refactor the parser" · u to undo');
+    expect(frame).toContain('Deleted "Refactor the parser" · u undo');
     renderer.destroy();
   });
 
@@ -821,7 +822,8 @@ describe("TUI review fixes", () => {
     await goToTab("journal");
     await press("x");
 
-    expect(captureCharFrame()).toContain("Note hidden");
+    // The row is gone, so the message is the only place `H` can be named.
+    expect(captureCharFrame()).toContain("Note hidden · H to show hidden");
     renderer.destroy();
   });
 
@@ -989,7 +991,7 @@ describe("TUI review fixes", () => {
     // No rows to walk on the first task: only the add keys.
     await press("RETURN");
     expect(captureCharFrame()).not.toContain(" space  toggle ");
-    expect(captureCharFrame()).toContain(" t  step ");
+    expect(captureCharFrame()).toContain(" t  subtask ");
 
     await press("h");
     await press("j");
@@ -1043,7 +1045,7 @@ describe("TUI review fixes", () => {
     await press("H");
     const frame = captureCharFrame();
     expect(frame).toContain("Showing hidden notes");
-    expect(frame).toContain("·hidden");
+    expect(frame).toContain("· hidden");
     renderer.destroy();
   });
 
@@ -1831,7 +1833,7 @@ describe("TUI review 3 — dialogs", () => {
     renderer.destroy();
   });
 
-  test("the palette lists matching tasks after the actions", async () => {
+  test("the palette ranks tasks and actions by score, not by kind", async () => {
     const onPickTask = mock((_id: number) => {});
     const onClose = mock(() => {});
     const ran = mock(() => {});
@@ -1853,15 +1855,18 @@ describe("TUI review 3 — dialogs", () => {
 
     expect(captureCharFrame()).not.toContain("Refactor the parser");
 
+    // "re" hits the task title head-on and the action only as a scattered
+    // subsequence, so the task leads: typing a task name must not run a
+    // command. Before this the actions were concatenated first regardless.
     await type("re");
     const lines = captureCharFrame().split("\n");
     const action = lines.findIndex((l) => l.includes("Cycle sort order"));
     const task = lines.findIndex((l) => l.includes("Refactor the parser"));
     expect(action).toBeGreaterThanOrEqual(0);
-    expect(task).toBeGreaterThan(action);
-    expect(lines[task]).toMatch(/│ Task\s+#3\s+Refactor the parser/);
+    expect(task).toBeLessThan(action);
+    // Top of the list, so it is also the row enter runs.
+    expect(lines[task]).toMatch(/┃ Task\s+#3\s+Refactor the parser/);
 
-    await press("n", { ctrl: true });
     await press("RETURN");
     expect(onPickTask).toHaveBeenCalledWith(3);
     expect(onClose).toHaveBeenCalledTimes(1);
@@ -1928,7 +1933,7 @@ describe("TUI review 3 — dialogs", () => {
 
     const frame = captureCharFrame();
     expect(frame).toContain("Delete this journal entry?");
-    expect(frame).toContain("“Shipped the opentui port”");
+    expect(frame).toContain('"Shipped the opentui port"');
     renderer.destroy();
   });
 });
@@ -1990,13 +1995,13 @@ describe("TUI review 3 — detail and journal", () => {
   test("80×24: a bare task shows no empty sections, only affordances", async () => {
     const { captureCharFrame, press, renderer } = await mount(80, 24);
 
-    // "Refactor the parser" has no description, steps, notes or time.
+    // "Refactor the parser" has no description, subtasks, notes or time.
     const bare = captureCharFrame();
     for (const header of ["DESCRIPTION", "SUBTASKS", "NOTES", "TIME"]) {
       expect(bare).not.toContain(header);
     }
     expect(bare).toContain("e  describe");
-    expect(bare).toContain("t  step");
+    expect(bare).toContain("t  subtask");
     expect(bare).toContain("n  note");
     expect(bare).toContain("L  time");
 
@@ -2007,7 +2012,7 @@ describe("TUI review 3 — detail and journal", () => {
     expect(report).toContain("SUBTASKS");
     expect(report).not.toContain("NOTES");
     expect(report).not.toContain("e  describe");
-    expect(report).not.toContain("t  step");
+    expect(report).not.toContain("t  subtask");
     expect(report).toContain("n  note");
     expect(report).toContain("L  time");
     renderer.destroy();
@@ -2591,10 +2596,10 @@ describe("TUI review 3 — task list", () => {
     m.renderer.destroy();
   });
 
-  test("marked rows show a rail of their own", async () => {
+  test("marks get a column of their own, the cursor row included", async () => {
     const data = seed();
     const tasks = data.listTasks().filter((t) => t.status !== Status.Done);
-    const marked = new Set([tasks[1]!.id]);
+    const marked = new Set([tasks[0]!.id]);
 
     let setup!: Awaited<ReturnType<typeof testRender>>;
     await act(async () => {
@@ -2624,8 +2629,10 @@ describe("TUI review 3 — task list", () => {
     await setup.flush();
 
     const lines = setup.captureCharFrame().split("\n");
-    expect(lines.find((l) => l.includes(tasks[0]!.title))).toMatch(/^┃/);
-    expect(lines.find((l) => l.includes(tasks[1]!.title))).toMatch(/^▌/);
+    // The rail says where the cursor is and the gutter says what is marked,
+    // so marking the row under the cursor is visible where it was pressed.
+    expect(lines.find((l) => l.includes(tasks[0]!.title))).toMatch(/^┃✓/);
+    expect(lines.find((l) => l.includes(tasks[1]!.title))).toMatch(/^ ·/);
     setup.renderer.destroy();
   });
 });
@@ -2879,11 +2886,16 @@ describe("TUI review 3 — panels", () => {
     expect(frame).not.toContain("Cycle status");
 
     // The tail is below the fold at 24 rows; j scrolls down to it.
-    expect(frame).not.toContain("Clear filter");
+    expect(frame).not.toContain("Previous / next tag");
     for (let i = 0; i < 40; i++) await press("j");
     const scrolled = captureCharFrame();
     expect(scrolled).toContain("VIEWS & FILTERS");
-    expect(scrolled).toContain("Clear filter");
+    expect(scrolled).toContain("Previous / next tag");
+    // Bulk editing has no home in the other sections, and esc is where it
+    // ends, so marks get a group of their own.
+    expect(scrolled).toContain("MARKS");
+    expect(scrolled).toContain("Act on every marked task");
+    expect(scrolled).toContain("Clear marks");
     renderer.destroy();
   });
 
@@ -2906,9 +2918,14 @@ describe("TUI review 3 — panels", () => {
       "Undo",
       "Reload",
       "Density",
+      // esc walks a four-step chain; help used to promise it cleared the
+      // filter in one press.
+      "Marks, then detail, then filter,",
+      "Next / previous tab",
     ]) {
       expect(frame).toContain(label);
     }
+    expect(frame).not.toContain("Back to list, then clear filter");
     renderer.destroy();
   });
 
@@ -3100,7 +3117,7 @@ describe("TUI review 3 — keys and selection", () => {
     renderer.destroy();
   });
 
-  test("2.10: deleting the last step leaves the cursor on the one before it", async () => {
+  test("2.10: deleting the last subtask leaves the cursor on the one before it", async () => {
     const { captureCharFrame, press, renderer } = await mount();
 
     await press("j");
@@ -3110,7 +3127,9 @@ describe("TUI review 3 — keys and selection", () => {
 
     await press("d");
     expect(captureCharFrame()).toContain("┃ ▢ Collect numbers");
-    expect(captureCharFrame()).toContain('Deleted step "Draft intro" · u to undo');
+    expect(captureCharFrame()).toContain(
+      'Deleted subtask "Draft intro" · u undo',
+    );
 
     await press("e");
     expect(captureCharFrame()).toContain("Edit subtask");
@@ -3399,7 +3418,7 @@ describe("TUI review 3 — keys and selection", () => {
     expect(captureCharFrame().split("\n")[28]).toContain(" d  delete ");
     await press("d");
     const frame = captureCharFrame();
-    expect(frame).toContain("Deleted entry “Shipped the opentui port” · u to undo");
+    expect(frame).toContain('Deleted entry "Shipped the opentui port" · u undo');
     expect(data.listNotes(false)[0]!.entries).toHaveLength(0);
 
     await press("u");
@@ -3646,7 +3665,7 @@ describe("TUI review 3 — mutations and undo", () => {
     const report = () => data.tasks.list().find((t) => t.title === "Write the report")!;
     expect(report().subtasks.map((s) => s.title)).toEqual(["Draft intro"]);
     expect(captureCharFrame()).not.toContain("Delete subtask");
-    expect(captureCharFrame()).toContain("Collect numbers\" · u to undo");
+    expect(captureCharFrame()).toContain('Collect numbers" · u undo');
 
     await press("u");
     expect(report().subtasks.map((s) => s.title)).toEqual([
@@ -3681,7 +3700,7 @@ describe("TUI review 3 — mutations and undo", () => {
 
     await press("d");
     expect(refactor(data).notes).toHaveLength(0);
-    expect(captureCharFrame()).toContain("Deleted note “first draft done” · u to undo");
+    expect(captureCharFrame()).toContain('Deleted note "first draft done" · u undo');
 
     await press("u");
     expect(refactor(data).notes.map((n) => n.body)).toEqual(["first draft done"]);
@@ -3798,13 +3817,15 @@ describe("TUI review 3 — mutations and undo", () => {
 
 describe("TUI review 3 — filters, views, marks and persistence", () => {
   const statusRow = (frame: string, height: number) => frame.split("\n")[height - 2] ?? "";
-  /** The rail glyph of a list row: the cell between the panel border and
-   * the status glyph, on the line whose list column names `title`. */
-  const railOf = (frame: string, title: string) =>
+  /** The list row whose title column names `title`. Its first cell is the
+   * rail; the second is the mark gutter, which only exists while something
+   * is marked. */
+  const rowOf = (frame: string, title: string) =>
     frame
       .split("\n")
-      .map((l) => l.match(/^│(.) [○◐✓] (.*)$/))
-      .find((m) => m !== null && m[2]!.includes(title))?.[1];
+      .find((l) => /^│.{1,2} [○◐✓] /.test(l) && l.includes(title)) ?? "";
+  const railOf = (frame: string, title: string) => rowOf(frame, title)[1];
+  const markOf = (frame: string, title: string) => rowOf(frame, title)[2];
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   /** Three more tasks spread over yesterday, today and next month. */
@@ -3830,19 +3851,15 @@ describe("TUI review 3 — filters, views, marks and persistence", () => {
     renderer.destroy();
   });
 
-  test("3.7: ] and [ cycle the tags while the bar is visible", async () => {
-    const { captureCharFrame, press, type, renderer } = await mount();
+  test("3.7: ] and [ start and then cycle the tag filter", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
 
-    // Without the bar the bracket keys do nothing.
+    // The bar is hidden until a tag is set, and setting one is exactly what
+    // ] does: the keys are how a tag filter starts, not only how it moves.
+    expect(captureCharFrame()).not.toContain("tags ");
+
     await press("]");
-    expect(captureCharFrame()).toContain("2 tasks");
-
-    await press("k", { ctrl: true });
-    await type("toggle tag bar");
-    await press("RETURN");
     expect(captureCharFrame()).toContain("tags ");
-
-    await press("]");
     expect(captureCharFrame()).toContain("Refactor the parser");
     expect(captureCharFrame()).not.toContain("Write the report");
     await press("]");
@@ -3853,6 +3870,21 @@ describe("TUI review 3 — filters, views, marks and persistence", () => {
     await press("[");
     expect(captureCharFrame()).toContain("Write the report");
     expect(captureCharFrame()).not.toContain("Refactor the parser");
+    renderer.destroy();
+  });
+
+  test("3.7: ] says so when there is no tag to cycle to", async () => {
+    const data = new RondoData(openMemory(), defaultConfig());
+    data.tasks.create(newTask({ title: "Untagged task" }));
+    const { captureCharFrame, press, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      data,
+    );
+
+    await press("]");
+    expect(captureCharFrame()).toContain("No tags yet");
     renderer.destroy();
   });
 
@@ -3988,14 +4020,19 @@ describe("TUI review 3 — filters, views, marks and persistence", () => {
     const { captureCharFrame, press, data, renderer } = await mount();
 
     await press("m");
+    // Nothing else on screen moves on the first mark, so the toast is what
+    // confirms it.
+    expect(captureCharFrame()).toContain("Marked #3 · 1 marked");
+
     await press("j");
     let frame = captureCharFrame();
     expect(frame).toContain("2 tasks · 1 marked");
-    // The cursor rail wins on the selected row; a marked row behind it
-    // shows the mark.
-    expect(railOf(frame, "Refactor the parser")).toBe("▌");
+    // The rail belongs to the cursor and the mark to its own gutter, so a
+    // marked row reads the same whether or not the cursor is on it.
+    expect(railOf(frame, "Refactor the parser")).toBe(" ");
+    expect(markOf(frame, "Refactor the parser")).toBe("✓");
     expect(railOf(frame, "Write the report")).toBe("┃");
-    expect(statusRow(frame, 30)).toContain(" esc  clear marks ");
+    expect(markOf(frame, "Write the report")).toBe("·");
 
     await press("m");
     expect(captureCharFrame()).toContain("2 marked");
@@ -4023,7 +4060,8 @@ describe("TUI review 3 — filters, views, marks and persistence", () => {
     expect(captureCharFrame()).toContain("● Details");
     await press("ESCAPE");
     expect(captureCharFrame()).toContain("● Details");
-    expect(captureCharFrame()).not.toContain("marked");
+    // The toast still names the mark; the panel footer is what must forget it.
+    expect(captureCharFrame()).not.toContain("tasks · 1 marked");
     await press("ESCAPE");
     expect(captureCharFrame()).toContain("● Active");
     renderer.destroy();
@@ -4037,7 +4075,7 @@ describe("TUI review 3 — filters, views, marks and persistence", () => {
     await press("j");
     await press("m");
     await press("+");
-    expect(captureCharFrame()).toContain("1 task → priority up · u undo");
+    expect(captureCharFrame()).toContain("1 task → Priority up · u undo");
     expect(data.tasks.getById(1)!.priority).toBe(Priority.Urgent);
     expect(data.tasks.getById(3)!.priority).toBe(Priority.Urgent);
 
@@ -4047,7 +4085,7 @@ describe("TUI review 3 — filters, views, marks and persistence", () => {
     await press("@");
     expect(captureCharFrame()).toContain("Due date for 2 tasks");
     await press("t");
-    expect(captureCharFrame()).toContain(`2 tasks → due ${today} · u undo`);
+    expect(captureCharFrame()).toContain(`2 tasks → Due ${today} · u undo`);
     expect(data.tasks.getById(1)!.dueDate!.format("2006-01-02")).toBe(today);
     expect(data.tasks.getById(3)!.dueDate!.format("2006-01-02")).toBe(today);
 
@@ -4055,7 +4093,7 @@ describe("TUI review 3 — filters, views, marks and persistence", () => {
     await press("j");
     await press("m");
     await press("d");
-    expect(captureCharFrame()).toContain("2 tasks → deleted · u undo");
+    expect(captureCharFrame()).toContain("2 tasks → Deleted · u undo");
     expect(captureCharFrame()).toContain("No tasks yet");
     await press("u");
     expect(data.listTasks()).toHaveLength(3);
@@ -4598,6 +4636,125 @@ describe("TUI review 3 — follow-ups", () => {
       await press(tab.key);
       expect(captureCharFrame()).toContain(`● ${tab.label}`);
     }
+    renderer.destroy();
+  });
+});
+
+describe("TUI review 3 — coherence follow-ups", () => {
+  test("undo names what came back and how much is left", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("d");
+    await press("d");
+    // Two deletes, so the first `u` has to say which of them it reversed.
+    await press("u");
+    expect(captureCharFrame()).toContain(
+      'Undone: Deleted "Write the report" · 1 more',
+    );
+    await press("u");
+    expect(captureCharFrame()).toContain(
+      'Undone: Deleted "Refactor the parser"',
+    );
+    expect(captureCharFrame()).not.toContain("· 1 more");
+    await press("u");
+    expect(captureCharFrame()).toContain("Nothing to undo");
+    renderer.destroy();
+  });
+
+  test("z admits when the panel is too narrow for density to show", async () => {
+    // The list is ~48 columns at this ratio: all three densities render the
+    // same two-line rows, so the toast used to claim a change nothing made.
+    const { captureCharFrame, press, renderer } = await mount(120, 40);
+
+    await press("z");
+    expect(captureCharFrame()).toContain(
+      "Density: dense · widen the list with > to see it",
+    );
+
+    // Wide enough now: dense rows are one line and comfortable ones are two,
+    // so the same key does something and the toast drops the explanation.
+    for (let i = 0; i < 8; i++) await press(">");
+    await press("z");
+    expect(captureCharFrame()).toContain("Density: comfortable");
+    expect(captureCharFrame()).not.toContain("widen the list");
+    renderer.destroy();
+  });
+
+  test("the filter bar names the tokens it accepts, per tab", async () => {
+    const { captureCharFrame, goToTab, press, renderer } = await mount();
+
+    await press("/");
+    // The bar is the only in-app place the filter grammar can be discovered
+    // without opening the help overlay; it clips at the panel's width.
+    expect(captureCharFrame()).toContain("text · #tag · !high");
+
+    await press("ESCAPE");
+    await goToTab("journal");
+    await press("/");
+    const frame = captureCharFrame();
+    // Notes have no title, description or tag to filter on.
+    expect(frame).toContain("search entries…");
+    expect(frame).not.toContain("#tag");
+    renderer.destroy();
+  });
+
+  test("m only marks from the list, where the bulk keys apply", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("● Details");
+    await press("m");
+    expect(captureCharFrame()).not.toContain("marked");
+
+    await press("h");
+    await press("m");
+    expect(captureCharFrame()).toContain("2 tasks · 1 marked");
+    renderer.destroy();
+  });
+
+  test("the subtask, note and time dialogs name the task they write to", async () => {
+    const { captureCharFrame, press, renderer } = await mount();
+
+    for (const [key, label] of [
+      ["t", "Subtask for #3 Refactor the parser"],
+      ["n", "Note for #3 Refactor the parser"],
+      ["L", "Time for #3 Refactor the parser"],
+    ] as const) {
+      await press(key);
+      expect(captureCharFrame()).toContain(label);
+      await press("ESCAPE");
+    }
+    renderer.destroy();
+  });
+
+  test("a journal entry says which day received it", async () => {
+    const { captureCharFrame, goToTab, press, type, data, renderer } =
+      await mount(100, 30, defaultConfig(), (d) => {
+        d.addJournalEntry("Yesterday's note", GoTime.now().addDate(0, 0, -1).format(DateOnly));
+      });
+
+    await goToTab("journal");
+    // The cursor sits on today; `a` always writes to today either way, and
+    // the toast has to name the day so `a` and `A` cannot be confused.
+    await press("a");
+    await type("A brand new thought");
+    await press("s", { ctrl: true });
+
+    const title = formatNoteTitle(data.cfg, GoTime.now(), GoTime.now());
+    expect(captureCharFrame()).toContain(`Entry added to ${title}`);
+    renderer.destroy();
+  });
+
+  test("a running focus session keeps clear of the last tab's count", async () => {
+    const { captureCharFrame, press, renderer } = await mount(120, 40);
+
+    await press("f");
+    const header = captureCharFrame().split("\n")[0]!;
+    const journal = header.indexOf("Journal");
+    const title = header.indexOf("Refactor");
+    expect(title).toBeGreaterThan(journal);
+    // Two columns of clear space between the tab strip and the focus block.
+    expect(header.slice(journal, title)).toMatch(/\s{2,}$/);
     renderer.destroy();
   });
 });

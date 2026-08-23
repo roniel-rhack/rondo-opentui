@@ -30,6 +30,10 @@ interface HeaderProps {
 }
 
 const CLOCK_WIDTH = 5;
+/** Columns kept between the last tab and the focus block. The flexGrow
+ * spacer collapses to nothing once the block fills the row, so the gap has
+ * to be part of the budget or the title runs into the tab's count. */
+const FOCUS_GAP = 2;
 const METER_WIDTH = 10;
 const TIMER_WIDTH = 5;
 /** Shortest title worth showing: a few letters, an ellipsis and " · ". */
@@ -195,7 +199,7 @@ export const Header = memo(function Header({
     }
     fixed += tabWidth(tab.label, counts[tab.id], compact);
   });
-  const spare = width - fixed;
+  const spare = width - fixed - FOCUS_GAP;
 
   // Below the label's budget the digits alone still tell the time; below
   // even that, the header gives up on the timer rather than clip a tab.
@@ -250,6 +254,7 @@ export const Header = memo(function Header({
         ))}
 
         <box flexGrow={1} />
+        <box width={FOCUS_GAP} flexShrink={0} />
 
         {focus.endAt !== null && showTimer ? (
           <FocusTimer

@@ -142,6 +142,9 @@ interface RowProps extends RowModel {
   metaWidth: number;
   /** Width of the tag column in the one-line layout; 0 hides it. */
   tagWidth: number;
+  /** Whether the list reserves its mark gutter, which it does as soon as one
+   * task is marked. */
+  showMarks: boolean;
   onSelect: (index: number) => void;
   onToggleStatus: (index: number) => void;
 }
@@ -169,6 +172,7 @@ const TaskRow = memo(function TaskRow({
   titleSpace,
   metaWidth,
   tagWidth,
+  showMarks,
   onSelect,
   onToggleStatus,
 }: RowProps) {
@@ -190,13 +194,14 @@ const TaskRow = memo(function TaskRow({
       ? theme.hoverBg
       : undefined;
 
+  // The rail says where the cursor is; a mark is a second, independent state
+  // and gets its own column, or marking the row under the cursor would be
+  // invisible.
   const rail = selected
     ? { glyph: "┃", color: focused ? theme.accent : theme.border }
-    : marked
-      ? { glyph: "▌", color: theme.accent }
-      : blocked
-        ? { glyph: "│", color: theme.danger }
-        : { glyph: " ", color: theme.border };
+    : blocked
+      ? { glyph: "│", color: theme.danger }
+      : { glyph: " ", color: theme.border };
 
   const priorityGlyph = done ? undefined : PRIORITY_GLYPH[priority];
   const mutedTone = selected ? theme.textDim : theme.textMuted;
@@ -239,6 +244,12 @@ const TaskRow = memo(function TaskRow({
         <text flexShrink={0} fg={rail.color}>
           {rail.glyph}
         </text>
+
+        {showMarks ? (
+          <text flexShrink={0} fg={marked ? theme.accent : theme.textMuted}>
+            {marked ? "✓" : "·"}
+          </text>
+        ) : null}
 
         <box
           flexShrink={0}
@@ -314,7 +325,7 @@ const TaskRow = memo(function TaskRow({
         <box flexDirection="row" paddingRight={1}>
           {/* The rail continues here so both lines read as one block. */}
           <text flexShrink={0} fg={rail.color}>
-            {`${rail.glyph}   `}
+            {`${rail.glyph}${showMarks ? " " : ""}   `}
           </text>
           <text wrapMode="none" flexGrow={1}>
             {done ? (
@@ -400,7 +411,11 @@ export const TaskList = memo(function TaskList({
     );
   }
 
-  const metaWidth = metaWidthFor(width);
+  // One column, present for every row as soon as anything is marked, so the
+  // rows keep lining up and the first mark is visible on the cursor row.
+  const showMarks = (marked?.size ?? 0) > 0;
+  const markGutter = showMarks ? 1 : 0;
+  const metaWidth = metaWidthFor(width) - markGutter;
   const oneLine = isOneLine(width, dense);
   // Below this the second line has no room for anything meaningful.
   const showMeta = width > 30;
@@ -411,6 +426,7 @@ export const TaskList = memo(function TaskList({
   const titleSpace = Math.max(
     width -
       ROW_CHROME -
+      markGutter -
       (oneLine ? 1 + DUE_WIDTH + PROGRESS_WIDTH + tagWidth : 0),
     4,
   );
@@ -430,6 +446,7 @@ export const TaskList = memo(function TaskList({
       titleSpace={titleSpace}
       metaWidth={metaWidth}
       tagWidth={tagWidth}
+      showMarks={showMarks}
       onSelect={handleSelect}
       onToggleStatus={handleToggle}
     />
@@ -476,6 +493,7 @@ interface ScrollingListProps {
   titleSpace: number;
   metaWidth: number;
   tagWidth: number;
+  showMarks: boolean;
   onSelect: (index: number) => void;
   onToggleStatus: (index: number) => void;
 }
@@ -495,6 +513,7 @@ function ScrollingList({
   titleSpace,
   metaWidth,
   tagWidth,
+  showMarks,
   onSelect,
   onToggleStatus,
 }: ScrollingListProps) {
@@ -582,6 +601,7 @@ function ScrollingList({
                 titleSpace={titleSpace}
                 metaWidth={metaWidth}
                 tagWidth={tagWidth}
+                showMarks={showMarks}
                 onSelect={onSelect}
                 onToggleStatus={onToggleStatus}
               />

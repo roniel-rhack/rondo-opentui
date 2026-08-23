@@ -128,7 +128,7 @@ function NoteRows({
             </text>
             <text flexShrink={0} fg={theme.textDim}>
               {`${plural(note.entries.length, "entry", "entries")}${
-                note.hidden ? " ·hidden" : ""
+                note.hidden ? " · hidden" : ""
               }`}
             </text>
           </box>

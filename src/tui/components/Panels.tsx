@@ -195,6 +195,9 @@ interface SearchBarProps {
   active: boolean;
   onInput: (v: string) => void;
   onSubmit: () => void;
+  /** What the field matches, which differs per tab: the task grammar names
+   * its tokens, the journal only has entry text. */
+  placeholder: string;
   resultCount: number;
   totalCount: number;
 }
@@ -206,6 +209,7 @@ export function SearchBar({
   active,
   onInput,
   onSubmit,
+  placeholder,
   resultCount,
   totalCount,
 }: SearchBarProps) {
@@ -225,7 +229,7 @@ export function SearchBar({
         <input
           focused={active}
           value={value}
-          placeholder="filter by title, description or tag…"
+          placeholder={placeholder}
           onInput={onInput}
           onSubmit={onSubmit}
           backgroundColor="transparent"
@@ -379,9 +383,10 @@ interface HelpOverlayProps {
   onClose: () => void;
 }
 
-// Balanced for the wide layout: 29 and 32 rows.
+// Balanced for the wide layout: 38 and 33 rows; the body scrolls for the
+// rest. Marks sits with the filters because both narrow what the keys act on.
 const HELP_COLUMNS: [HelpSection[], HelpSection[]] = [
-  [HELP_SECTIONS[0]!, HELP_SECTIONS[1]!, HELP_SECTIONS[5]!],
+  [HELP_SECTIONS[0]!, HELP_SECTIONS[1]!, HELP_SECTIONS[5]!, HELP_SECTIONS[6]!],
   [HELP_SECTIONS[3]!, HELP_SECTIONS[2]!, HELP_SECTIONS[4]!],
 ];
 

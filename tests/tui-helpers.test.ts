@@ -5,7 +5,7 @@ import { SessionKind } from "../src/core/focus/focus.ts";
 import type { Entry, Note } from "../src/core/journal/journal.ts";
 import { newTask } from "../src/core/task/store.ts";
 import { DateOnly, GoTime } from "../src/core/time.ts";
-import { priorityColors, tuiTheme } from "../src/tui/theme.ts";
+import { meter, priorityColors, tuiTheme } from "../src/tui/theme.ts";
 import {
   exportContent,
   focusStatusMessage,
@@ -175,5 +175,31 @@ describe("theme accessibility", () => {
   test("Low priority uses the readable dim tone", () => {
     const dark = tuiTheme(true);
     expect(priorityColors(dark)[0]).toBe(dark.textDim);
+  });
+});
+
+describe("meter", () => {
+  test("a ratio inside a cell picks an eighth-block", () => {
+    expect(meter(0.5, 8)).toEqual({ full: "████", partial: "", rest: 4 });
+    expect(meter(0.5, 10)).toEqual({ full: "█████", partial: "", rest: 5 });
+    expect(meter(0.0625, 8)).toEqual({ full: "", partial: "▌", rest: 7 });
+  });
+
+  test("a fraction that rounds up to a whole block stays in the table", () => {
+    // 0.9976 * 26 = 25.94: the remainder rounds to 8, which is one past the
+    // last eighth-block and used to render the word "undefined".
+    const bar = meter(0.9976, 26);
+    expect(bar.partial).toBe("▉");
+    expect(bar.full.length + bar.partial.length + bar.rest).toBe(26);
+  });
+
+  test("no ratio at any width leaves the bar short or long", () => {
+    for (const width of [1, 10, 26]) {
+      for (let i = 0; i <= 1000; i++) {
+        const bar = meter(i / 1000, width);
+        expect(bar.partial).not.toBe(undefined);
+        expect(bar.full.length + bar.partial.length + bar.rest).toBe(width);
+      }
+    }
   });
 });

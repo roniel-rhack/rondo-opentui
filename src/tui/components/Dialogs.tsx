@@ -2,6 +2,7 @@ import { TextAttributes, type KeyEvent, type TextareaRenderable } from "@opentui
 import { useKeyboard } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Status, type Task } from "../../core/task/task.ts";
+import type { PaletteAction } from "../palette.ts";
 import { fuzzyScore } from "../state.ts";
 import { mix, type TuiTheme } from "../theme.ts";
 import { Button, Overlay, overlayBodyRows } from "./Overlay.tsx";
@@ -76,7 +77,7 @@ export function ConfirmDialog({
         </text>
         {excerpt ? (
           <text fg={theme.textDim} wrapMode="none" truncate>
-            {`“${excerpt}”`}
+            {`"${excerpt}"`}
           </text>
         ) : null}
         {detail ? (
@@ -317,14 +318,6 @@ export function PromptDialog({
   );
 }
 
-export interface PaletteAction {
-  id: string;
-  label: string;
-  hint?: string;
-  group: string;
-  run: () => void;
-}
-
 type PaletteItem =
   | { kind: "action"; action: PaletteAction }
   | { kind: "task"; task: Task };
@@ -371,17 +364,24 @@ export function CommandPalette({
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
 
+  // Actions and tasks are ranked together, or a command that merely matches
+  // as a scattered subsequence would outrank the task whose title was typed.
+  // The sort is stable, so an action still wins an exact tie.
   const items = useMemo<PaletteItem[]>(() => {
     if (query === "") {
       return groupActions(actions).map((action) => ({ kind: "action", action }));
     }
-    const hits: PaletteItem[] = rank(actions, query, (a) => `${a.group} ${a.label}`).map(
-      (action) => ({ kind: "action", action }),
-    );
-    for (const task of rank(tasks ?? [], query, (t) => `#${t.id} ${t.title}`)) {
-      hits.push({ kind: "task", task });
+    const hits: { item: PaletteItem; score: number }[] = [];
+    for (const action of actions) {
+      const score = fuzzyScore(query, `${action.group} ${action.label}`);
+      if (score !== null) hits.push({ item: { kind: "action", action }, score });
     }
-    return hits;
+    for (const task of tasks ?? []) {
+      const score = fuzzyScore(query, `#${task.id} ${task.title}`);
+      if (score !== null) hits.push({ item: { kind: "task", task }, score });
+    }
+    hits.sort((x, y) => y.score - x.score);
+    return hits.map((h) => h.item);
   }, [actions, query, tasks]);
 
   // Section headers only while the list is grouped; with a query the groups

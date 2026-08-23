@@ -837,9 +837,9 @@ export function indexOfNoteDate(
 }
 
 /** Narrowest list that still shows a readable title next to its glyphs. */
-export const LIST_MIN_WIDTH = 34;
+const LIST_MIN_WIDTH = 34;
 /** Narrowest detail panel whose fields fit beside their labels. */
-export const DETAIL_MIN_WIDTH = 40;
+const DETAIL_MIN_WIDTH = 40;
 
 /** Panel ratio kept inside what the terminal can show: neither panel drops
  * below its minimum. On a terminal too narrow for both the list wins. */
@@ -978,6 +978,9 @@ export interface HintContext {
   row?: DetailRow["kind"] | null;
   /** Tasks marked for a bulk action; the list keys then act on all of them. */
   marked?: number;
+  /** Whether the selected task is completed, so space and s name what they
+   * would actually do to it. */
+  done?: boolean;
 }
 
 const HINT_TAIL: HintSpec[] = [
@@ -1023,7 +1026,7 @@ export function hintSpecs(ctx: HintContext): HintSpec[] {
     // these".
     const row = ctx.row ?? null;
     const adders: HintSpec[] = [
-      { key: "t", label: "step", action: "subtask" },
+      { key: "t", label: "subtask", action: "subtask" },
       { key: "n", label: "note", action: "note" },
       { key: "L", label: "time", action: "time" },
     ];
@@ -1059,8 +1062,10 @@ export function hintSpecs(ctx: HintContext): HintSpec[] {
     ...(ctx.compact ? [{ key: "l", label: "details", action: "details" as const }] : []),
     { key: "a", label: "add", action: "add" },
     { key: "e", label: "edit", action: "edit" },
-    { key: "space", label: "done", action: "done" },
-    { key: "s", label: "start", action: "start" },
+    // The Done tab's keys do the opposite of what they do elsewhere, and the
+    // bar is where that has to be said.
+    { key: "space", label: ctx.done ? "reopen" : "done", action: "done" },
+    { key: "s", label: ctx.done ? "restart" : "start", action: "start" },
     { key: "d", label: "delete", action: "delete" },
     { key: "t", label: "subtask", action: "subtask" },
     { key: "/", label: "filter", action: "filter" },
@@ -1107,8 +1112,10 @@ export const HELP_SECTIONS: HelpSection[] = [
       ["g G Home End", "First / last"],
       ["PgUp PgDn ^u ^d", "Page up / down"],
       ["h l ← →", "Switch panel"],
+      ["tab shift+tab", "Next / previous tab"],
       ["enter", "Open detail / edit row"],
-      ["esc", "Back to list, then clear filter"],
+      ["esc", "Marks, then detail, then filter,"],
+      ["", "then view"],
       ["click, wheel", "Select row, scroll"],
     ],
   ],
@@ -1161,7 +1168,15 @@ export const HELP_SECTIONS: HelpSection[] = [
       ["v", "Cycle view: all, today, overdue,"],
       ["", "week, blocked"],
       ["#", "Tag picker"],
-      ["esc", "Clear filter"],
+      ["[ ]", "Previous / next tag"],
+    ],
+  ],
+  [
+    "Marks",
+    [
+      ["m", "Mark task for bulk action"],
+      ["space d + - @", "Act on every marked task"],
+      ["esc", "Clear marks"],
     ],
   ],
 ];
@@ -1172,6 +1187,7 @@ const HINT_CONTEXTS: HintContext[] = [
   { tab: "active", panel: 0, compact: false, searching: false },
   { tab: "active", panel: 0, compact: true, searching: false },
   { tab: "active", panel: 0, compact: false, searching: false, marked: 2 },
+  { tab: "done", panel: 0, compact: false, searching: false, done: true },
   { tab: "active", panel: 1, compact: false, searching: false, row: null },
   { tab: "active", panel: 1, compact: false, searching: false, row: "subtask" },
   { tab: "active", panel: 1, compact: false, searching: false, row: "note" },

@@ -326,7 +326,7 @@ function TaskBody({
   const hasLogs = task.timeLogs.length > 0;
   const affordances: [string, string][] = [];
   if (!hasDescription) affordances.push(["e", "describe"]);
-  if (!hasSubtasks) affordances.push(["t", "step"]);
+  if (!hasSubtasks) affordances.push(["t", "subtask"]);
   if (!hasNotes) affordances.push(["n", "note"]);
   if (!hasLogs) affordances.push(["L", "time"]);
 

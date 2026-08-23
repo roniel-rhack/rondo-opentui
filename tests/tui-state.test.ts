@@ -830,6 +830,62 @@ describe("hintSpecs (5.4)", () => {
     expect(empty).not.toContain("d");
     expect(empty.slice(0, 3)).toEqual(["t", "n", "L"]);
   });
+
+  test("a subtask is called a subtask in both hint lists", () => {
+    const list = hintSpecs({
+      tab: "active",
+      panel: 0,
+      compact: false,
+      searching: false,
+    });
+    const detail = hintSpecs({
+      tab: "active",
+      panel: 1,
+      compact: false,
+      searching: false,
+      row: "subtask",
+    });
+    expect(list.find((h) => h.key === "t")?.label).toBe("subtask");
+    expect(detail.find((h) => h.key === "t")?.label).toBe("subtask");
+  });
+
+  test("marks replace the list keys with the bulk ones", () => {
+    const specs = hintSpecs({
+      tab: "active",
+      panel: 0,
+      compact: false,
+      searching: false,
+      marked: 2,
+    });
+    expect(specs.map((h) => `${h.key} ${h.label}`)).toEqual([
+      "space done",
+      "d delete",
+      "+ - priority",
+      "@ due",
+      "esc clear marks",
+      "m mark",
+      "^k palette",
+      "? help",
+    ]);
+  });
+
+  test("a completed task's keys reopen and restart, and say so", () => {
+    const ctx = {
+      tab: "done" as const,
+      panel: 0 as const,
+      compact: false,
+      searching: false,
+    };
+    const open = hintSpecs(ctx);
+    expect(open.find((h) => h.key === "space")?.label).toBe("done");
+    expect(open.find((h) => h.key === "s")?.label).toBe("start");
+    const done = hintSpecs({ ...ctx, done: true });
+    expect(done.find((h) => h.key === "space")?.label).toBe("reopen");
+    expect(done.find((h) => h.key === "s")?.label).toBe("restart");
+    // The keycaps still run the same actions, so clicking them keeps working.
+    expect(done.find((h) => h.key === "space")?.action).toBe("done");
+    expect(done.find((h) => h.key === "s")?.action).toBe("start");
+  });
 });
 
 describe("mutation helpers (3.1, 3.3, 3.16, 2.14)", () => {
