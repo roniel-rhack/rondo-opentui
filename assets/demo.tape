@@ -31,127 +31,129 @@ Sleep 3s
 
 # ─── Move through the list; the detail panel follows ───
 Down
-Sleep 800ms
+Sleep 700ms
 Down
-Sleep 800ms
-Down 4
-Sleep 2s
+Sleep 700ms
+Down
+Sleep 1.5s
 Screenshot assets/tasks.png
-Sleep 1.2s
+Sleep 1s
 
 # ─── Read a task: subtasks, notes, time logs ───
 Right
 Sleep 1.2s
 Down
-Sleep 600ms
+Sleep 500ms
 Space
-Sleep 1.8s
+Sleep 1.5s
 Left
-Sleep 1s
+Sleep 800ms
 
 # ─── Live fuzzy filter ───
 Type "/"
-Sleep 600ms
-Type "land"
-Sleep 2s
+Sleep 500ms
+Type "search"
+Sleep 1.8s
 Escape
 Sleep 1.2s
 
-# ─── Tag filter bar ───
+# ─── Tag picker (# opens it; typing narrows, enter applies) ───
 Type "#"
-Sleep 2.5s
+Sleep 1s
+Type "front"
+Sleep 1.2s
+Enter
+Sleep 1.8s
 Type "#"
 Sleep 800ms
+Enter
+Sleep 1s
 
-# ─── Create a task in the form: textarea, dates, segmented controls ───
+# ─── Quick-add: tokens set tag, due, priority and recurrence inline ───
 Type "a"
-Sleep 1.2s
-Type "Ship the 2.0 release"
-Sleep 400ms
+Sleep 1s
+Type "Ship the 2.0 release #release @2026-09-05 !high ~w"
+Sleep 1.5s
 Tab
 Sleep 400ms
 Type "Tag, publish the binaries and update the tap."
-Enter
-Type "- macOS + Linux"
 Sleep 1s
-Tab
-Sleep 400ms
-Type "2026-09-05"
-Sleep 600ms
-Tab
-Sleep 300ms
-Type "release, ops"
-Sleep 600ms
-Tab
-Sleep 400ms
-Right
-Right
-Right
-Sleep 1.5s
 Ctrl+S
 Sleep 2s
 
-# ─── Add a subtask ───
-Type "t"
-Sleep 1s
-Type "Write the changelog"
-Sleep 500ms
-Enter
-Sleep 1.8s
-
-# ─── Cycle a status ───
+# ─── One key completes the task just created ───
 Space
 Sleep 1.5s
 
-# ─── Sort order ───
-Type "o"
+# ─── Direct triage: priority and due without opening the form ───
+Down
+Sleep 500ms
+Type "+"
+Sleep 1.2s
+Type "@"
+Sleep 800ms
+Type "m"
 Sleep 1.5s
 
-# ─── Command palette ───
-Ctrl+K
-Sleep 1s
-Type "focus"
+# ─── Cycle views: all → today → overdue ───
+Type "v"
+Sleep 1.2s
+Type "v"
+Sleep 1.8s
+
+# ─── Mark two tasks and act on both at once ───
+Type "m"
+Sleep 500ms
+Down
+Sleep 500ms
+Type "m"
+Sleep 500ms
+Space
 Sleep 1.5s
+Type "u"
+Sleep 1.8s
+
+# ─── Command palette: jump straight to a task ───
+Ctrl+K
+Sleep 800ms
+Type "landing"
+Sleep 1.2s
 Enter
-Sleep 2s
+Sleep 1.8s
 
 # ─── Statistics ───
 Type "S"
-Sleep 3s
+Sleep 2.5s
 Escape
 Sleep 800ms
 
 # ─── Journal ───
-Tab
-Sleep 600ms
-Tab
-Sleep 600ms
-Tab
-Sleep 2s
+Type "4"
+Sleep 1.8s
 Screenshot assets/journal.png
-Sleep 1.5s
+Sleep 1.2s
 Type "a"
 Sleep 1s
 Type "Shipped the OpenTUI port. Mouse, overlays and a command palette."
 Sleep 700ms
 Ctrl+S
-Sleep 2.5s
+Sleep 2s
 
 # ─── Help ───
 Type "?"
-Sleep 3s
+Sleep 2.8s
 Escape
-Sleep 800ms
+Sleep 700ms
 
 # ─── Light theme ───
-Tab
-Sleep 600ms
+Type "1"
+Sleep 500ms
 Type "T"
-Sleep 2.5s
+Sleep 2s
 Type "T"
-Sleep 1.5s
+Sleep 1.2s
 
-# The focus session is still running, so q asks for confirmation first.
+# The focus session from the seed data is still running, so q asks first.
 Type "q"
 Sleep 1.5s
 Type "y"
