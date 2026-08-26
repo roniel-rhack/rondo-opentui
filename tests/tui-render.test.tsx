@@ -2151,6 +2151,23 @@ describe("TUI review 3 — detail and journal", () => {
     setup.renderer.destroy();
   });
 
+  test("the detail shows the task id so it can be referenced from the CLI", async () => {
+    const data = seed();
+    const spec = newTask({ title: "Ship it" });
+    data.tasks.create(spec);
+    const task = data.tasks.getById(spec.id)!;
+
+    const setup = await mountComponent(
+      <TaskDetail {...detailProps} task={task} cursor={0} />,
+      60,
+      16,
+    );
+    expect(setup.captureCharFrame()).toMatch(
+      new RegExp(`^\\s*ID\\s+#${task.id}\\s*$`, "m"),
+    );
+    setup.renderer.destroy();
+  });
+
   test("the detail cursor walks notes and time logs after the subtasks", async () => {
     const data = seed();
     const spec = newTask({ title: "Ship it" });

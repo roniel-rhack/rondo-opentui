@@ -404,6 +404,12 @@ function TaskBody({
       </box>
 
       <box paddingTop={1} flexDirection="column">
+        <Field
+          theme={theme}
+          label="ID"
+          value={`#${task.id}`}
+          color={theme.textDim}
+        />
         {task.dueDate ? (
           done ? (
             <Field
