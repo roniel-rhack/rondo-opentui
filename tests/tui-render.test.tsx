@@ -2363,6 +2363,10 @@ describe("TUI review 3 — task list", () => {
     height: number,
     cfg = defaultConfig(),
   ) {
+    // Own home, like mount(): otherwise the App restores whatever session a
+    // previous test's debounced save left behind, which depends on how long
+    // that test ran and so on the machine.
+    process.env.RONDO_HOME = freshHome();
     const data = seed(cfg);
     prepare(data);
     let setup!: Awaited<ReturnType<typeof testRender>>;
