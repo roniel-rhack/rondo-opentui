@@ -14,7 +14,6 @@ import { DueLevel } from "../../core/ui/overdue.ts";
 import { useSmoothScrollIntoView } from "../hooks/useSmoothScroll.ts";
 import {
   groupTasks,
-  isOneLine,
   metaWidthFor,
   relativeDue,
   type SortKey,
@@ -33,8 +32,6 @@ interface TaskListProps {
   width: number;
   /** Blank lines between rows; the caller resolves it from the density. */
   gap: number;
-  /** One-line rows when the width allows it; decided by the caller. */
-  dense: boolean;
   sort: SortKey;
   now: GoTime;
   /** Tasks with an open blocker. */
@@ -83,11 +80,6 @@ const MAX_VISIBLE_TAGS = 2;
 /** Fixed columns around the title: panel borders, rail, glyph box, the
  * trailing padding and the scrollbar gutter. */
 const ROW_CHROME = 2 + 1 + 3 + 1 + 1;
-/** Recurrence and priority, two columns each: a one-line row holds both open
- * even when empty, or its metadata cells would not line up. */
-const TRAILING_GLYPHS = 4;
-/** The one-line layout shows the first tag only, in a column this wide. */
-const DENSE_MAX_TAG = 14;
 
 /** Four-dot progress, easier to scan than a tiny bar. */
 function progressDots(completed: number, total: number): string {
@@ -123,8 +115,6 @@ interface RowModel {
   dueLevel: DueLevel;
   progress: string;
   tags: string;
-  /** First tag alone, for the one-line layout. */
-  tag: string;
   /** "✓ date" for completed tasks; empty otherwise. */
   doneLabel: string;
 }
@@ -134,14 +124,11 @@ interface RowProps extends RowModel {
   theme: TuiTheme;
   selected: boolean;
   focused: boolean;
-  dense: boolean;
   showMeta: boolean;
   /** Columns available to the title once every fixed cell is placed. */
   titleSpace: number;
-  /** Columns available to the second line of a two-line row. */
+  /** Columns available to the metadata line. */
   metaWidth: number;
-  /** Width of the tag column in the one-line layout; 0 hides it. */
-  tagWidth: number;
   /** Whether the list reserves its mark gutter, which it does as soon as one
    * task is marked. */
   showMarks: boolean;
@@ -162,16 +149,13 @@ const TaskRow = memo(function TaskRow({
   dueLevel,
   progress,
   tags,
-  tag,
   doneLabel,
   theme,
   selected,
   focused,
-  dense,
   showMeta,
   titleSpace,
   metaWidth,
-  tagWidth,
   showMarks,
   onSelect,
   onToggleStatus,
@@ -208,13 +192,9 @@ const TaskRow = memo(function TaskRow({
   const dueTone = dueColorFor(theme, dueLevel, selected);
   const progressTone = theme.dark ? theme.textDim : theme.accent;
 
-  // Fixed cells on the title line eat into the title's room. One-line rows
-  // reserve the trailing glyph columns whether or not this row uses them.
+  // Fixed cells on the title line eat into the title's room.
   const extras =
-    (blocked ? 2 : 0) +
-    (dense
-      ? TRAILING_GLYPHS
-      : (recurring ? 2 : 0) + (priorityGlyph ? 2 : 0));
+    (blocked ? 2 : 0) + (recurring ? 2 : 0) + (priorityGlyph ? 2 : 0);
   const shownTitle = fit(title, Math.max(titleSpace - extras, 0));
 
   // Second line, left-packed: an empty due cell does not hold its column.
@@ -288,40 +268,22 @@ const TaskRow = memo(function TaskRow({
           {shownTitle}
         </text>
 
-        {dense ? (
-          <text flexShrink={0} wrapMode="none">
-            {done ? (
-              <span fg={mutedTone}>
-                {` ${doneLabel.padEnd(DUE_WIDTH + PROGRESS_WIDTH + tagWidth)}`}
-              </span>
-            ) : (
-              <>
-                <span fg={dueTone}>{` ${dueLabel.padEnd(DUE_WIDTH)}`}</span>
-                <span fg={progressTone}>{progress.padEnd(PROGRESS_WIDTH)}</span>
-                <span fg={theme.secondary}>
-                  {fit(tag, tagWidth).padEnd(tagWidth)}
-                </span>
-              </>
-            )}
-          </text>
-        ) : null}
-
-        {dense || recurring ? (
+        {recurring ? (
           <text flexShrink={0} fg={done ? theme.textMuted : theme.secondary}>
-            {recurring ? " ↻" : "  "}
+            {" ↻"}
           </text>
         ) : null}
 
-        {dense || priorityGlyph ? (
+        {priorityGlyph ? (
           <box flexShrink={0} paddingLeft={1}>
             <text fg={priorityColor} attributes={TextAttributes.BOLD}>
-              {priorityGlyph ?? " "}
+              {priorityGlyph}
             </text>
           </box>
         ) : null}
       </box>
 
-      {!dense && showMeta && hasMeta ? (
+      {showMeta && hasMeta ? (
         <box flexDirection="row" paddingRight={1}>
           {/* The rail continues here so both lines read as one block. */}
           <text flexShrink={0} fg={rail.color}>
@@ -360,7 +322,6 @@ export const TaskList = memo(function TaskList({
   focused,
   width,
   gap,
-  dense,
   sort,
   now,
   blocked,
@@ -416,20 +377,9 @@ export const TaskList = memo(function TaskList({
   const showMarks = (marked?.size ?? 0) > 0;
   const markGutter = showMarks ? 1 : 0;
   const metaWidth = metaWidthFor(width) - markGutter;
-  const oneLine = isOneLine(width, dense);
   // Below this the second line has no room for anything meaningful.
   const showMeta = width > 30;
-  // The tag column only takes what the longest first tag needs.
-  const tagWidth = oneLine
-    ? Math.min(Math.max(...rows.map((r) => r.tag.length)), DENSE_MAX_TAG)
-    : 0;
-  const titleSpace = Math.max(
-    width -
-      ROW_CHROME -
-      markGutter -
-      (oneLine ? 1 + DUE_WIDTH + PROGRESS_WIDTH + tagWidth : 0),
-    4,
-  );
+  const titleSpace = Math.max(width - ROW_CHROME - markGutter, 4);
 
   return (
     <ScrollingList
@@ -440,12 +390,10 @@ export const TaskList = memo(function TaskList({
       indexOf={indexOf}
       selected={selected}
       focused={focused}
-      dense={oneLine}
       showMeta={showMeta}
       gap={gap}
       titleSpace={titleSpace}
       metaWidth={metaWidth}
-      tagWidth={tagWidth}
       showMarks={showMarks}
       onSelect={handleSelect}
       onToggleStatus={handleToggle}
@@ -474,7 +422,6 @@ function toRowModel(
     dueLevel: due?.level ?? DueLevel.None,
     progress: progressDots(completedSubtasks(task), task.subtasks.length),
     tags: tagCellFor(task.tags, MAX_VISIBLE_TAGS),
-    tag: done ? "" : tagCellFor(task.tags, 1).split(" ")[0] ?? "",
     doneLabel: done ? `✓ ${formatDate(cfg, task.updatedAt)}` : "",
   };
 }
@@ -487,12 +434,10 @@ interface ScrollingListProps {
   indexOf: Map<number, number>;
   selected: number;
   focused: boolean;
-  dense: boolean;
   showMeta: boolean;
   gap: number;
   titleSpace: number;
   metaWidth: number;
-  tagWidth: number;
   showMarks: boolean;
   onSelect: (index: number) => void;
   onToggleStatus: (index: number) => void;
@@ -507,12 +452,10 @@ function ScrollingList({
   indexOf,
   selected,
   focused,
-  dense,
   showMeta,
   gap,
   titleSpace,
   metaWidth,
-  tagWidth,
   showMarks,
   onSelect,
   onToggleStatus,
@@ -551,7 +494,7 @@ function ScrollingList({
     return () => {
       root.off("layout-changed", onLayout);
     };
-  }, [renderer, groups, dense, gap, showMeta]);
+  }, [renderer, groups, gap, showMeta]);
   useSmoothScrollIntoView(scrollRef, anchorId, settled);
 
   return (
@@ -596,12 +539,10 @@ function ScrollingList({
                 theme={theme}
                 selected={index === selected}
                 focused={focused}
-                dense={dense}
                 showMeta={showMeta}
                 titleSpace={titleSpace}
                 metaWidth={metaWidth}
-                tagWidth={tagWidth}
-                showMarks={showMarks}
+                          showMarks={showMarks}
                 onSelect={onSelect}
                 onToggleStatus={onToggleStatus}
               />

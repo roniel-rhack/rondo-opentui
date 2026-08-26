@@ -36,8 +36,6 @@ import {
   HELP_SECTIONS,
   indexOfId,
   indexOfNoteDate,
-  isDense,
-  isOneLine,
   rowGap,
   cycleDensity,
   clampRatio,
@@ -708,32 +706,11 @@ describe("clampRatio / listWidthFor (1.10)", () => {
 });
 
 describe("density (1.6)", () => {
-  test("auto follows the height, the others are explicit", () => {
-    expect(isDense("auto", 24, 40)).toBe(true);
-    expect(isDense("auto", 30, 40)).toBe(false);
-    expect(isDense("dense", 50, 40)).toBe(true);
-    expect(isDense("comfortable", 20, 200)).toBe(false);
-  });
-
-  test("auto is dense on a wide list whatever the height", () => {
-    // A list this wide fits the metadata beside the title, so the second
-    // line would be mostly blank.
-    expect(isDense("auto", 50, 120)).toBe(true);
-    expect(isDense("auto", 50, 63)).toBe(false);
-    expect(isDense("auto", 50, 64)).toBe(true);
-  });
-
   test("the blank line between rows follows the density, not the height", () => {
     expect(rowGap("comfortable", 24)).toBe(1);
     expect(rowGap("dense", 50)).toBe(0);
     expect(rowGap("auto", 24)).toBe(0);
     expect(rowGap("auto", 30)).toBe(1);
-  });
-
-  test("one-line rows need a wide enough list", () => {
-    expect(isOneLine(64, true)).toBe(true);
-    expect(isOneLine(63, true)).toBe(false);
-    expect(isOneLine(120, false)).toBe(false);
   });
 
   test("z cycles auto, dense, comfortable", () => {

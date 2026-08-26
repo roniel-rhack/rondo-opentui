@@ -857,37 +857,16 @@ export function listWidthFor(ratio: number, width: number): number {
 
 /** Panel borders, rail indent and the scrollbar gutter around a list row. */
 const META_CHROME = 8;
-/** Below this the one-line layout has no title left. */
-const DENSE_MIN_META = 56;
 
 /** Columns a list of `width` leaves to a row's metadata cells. */
 export function metaWidthFor(width: number): number {
   return Math.max(width - META_CHROME, 10);
 }
 
-/** Whether rows collapse to one line: the caller asked for density and the
- * list is wide enough to hold the title and its cells side by side. */
-export function isOneLine(width: number, dense: boolean): boolean {
-  return dense && metaWidthFor(width) >= DENSE_MIN_META;
-}
-
-/** "auto" is dense whenever the rows would gain from it: a short terminal
- * shows more of them, and a wide list fits the metadata beside the title
- * instead of leaving most of a second line blank. */
-export function isDense(
-  density: Density,
-  height: number,
-  listWidth: number,
-): boolean {
-  if (density === "auto") {
-    return height < 30 || metaWidthFor(listWidth) >= DENSE_MIN_META;
-  }
-  return density === "dense";
-}
-
-/** Blank line between rows. It is the density that decides, not the height:
- * "comfortable" keeps the line on a short terminal, which is the point of
- * asking for it. */
+/** Blank line between rows, the one thing density changes: a row is always
+ * its title plus a metadata line, whatever the width. It is the density that
+ * decides, not the height: "comfortable" keeps the line on a short terminal,
+ * which is the point of asking for it. */
 export function rowGap(density: Density, height: number): number {
   if (density === "comfortable") return 1;
   if (density === "dense") return 0;

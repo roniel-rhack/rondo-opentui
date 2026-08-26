@@ -2435,11 +2435,11 @@ describe("TUI review 3 — task list", () => {
     m.renderer.destroy();
   });
 
-  test("wide, short terminals collapse rows to one line", async () => {
+  test("wide, short terminals keep the metadata under the title", async () => {
     const m = await mountWith(
       (data) => {
         const t = newTask({
-          title: "One line task",
+          title: "Two line task",
           priority: Priority.High,
           tags: ["ops", "later"],
           dueDate: GoTime.now().addDate(0, 0, 1),
@@ -2451,13 +2451,12 @@ describe("TUI review 3 — task list", () => {
       24,
     );
 
+    // Room enough to pack everything beside the title, and short enough to
+    // want the rows: the layout still does not change with the terminal.
     const lines = listLines(m.captureCharFrame());
-    const row = lines.find((l) => l.includes("One line task"))!;
-    expect(row).toMatch(/One line task +tomorrow +○○○○ 0\/1 +#ops +▲/);
-    // Nothing of that row spilled onto the next line.
-    expect(
-      lines.filter((l) => l.includes("tomorrow") || l.includes("#ops")),
-    ).toHaveLength(1);
+    const row = lines.findIndex((l) => l.includes("Two line task"));
+    expect(lines[row]).toMatch(/Two line task +▲ +│$/);
+    expect(lines[row + 1]).toMatch(/tomorrow +○○○○ 0\/1 +#ops #later/);
     m.renderer.destroy();
   });
 
@@ -2629,7 +2628,6 @@ describe("TUI review 3 — task list", () => {
           focused
           width={60}
           gap={0}
-          dense={false}
           sort="created"
           now={GoTime.now()}
           blocked={new Set()}
@@ -3483,30 +3481,55 @@ describe("TUI review 3 — keys and selection", () => {
       40,
       defaultConfig(),
       (d) => {
+        const due = GoTime.now().addDate(0, 0, 1);
         const t = newTask({
-          title: "One line task",
+          title: "Two line task",
           priority: Priority.High,
           tags: ["ops", "later"],
-          dueDate: GoTime.now().addDate(0, 0, 1),
+          dueDate: due,
         });
         d.tasks.create(t);
         d.tasks.addSubtask(t.id, "step");
+        d.tasks.create(newTask({ title: "Neighbour task", dueDate: due }));
       },
     );
-    const oneLine = /One line task +tomorrow +○○○○ 0\/1 +#ops +▲/;
+    const listLines = () =>
+      captureCharFrame()
+        .split("\n")
+        .map((line) => line.slice(0, line.indexOf("│ │") + 1));
+    // The title keeps its own line and the metadata sits underneath at every
+    // density: a list this wide could fit both side by side, but one layout
+    // everywhere beats one that changes with the terminal.
+    const twoLines = () => {
+      const lines = listLines();
+      const row = lines.findIndex((l) => l.includes("Two line task"));
+      expect(lines[row]).toMatch(/Two line task +▲/);
+      expect(lines[row]).not.toContain("tomorrow");
+      expect(lines[row + 1]).toMatch(/tomorrow +○○○○ 0\/1 +#ops #later/);
+    };
+    // Both tasks share a due date, so they sit next to each other and the
+    // distance between their title rows is two lines plus the gap.
+    const spacing = () => {
+      const lines = listLines();
+      const a = lines.findIndex((l) => l.includes("Two line task"));
+      const b = lines.findIndex((l) => l.includes("Neighbour task"));
+      return Math.abs(a - b);
+    };
 
-    // A list this wide already packs the metadata beside the title in auto:
-    // the second line would be mostly blank.
-    expect(captureCharFrame()).toMatch(oneLine);
+    twoLines();
+    expect(spacing()).toBe(3);
     await press("z");
     expect(captureCharFrame()).toContain("Density: dense");
-    expect(captureCharFrame()).toMatch(oneLine);
+    twoLines();
+    expect(spacing()).toBe(2);
     await press("z");
     expect(captureCharFrame()).toContain("Density: comfortable");
-    expect(captureCharFrame()).not.toMatch(oneLine);
+    twoLines();
+    expect(spacing()).toBe(3);
     await press("z");
     expect(captureCharFrame()).toContain("Density: auto");
-    expect(captureCharFrame()).toMatch(oneLine);
+    twoLines();
+    expect(spacing()).toBe(3);
     await press("z");
     await new Promise((r) => setTimeout(r, 500));
     expect(
@@ -4297,7 +4320,7 @@ describe("TUI review 3 — follow-ups", () => {
     renderer.destroy();
   });
 
-  test("1.6: a wide list packs rows onto one line in auto", async () => {
+  test("1.6: a wide list still keeps the metadata on its own line", async () => {
     const { captureCharFrame, renderer } = await mount(
       200,
       50,
@@ -4314,7 +4337,11 @@ describe("TUI review 3 — follow-ups", () => {
       },
     );
 
-    expect(captureCharFrame()).toMatch(/Wide row +tomorrow .*#ops +▲/);
+    const lines = listSide(captureCharFrame());
+    const row = lines.findIndex((l) => l.includes("Wide row"));
+    expect(lines[row]).toMatch(/Wide row +▲/);
+    expect(lines[row]).not.toContain("tomorrow");
+    expect(lines[row + 1]).toMatch(/tomorrow +#ops/);
     renderer.destroy();
   });
 
@@ -4331,34 +4358,16 @@ describe("TUI review 3 — follow-ups", () => {
     const dense = titleRows();
     expect(dense[1]! - dense[0]!).toBe(2);
 
+    // auto already drops the blank line on a short terminal, so the first
+    // step changes nothing visible and the toast says so.
     await press("z");
+    expect(captureCharFrame()).toContain(
+      "Density: dense · same spacing at this height",
+    );
     await press("z");
     expect(captureCharFrame()).toContain("Density: comfortable");
     const comfortable = titleRows();
     expect(comfortable[1]! - comfortable[0]!).toBe(3);
-    renderer.destroy();
-  });
-
-  test("1.6: one-line rows line up whether or not a row has a priority", async () => {
-    const { captureCharFrame, renderer } = await mount(
-      160,
-      24,
-      defaultConfig(),
-      (data) => {
-        const due = GoTime.now().addDate(0, 0, 1);
-        data.tasks.create(
-          newTask({ title: "With priority", priority: Priority.High, dueDate: due }),
-        );
-        data.tasks.create(
-          newTask({ title: "Without priority", priority: Priority.Low, dueDate: due }),
-        );
-      },
-    );
-
-    const lines = listSide(captureCharFrame());
-    const withGlyph = lines.find((l) => l.includes("With priority"))!;
-    const without = lines.find((l) => l.includes("Without priority"))!;
-    expect(withGlyph.indexOf("tomorrow")).toBe(without.indexOf("tomorrow"));
     renderer.destroy();
   });
 
@@ -4675,25 +4684,6 @@ describe("TUI review 3 — coherence follow-ups", () => {
     expect(captureCharFrame()).not.toContain("· 1 more");
     await press("u");
     expect(captureCharFrame()).toContain("Nothing to undo");
-    renderer.destroy();
-  });
-
-  test("z admits when the panel is too narrow for density to show", async () => {
-    // The list is ~48 columns at this ratio: all three densities render the
-    // same two-line rows, so the toast used to claim a change nothing made.
-    const { captureCharFrame, press, renderer } = await mount(120, 40);
-
-    await press("z");
-    expect(captureCharFrame()).toContain(
-      "Density: dense · widen the list with > to see it",
-    );
-
-    // Wide enough now: dense rows are one line and comfortable ones are two,
-    // so the same key does something and the toast drops the explanation.
-    for (let i = 0; i < 8; i++) await press(">");
-    await press("z");
-    expect(captureCharFrame()).toContain("Density: comfortable");
-    expect(captureCharFrame()).not.toContain("widen the list");
     renderer.destroy();
   });
 

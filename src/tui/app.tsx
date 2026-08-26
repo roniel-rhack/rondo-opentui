@@ -57,8 +57,6 @@ import {
   hintSpecs,
   indexOfId,
   indexOfNoteDate,
-  isDense,
-  isOneLine,
   listWidthFor,
   nextView,
   openFirst,
@@ -434,9 +432,6 @@ export function App({ data, onQuit }: AppProps) {
   const isJournal = tab === "journal";
   const compact = width < 72;
   const listWidth = compact ? width : listWidthFor(ratio, width);
-  // Density reads the list's width as well as the height: a wide list fits
-  // the metadata beside the title instead of half-filling a second line.
-  const dense = isDense(density, height, listWidth);
   const listGap = rowGap(density, height);
   const showTagBar = !isJournal && (tagBar || filters.tag !== null);
   const showSearchBar = searching || filters.query !== "";
@@ -984,17 +979,16 @@ export function App({ data, onQuit }: AppProps) {
   const toggleDensity = useCallback(() => {
     const next = cycleDensity(density);
     setDensity(next);
-    // Density only reaches the rows once the list is wide enough for the
-    // one-line layout; below that the toast would claim a change nothing made.
-    const before = isOneLine(listWidth, isDense(density, height, listWidth));
-    const after = isOneLine(listWidth, isDense(next, height, listWidth));
+    // "auto" already picks one of the two gaps for this height, so one step
+    // of the cycle changes nothing visible; the toast says so rather than
+    // claiming a change nothing made.
     notify(
-      before === after
-        ? `Density: ${next} · widen the list with > to see it`
+      rowGap(density, height) === rowGap(next, height)
+        ? `Density: ${next} · same spacing at this height`
         : `Density: ${next}`,
       "info",
     );
-  }, [density, height, listWidth, notify]);
+  }, [density, height, notify]);
 
   // The journal cannot see the selection, so a session started there is not
   // attached to a task the user never chose.
@@ -1459,9 +1453,9 @@ export function App({ data, onQuit }: AppProps) {
     ],
   );
 
-  // A page is what the focused panel can show; the list's rows vary with
-  // density, while the other surfaces are read line by line.
-  const listRowHeight = (isOneLine(listWidth, dense) ? 1 : 2) + listGap;
+  // A page is what the focused panel can show: two lines per task plus the
+  // density's gap, while the other surfaces are read line by line.
+  const listRowHeight = 2 + listGap;
   const listChrome =
     LIST_CHROME + (showTagBar ? 1 : 0) + (showSearchBar ? 1 : 0);
   const pageBy = useCallback(
@@ -1984,7 +1978,6 @@ export function App({ data, onQuit }: AppProps) {
                 focused={panel === 0}
                 width={listWidth}
                 gap={listGap}
-                dense={dense}
                 sort={sort}
                 now={now}
                 blocked={blocked}

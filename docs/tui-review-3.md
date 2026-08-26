@@ -42,7 +42,9 @@ unless the fix turned out incomplete — those are marked **(incomplete fix)**.
 >   after the last change and flushed on quit; `config.json` is untouched.
 > - **1.6 density** — `z` cycles auto / dense / comfortable; "auto" reads
 >   list width as well as height, and a session-only override survives
->   until the next `z`.
+>   until the next `z`. *Revised 2026-08-26:* the one-line layout was
+>   removed again — a row is always its title plus a metadata line whatever
+>   the width, so `z` only sets the blank line between rows.
 > - **3.15 marks** — `m` marks rows; `space` / `+` / `-` / `@` / `d` then
 >   act on every marked task as one grouped `UndoAction`, as specified.
 >
