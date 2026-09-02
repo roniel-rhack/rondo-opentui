@@ -322,3 +322,36 @@ function inlineSpans(theme: TuiTheme, line: string) {
     );
   });
 }
+
+/**
+ * `text` as spans with the characters at `indices` lit in `hl` and bold, so
+ * a fuzzy match shows which letters earned the row its place. Runs of lit
+ * and unlit characters share one span each; `attributes` (a strikethrough,
+ * the cursor row's bold) carry through the unlit ones.
+ */
+export function highlightSpans(
+  text: string,
+  indices: readonly number[],
+  fg: string,
+  hl: string,
+  attributes?: number,
+): ReactNode {
+  if (indices.length === 0) return text;
+  const lit = new Set(indices);
+  const runs: { text: string; lit: boolean }[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const on = lit.has(i);
+    const last = runs[runs.length - 1];
+    if (last && last.lit === on) last.text += text[i];
+    else runs.push({ text: text[i]!, lit: on });
+  }
+  return runs.map((run, i) => (
+    <span
+      key={`${i}-${run.text.slice(0, 4)}`}
+      fg={run.lit ? hl : fg}
+      attributes={run.lit ? (attributes ?? 0) | TextAttributes.BOLD : attributes}
+    >
+      {run.text}
+    </span>
+  ));
+}

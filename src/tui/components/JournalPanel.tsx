@@ -8,7 +8,7 @@ import {
 import type { Note } from "../../core/journal/journal.ts";
 import { GoTime } from "../../core/time.ts";
 import { useSmoothScrollIntoView } from "../hooks/useSmoothScroll.ts";
-import { plural } from "../state.ts";
+import { plainExcerpt, plural } from "../state.ts";
 import { mix, type TuiTheme } from "../theme.ts";
 import { EmptyState, MarkdownText } from "./primitives.tsx";
 
@@ -18,10 +18,15 @@ interface NoteListProps {
   notes: Note[];
   /** Overrides the default empty message, e.g. while a search filters. */
   emptyText?: string;
+  /** Outer width of the panel, borders included; sizes the preview line. */
+  width?: number;
   selected: number;
   focused: boolean;
   onSelect: (index: number) => void;
 }
+
+/** Panel borders, the rail and its indent, trailing padding, scrollbar. */
+const PREVIEW_CHROME = 2 + 2 + 1 + 1;
 
 /** Left panel of the Journal tab: one row per day. */
 export function NoteList({
@@ -29,6 +34,7 @@ export function NoteList({
   cfg,
   notes,
   emptyText,
+  width = 40,
   selected,
   focused,
   onSelect,
@@ -53,6 +59,7 @@ export function NoteList({
       theme={theme}
       cfg={cfg}
       notes={notes}
+      width={width}
       selected={selected}
       focused={focused}
       now={now}
@@ -62,6 +69,7 @@ export function NoteList({
 }
 
 interface NoteRowsProps extends NoteListProps {
+  width: number;
   now: GoTime;
 }
 
@@ -70,6 +78,7 @@ function NoteRows({
   theme,
   cfg,
   notes,
+  width,
   selected,
   focused,
   now,
@@ -77,6 +86,7 @@ function NoteRows({
 }: NoteRowsProps) {
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
   const selectedId = notes[selected]?.id;
+  const previewWidth = Math.max(width - PREVIEW_CHROME, 8);
 
   useSmoothScrollIntoView(
     scrollRef,
@@ -102,35 +112,46 @@ function NoteRows({
     >
       {notes.map((note, index) => {
         const isSelected = index === selected;
+        const rail = isSelected ? "┃" : "│";
+        const railTone = isSelected && focused ? theme.accent : theme.borderSubtle;
+        // The first entry's opening words, so a day can be told apart from
+        // its neighbours without opening it.
+        const preview = plainExcerpt(note.entries[0]?.body ?? "", previewWidth);
         return (
           <box
             key={note.id}
             id={`note-row-${note.id}`}
-            flexDirection="row"
-            paddingRight={1}
+            flexDirection="column"
             backgroundColor={isSelected ? theme.selectionBg : undefined}
             onMouseDown={() => onSelect(index)}
           >
-            <text
-              flexShrink={0}
-              fg={isSelected && focused ? theme.accent : theme.borderSubtle}
-            >
-              {isSelected ? "┃" : "│"}
-            </text>
-            <text
-              fg={note.hidden ? theme.textMuted : theme.text}
-              attributes={isSelected ? TextAttributes.BOLD : undefined}
-              flexGrow={1}
-              wrapMode="none"
-              truncate
-            >
-              {` ${formatNoteTitle(cfg, note.date, now)}`}
-            </text>
-            <text flexShrink={0} fg={theme.textDim}>
-              {`${plural(note.entries.length, "entry", "entries")}${
-                note.hidden ? " · hidden" : ""
-              }`}
-            </text>
+            <box flexDirection="row" paddingRight={1}>
+              <text flexShrink={0} fg={railTone}>
+                {rail}
+              </text>
+              <text
+                fg={note.hidden ? theme.textMuted : theme.text}
+                attributes={isSelected ? TextAttributes.BOLD : undefined}
+                flexGrow={1}
+                wrapMode="none"
+                truncate
+              >
+                {` ${formatNoteTitle(cfg, note.date, now)}`}
+              </text>
+              <text flexShrink={0} fg={theme.textDim}>
+                {`${plural(note.entries.length, "entry", "entries")}${
+                  note.hidden ? " · hidden" : ""
+                }`}
+              </text>
+            </box>
+            <box flexDirection="row" paddingRight={1}>
+              <text flexShrink={0} fg={railTone}>
+                {rail}
+              </text>
+              <text fg={theme.textMuted} wrapMode="none">
+                {` ${preview}`}
+              </text>
+            </box>
           </box>
         );
       })}

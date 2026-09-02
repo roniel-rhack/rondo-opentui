@@ -1961,6 +1961,16 @@ describe("TUI review 3 — detail and journal", () => {
     throw new Error(`no span contains ${JSON.stringify(needle)}`);
   }
 
+  /** Last such span on the first line that has one: the right panel's copy
+   * when the day list previews the same entry on the same row. */
+  function lastSpanWith(frame: CapturedFrame, needle: string): CapturedSpan {
+    for (const line of frame.lines) {
+      const span = [...line.spans].reverse().find((s) => s.text.includes(needle));
+      if (span) return span;
+    }
+    throw new Error(`no span contains ${JSON.stringify(needle)}`);
+  }
+
   function rowOf(frame: string, needle: string): number {
     const row = frame.split("\n").findIndex((l) => l.includes(needle));
     expect(row).toBeGreaterThan(0);
@@ -2223,11 +2233,11 @@ describe("TUI review 3 — detail and journal", () => {
     // The rail marks the entry's first line, the timestamp above the body.
     expect(lines[row - 1]).toContain("┃");
 
-    const dimmed = spanWith(captureSpans(), "Shipped the opentui port");
+    const dimmed = lastSpanWith(captureSpans(), "Shipped the opentui port");
     expect(hexOf(dimmed.bg)).toBe(mix(theme.selectionBg, theme.bg, 0.45));
 
     await press("l");
-    const focused = spanWith(captureSpans(), "Shipped the opentui port");
+    const focused = lastSpanWith(captureSpans(), "Shipped the opentui port");
     expect(hexOf(focused.bg)).toBe(theme.selectionBg);
     renderer.destroy();
   });
@@ -4084,7 +4094,7 @@ describe("TUI review 3 — filters, views, marks and persistence", () => {
     await press(" ");
     frame = captureCharFrame();
     expect(frame).toContain("2 tasks → Done · u undo");
-    expect(frame).toContain("No tasks yet");
+    expect(frame).toContain("All caught up");
     expect(frame).not.toContain("marked");
     expect(data.listTasks().filter((t) => t.status === Status.Done)).toHaveLength(3);
 
@@ -4138,7 +4148,7 @@ describe("TUI review 3 — filters, views, marks and persistence", () => {
     await press("m");
     await press("d");
     expect(captureCharFrame()).toContain("2 tasks → Deleted · u undo");
-    expect(captureCharFrame()).toContain("No tasks yet");
+    expect(captureCharFrame()).toContain("All caught up");
     await press("u");
     expect(data.listTasks()).toHaveLength(3);
     expect(captureCharFrame()).toContain("Refactor the parser");
@@ -4620,7 +4630,7 @@ describe("TUI review 3 — follow-ups", () => {
     const before = selected();
 
     await press("2");
-    expect(captureCharFrame()).toContain("No tasks yet");
+    expect(captureCharFrame()).toContain("Nothing finished yet");
     await press("1");
     expect(selected()).toBe(before);
     renderer.destroy();
@@ -4766,6 +4776,235 @@ describe("TUI review 3 — coherence follow-ups", () => {
     expect(title).toBeGreaterThan(journal);
     // Two columns of clear space between the tab strip and the focus block.
     expect(header.slice(journal, title)).toMatch(/\s{2,}$/);
+    renderer.destroy();
+  });
+});
+
+describe("TUI polish — highlights, focus marker, rows and journal", () => {
+  function darkConfig() {
+    const cfg = defaultConfig();
+    cfg.theme = "dark";
+    return cfg;
+  }
+  const theme = tuiTheme(true);
+
+  function hexOf(color: CapturedSpan["fg"]): string {
+    const [r, g, b] = color.toInts();
+    return `#${[r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("")}`;
+  }
+
+  /** Width of the list panel at 100 columns. */
+  const LIST_WIDTH = 40;
+
+  /** Spans inside the list panel on the first line where one of them
+   * contains `needle`; the detail panel repeats titles, so the search stays
+   * left of it. */
+  function listSpansOfLine(frame: CapturedFrame, needle: string): CapturedSpan[] {
+    for (const line of frame.lines) {
+      const left: CapturedSpan[] = [];
+      let x = 0;
+      for (const span of line.spans) {
+        if (x < LIST_WIDTH) left.push(span);
+        x += span.width;
+      }
+      if (left.some((s) => s.text.includes(needle))) return left;
+    }
+    throw new Error(`no list line contains ${JSON.stringify(needle)}`);
+  }
+
+  function bgOf(spans: CapturedSpan[], needle: string): string {
+    const span = spans.find((s) => s.text.includes(needle));
+    if (!span) throw new Error(`no span contains ${JSON.stringify(needle)}`);
+    return hexOf(span.bg);
+  }
+
+  function leftOf(frame: string): string[] {
+    return frame.split("\n").map((line) => {
+      const end = line.indexOf("│ │");
+      return end < 0 ? line : line.slice(0, end + 1);
+    });
+  }
+
+  test("the filter text lights the letters it matched in each title", async () => {
+    const { captureSpans, captureCharFrame, press, type, renderer } = await mount(
+      100,
+      30,
+      darkConfig(),
+    );
+
+    await press("/");
+    await type("refac");
+    expect(captureCharFrame()).toContain("Refactor the parser");
+    const spans = listSpansOfLine(captureSpans(), "tor the parser");
+    const lit = spans.find((s) => s.text === "Refac");
+    expect(lit).toBeDefined();
+    expect(hexOf(lit!.fg)).toBe(theme.accent);
+    // The rest of the title keeps the row's own tone.
+    const rest = spans.find((s) => s.text.startsWith("tor the parser"));
+    expect(hexOf(rest!.fg)).not.toBe(theme.accent);
+    renderer.destroy();
+  });
+
+  test("a scattered match lights each letter it used", async () => {
+    const { captureSpans, press, type, renderer } = await mount(100, 30, darkConfig());
+
+    await press("/");
+    await type("wtr");
+    const spans = listSpansOfLine(captureSpans(), "eport");
+    const lit = spans
+      .filter((s) => hexOf(s.fg) === theme.accent && !["│", "┃"].includes(s.text))
+      .map((s) => s.text);
+    expect(lit).toEqual(["W", "t", "r"]);
+    renderer.destroy();
+  });
+
+  test("the palette lights the matched letters of a command", async () => {
+    const { captureSpans, press, type, renderer } = await mount(100, 30, darkConfig());
+
+    await press("k", { ctrl: true });
+    await type("subt");
+    const frame = captureSpans();
+    const lit = frame.lines
+      .flatMap((l) => l.spans)
+      .find((s) => hexOf(s.fg) === theme.accent && s.text === "subt");
+    expect(lit).toBeDefined();
+    renderer.destroy();
+  });
+
+  test("a running focus session marks its task in the list and the detail", async () => {
+    const { captureCharFrame, press, renderer } = await mount(100, 30);
+
+    await press("f");
+    let frame = captureCharFrame();
+    expect(leftOf(frame).join("\n")).toContain("○ ▶ Refactor the parser");
+    expect(frame).toContain("▶ FOCUSING");
+    expect(frame).toContain("Focus started (25m) · #3 Refactor the parser");
+
+    // The marker follows the session, not the cursor.
+    await press("j");
+    frame = captureCharFrame();
+    expect(leftOf(frame).join("\n")).toContain("▶ Refactor the parser");
+    expect(frame).not.toContain("FOCUSING");
+
+    await press("f");
+    frame = captureCharFrame();
+    expect(frame).not.toContain("▶ ");
+    renderer.destroy();
+  });
+
+  test("group headers run a rule to the panel edge", async () => {
+    const { captureCharFrame, renderer } = await mount(100, 30);
+
+    const lines = leftOf(captureCharFrame());
+    const header = lines.find((l) => l.includes("LATER  2"))!;
+    expect(header).toMatch(/LATER {2}2 ─{10,} *│$/);
+    // The rule stops where the rows stop: under the priority glyph, which is
+    // the last cell before the row's trailing padding.
+    const row = lines.find((l) => l.includes("Write the report"))!;
+    expect(header.lastIndexOf("─")).toBe(row.indexOf("▲"));
+    renderer.destroy();
+  });
+
+  test("an empty Active tab with finished work says so", async () => {
+    const { captureCharFrame, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (d) => {
+        for (const t of d.tasks.list()) {
+          if (t.status !== Status.Done) d.setStatus(t, Status.Done);
+        }
+      },
+    );
+
+    const frame = captureCharFrame();
+    expect(frame).toContain("All caught up");
+    expect(frame).toContain("Press 2 to see what you finished");
+    expect(frame).not.toContain("No tasks yet");
+    renderer.destroy();
+  });
+
+  test("a journal day previews its first entry under the date", async () => {
+    const { captureCharFrame, goToTab, renderer } = await mount(
+      100,
+      30,
+      defaultConfig(),
+      (d) => {
+        d.addJournalEntry(
+          "# Heading\n\n- **Bold** start of yesterday",
+          GoTime.now().addDate(0, 0, -1).format(DateOnly),
+        );
+      },
+    );
+
+    await goToTab("journal");
+    const left = leftOf(captureCharFrame());
+    const today = left.findIndex((l) => l.includes("Shipped the opentui port"));
+    expect(today).toBeGreaterThan(0);
+    // Markdown markers are stripped from the preview.
+    const old = left.find((l) => l.includes("Heading Bold start of yesterday"));
+    expect(old).toBeDefined();
+    expect(old).not.toContain("**");
+    renderer.destroy();
+  });
+
+  test("a double click on a row opens it for editing", async () => {
+    const { captureCharFrame, click, renderer } = await mount(100, 30);
+
+    const row = captureCharFrame()
+      .split("\n")
+      .findIndex((l) => l.includes("Write the report"));
+    expect(row).toBeGreaterThan(0);
+    await click(8, row);
+    expect(captureCharFrame()).not.toContain("Edit task");
+    await click(8, row);
+    expect(captureCharFrame()).toContain("Edit task #1");
+    renderer.destroy();
+  });
+
+  test("the palette leads with what it ran last time", async () => {
+    const { captureCharFrame, press, type, renderer } = await mount(100, 30);
+
+    await press("k", { ctrl: true });
+    expect(captureCharFrame()).not.toContain("RECENT");
+    await type("add note");
+    await press("RETURN");
+    expect(captureCharFrame()).toContain("Add note");
+    await press("ESCAPE");
+
+    await press("k", { ctrl: true });
+    const lines = captureCharFrame().split("\n");
+    const recent = lines.findIndex((l) => l.includes("RECENT"));
+    const task = lines.findIndex((l) => l.includes("TASK"));
+    expect(recent).toBeGreaterThan(0);
+    expect(recent).toBeLessThan(task);
+    expect(lines[recent + 1]).toContain("Add note");
+    renderer.destroy();
+  });
+
+  test("an edited row glows for a moment, then settles", async () => {
+    const { captureSpans, press, renderer, flush } = await mount(
+      100,
+      30,
+      darkConfig(),
+    );
+
+    // Second row: the report goes High → Urgent and stays where it is in
+    // the due order, so the same row is still under the cursor.
+    await press("j");
+    const title = "Write the report";
+    expect(bgOf(listSpansOfLine(captureSpans(), title), title)).toBe(theme.selectionBg);
+
+    await press("+");
+    const during = bgOf(listSpansOfLine(captureSpans(), title), title);
+    expect(during).not.toBe(theme.selectionBg);
+    expect(during).not.toBe(theme.bg);
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 700));
+    });
+    await flush();
+    expect(bgOf(listSpansOfLine(captureSpans(), title), title)).toBe(theme.selectionBg);
     renderer.destroy();
   });
 });

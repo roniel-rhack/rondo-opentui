@@ -161,27 +161,66 @@ export function restoredTag(
   return known ? tag : null;
 }
 
+/** Positions of `needle` in `haystack`, both lowercased: the needle as one
+ * run when it occurs whole, else the greedy left-to-right subsequence. The
+ * whole run is tried first so "subt" lands on "subtask" rather than on a
+ * stray s two words earlier. */
+function matchIndices(needle: string, haystack: string): number[] | null {
+  const at = haystack.indexOf(needle);
+  if (at !== -1) return Array.from({ length: needle.length }, (_, i) => at + i);
+  const out: number[] = [];
+  let hIdx = 0;
+  for (const ch of needle) {
+    const found = haystack.indexOf(ch, hIdx);
+    if (found === -1) return null;
+    out.push(found);
+    hIdx = found + 1;
+  }
+  return out;
+}
+
 /** Case-insensitive subsequence match with a simple locality score. */
 export function fuzzyScore(needle: string, haystack: string): number | null {
   if (needle === "") return 0;
-  const n = needle.toLowerCase();
   const h = haystack.toLowerCase();
+  const hits = matchIndices(needle.toLowerCase(), h);
+  if (hits === null) return null;
 
   let score = 0;
-  let hIdx = 0;
   let lastMatch = -1;
-
-  for (const ch of n) {
-    const found = h.indexOf(ch, hIdx);
-    if (found === -1) return null;
+  for (const found of hits) {
     // Consecutive characters score better than scattered ones.
     score += found === lastMatch + 1 ? 3 : 1;
     if (found === 0 || h[found - 1] === " ") score += 2;
     lastMatch = found;
-    hIdx = found + 1;
   }
-  // Shorter haystacks win ties.
-  return score - haystack.length * 0.01;
+  // An early match beats a late one of the same shape: the title comes
+  // before the description, and "re" should mean Refactor before report.
+  // Shorter haystacks win what is left.
+  return score - (hits[0] ?? 0) * 0.05 - haystack.length * 0.01;
+}
+
+/** Positions in `haystack` that `fuzzyScore` counted, so what a row lights
+ * up is what ranked it. Null when there is no match; empty for an empty
+ * needle. */
+export function fuzzyIndices(needle: string, haystack: string): number[] | null {
+  if (needle === "") return [];
+  return matchIndices(needle.toLowerCase(), haystack.toLowerCase());
+}
+
+/** Highlight positions for a row ranked as `prefix + text` that only draws
+ * `text`: the text alone is tried first, so a query that fits the label
+ * lights the label; only a match that needed the prefix ("#12 fix") falls
+ * back to the shared walk, re-based on the text. */
+export function fuzzyIndicesAfter(
+  needle: string,
+  prefix: string,
+  text: string,
+): number[] {
+  const own = fuzzyIndices(needle, text);
+  if (own !== null) return own;
+  const hits = fuzzyIndices(needle, `${prefix}${text}`) ?? [];
+  return hits.filter((i) => i >= prefix.length).map((i) => i - prefix.length);
 }
 
 /** Journal notes matching a query, filtered but never re-ranked: the journal
@@ -211,11 +250,14 @@ export function parseDueInput(raw: string, now: GoTime): GoTime | null {
   return parseDueDateInput(raw, now);
 }
 
-/** Toast for the focus toggle, matching what actually starts or stops. */
+/** Toast for the focus toggle, matching what actually starts or stops. A
+ * work session names the task it is attached to, since that is what the
+ * timer will log to when it ends. */
 export function focusStatusMessage(
   running: boolean,
   kind: SessionKind,
   cfg: Config,
+  task?: { id: number; title: string } | null,
 ): string {
   if (running) return "Focus stopped";
   switch (kind) {
@@ -223,8 +265,10 @@ export function focusStatusMessage(
       return `Break started (${cfg.focus.shortBreakDuration}m)`;
     case SessionKind.LongBreak:
       return `Break started (${cfg.focus.longBreakDuration}m)`;
-    default:
-      return `Focus started (${cfg.focus.workDuration}m)`;
+    default: {
+      const on = task ? ` · #${task.id} ${excerptOf(task.title, 40)}` : "";
+      return `Focus started (${cfg.focus.workDuration}m)${on}`;
+    }
   }
 }
 
@@ -910,6 +954,19 @@ export function excerptOf(text: string, max = 48): string {
   const flat = text.replace(/\s+/g, " ").trim();
   if (flat.length <= max) return flat;
   return `${flat.slice(0, max - 1).trimEnd()}…`;
+}
+
+/** `excerptOf` with the markdown the app renders stripped first, so a
+ * journal day's preview reads as prose rather than as `**` and `#`. */
+export function plainExcerpt(text: string, max = 48): string {
+  const plain = text
+    .split("\n")
+    .map((line) => line.replace(/^\s*(#{1,6}\s+|>\s+|[-*]\s+)/, ""))
+    .join(" ")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1");
+  return excerptOf(plain, max);
 }
 
 export type HintAction =

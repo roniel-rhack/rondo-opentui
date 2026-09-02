@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { buildPaletteActions, type PaletteContext } from "../src/tui/palette.ts";
+import {
+  RECENT_GROUP,
+  RECENT_LIMIT,
+  buildPaletteActions,
+  rememberRecent,
+  withRecent,
+  type PaletteContext,
+} from "../src/tui/palette.ts";
 import { TABS } from "../src/tui/state.ts";
 
 /** A context whose every callback records the id that ran it. */
@@ -121,5 +128,33 @@ describe("buildPaletteActions", () => {
       "export:json:tasks",
       "goToTab:done",
     ]);
+  });
+});
+
+describe("recent actions", () => {
+  test("the newest run leads, repeats move up and the list stays short", () => {
+    let ids: string[] = [];
+    for (const id of ["a", "b", "c", "a", "d", "e", "f", "g"]) {
+      ids = rememberRecent(ids, id);
+    }
+    expect(ids).toEqual(["g", "f", "e", "d", "a"]);
+    expect(ids).toHaveLength(RECENT_LIMIT);
+  });
+
+  test("recent actions are lifted into a leading group without duplicates", () => {
+    const { ctx } = context();
+    const actions = buildPaletteActions(ctx);
+    const ordered = withRecent(actions, ["task.add", "app.quit", "no.such.id"]);
+    expect(ordered.slice(0, 2).map((a) => [a.id, a.group])).toEqual([
+      ["task.add", RECENT_GROUP],
+      ["app.quit", RECENT_GROUP],
+    ]);
+    expect(ordered).toHaveLength(actions.length);
+    expect(ordered.filter((a) => a.id === "task.add")).toHaveLength(1);
+    // Everything else keeps its own group and order.
+    const rest = ordered.slice(2).map((a) => a.id);
+    expect(rest).toEqual(
+      actions.map((a) => a.id).filter((id) => id !== "task.add" && id !== "app.quit"),
+    );
   });
 });

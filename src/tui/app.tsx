@@ -35,7 +35,7 @@ import {
 import { useTaskData } from "./hooks/useTaskData.ts";
 import { useToast } from "./hooks/useToast.ts";
 import { useUndo } from "./hooks/useUndo.ts";
-import { buildPaletteActions } from "./palette.ts";
+import { buildPaletteActions, rememberRecent, withRecent } from "./palette.ts";
 import {
   DUE_CHIPS,
   TABS,
@@ -234,6 +234,7 @@ export function App({ data, onQuit }: AppProps) {
     reloadNotes,
     reloadAll,
     refreshTasks,
+    revisions,
   } = useTaskData(data, notify);
 
   const restored = useRestoredSession();
@@ -314,6 +315,12 @@ export function App({ data, onQuit }: AppProps) {
   );
   const knownTags = useMemo(() => collectTags(tasks), [tasks]);
   const tagNames = useMemo(() => knownTags.map((t) => t.tag), [knownTags]);
+  // The free text of the query is what the rows light up; #tag and !high
+  // tokens filter without matching letters.
+  const queryText = useMemo(
+    () => parseFilterQuery(filters.query).text,
+    [filters.query],
+  );
   const shownNotes = useMemo(
     () => visibleNotes(notes, filters.query),
     [notes, filters.query],
@@ -467,6 +474,22 @@ export function App({ data, onQuit }: AppProps) {
       taskId: selectedTask.id,
     });
   }, [selectedTask]);
+
+  // A double click edits the row it landed on, which is selected by then
+  // but not yet committed: the form reads the task from the list instead.
+  const openEditTaskAt = useCallback(
+    (index: number) => {
+      const task = shown[index];
+      if (!task) return;
+      setModal({
+        type: "task-form",
+        title: `Edit task #${task.id}`,
+        initial: fromTask(task),
+        taskId: task.id,
+      });
+    },
+    [shown],
+  );
 
   const submitTaskForm = useCallback(
     (values: TaskFormValues, taskId: number | null) => {
@@ -993,8 +1016,12 @@ export function App({ data, onQuit }: AppProps) {
   // The journal cannot see the selection, so a session started there is not
   // attached to a task the user never chose.
   const toggleFocus = useCallback(() => {
-    pomodoro.toggle(isJournal ? 0 : (selectedTask?.id ?? 0));
-    notify(focusStatusMessage(pomodoro.running, pomodoro.kind, cfg), "info");
+    const task = isJournal ? null : selectedTask;
+    pomodoro.toggle(task?.id ?? 0);
+    notify(
+      focusStatusMessage(pomodoro.running, pomodoro.kind, cfg, task),
+      "info",
+    );
   }, [cfg, isJournal, notify, pomodoro, selectedTask]);
 
   // Quitting exits the process, so whatever the debounces are still holding
@@ -1338,9 +1365,17 @@ export function App({ data, onQuit }: AppProps) {
 
   // -------------------------------------------------------------- palette
 
+  // What the palette ran earlier this session leads its list next time; a
+  // session-only memory, so a stale id never outlives the tab that had it.
+  const [recentActions, setRecentActions] = useState<string[]>([]);
+  const noteRecent = useCallback(
+    (id: string) => setRecentActions((ids) => rememberRecent(ids, id)),
+    [],
+  );
+
   const paletteActions = useMemo(
     () =>
-      buildPaletteActions({
+      withRecent(buildPaletteActions({
         tab,
         marked: marked.size,
         addTask: openAddTask,
@@ -1380,7 +1415,7 @@ export function App({ data, onQuit }: AppProps) {
         exportTo,
         quit: requestQuit,
         goToTab: setTab,
-      }),
+      }), recentActions),
     [
       addJournalEntry,
       addSubtask,
@@ -1404,6 +1439,7 @@ export function App({ data, onQuit }: AppProps) {
       pressDue,
       pressPriority,
       pressStart,
+      recentActions,
       reloadFromDisk,
       requestQuit,
       resizePanels,
@@ -1466,7 +1502,9 @@ export function App({ data, onQuit }: AppProps) {
         else move(direction * lines);
         return;
       }
-      const rowHeight = tab === "journal" ? (panel === 0 ? 1 : 3) : listRowHeight;
+      // A journal day is its date plus a preview line; an entry is a stamp,
+      // a line of prose and a blank line.
+      const rowHeight = tab === "journal" ? (panel === 0 ? 2 : 3) : listRowHeight;
       move(direction * pageSize(height, rowHeight, listChrome));
     },
     [height, listChrome, listRowHeight, move, panel, rows.length, tab],
@@ -1715,6 +1753,12 @@ export function App({ data, onQuit }: AppProps) {
         : undefined,
     [pomodoro.taskId, tasks],
   );
+  // Only a work session is "focusing on" its task; a break attached to one
+  // is time away from it.
+  const focusTaskId =
+    pomodoro.running && pomodoro.kind === SessionKind.Work && pomodoro.taskId
+      ? pomodoro.taskId
+      : null;
 
   // Memoized so the header only reconciles when the session itself changes;
   // the per-second readout lives in a leaf inside it.
@@ -1887,6 +1931,24 @@ export function App({ data, onQuit }: AppProps) {
   const filtered =
     filters.query !== "" || filters.tag !== null || filters.view !== "all";
 
+  // An empty list says why it is empty: a filter that matched nothing, a
+  // day with everything done, a Done tab nothing has reached yet.
+  const empty = filtered
+    ? { icon: "⌕", title: "No matches", hint: "Press esc to clear the filter" }
+    : tab === "active" && counts.done > 0
+      ? {
+          icon: "✓",
+          title: "All caught up",
+          hint: "Press 2 to see what you finished",
+        }
+      : tab === "done"
+        ? {
+            icon: "○",
+            title: "Nothing finished yet",
+            hint: "Press space on a task to mark it done",
+          }
+        : { icon: "✦", title: "No tasks yet", hint: "Press a to create your first task" };
+
   return (
     <box
       flexGrow={1}
@@ -1962,6 +2024,7 @@ export function App({ data, onQuit }: AppProps) {
                     ? "No entries match — esc clears the search"
                     : undefined
                 }
+                width={listWidth}
                 selected={noteIndex}
                 focused={panel === 0}
                 onSelect={(i) => {
@@ -1982,16 +2045,16 @@ export function App({ data, onQuit }: AppProps) {
                 now={now}
                 blocked={blocked}
                 marked={marked}
+                query={queryText}
+                focusTaskId={focusTaskId}
+                revisions={revisions}
                 onSelect={selectTaskAt}
                 onActivate={focusList}
                 onToggleStatus={toggleRowStatus}
-                emptyIcon={filtered ? "⌕" : "✦"}
-                emptyTitle={filtered ? "No matches" : "No tasks yet"}
-                emptyHint={
-                  filtered
-                    ? "Press esc to clear the filter"
-                    : "Press a to create your first task"
-                }
+                onOpen={openEditTaskAt}
+                emptyIcon={empty.icon}
+                emptyTitle={empty.title}
+                emptyHint={empty.hint}
               />
             )}
           </Panel>
@@ -2034,6 +2097,7 @@ export function App({ data, onQuit }: AppProps) {
                   onSelectRow={selectDetailRow}
                   onToggleSubtask={toggleSubtaskAt}
                   blocked={selectedTask ? blocked.has(selectedTask.id) : false}
+                  focusing={selectedTask?.id === focusTaskId}
                   blockedByTitles={taskTitles}
                   onFilterTag={setTagFilter}
                 />
@@ -2135,6 +2199,7 @@ export function App({ data, onQuit }: AppProps) {
           screenWidth={width}
           screenHeight={height}
           onPickTask={goToTask}
+          onRun={noteRecent}
           onClose={closeModal}
         />
       ) : null}

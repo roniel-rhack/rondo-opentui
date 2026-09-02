@@ -12,7 +12,9 @@ import {
 import type { GoTime } from "../../core/time.ts";
 import { DueLevel } from "../../core/ui/overdue.ts";
 import { useSmoothScrollIntoView } from "../hooks/useSmoothScroll.ts";
+import { useFlash } from "../hooks/useTween.ts";
 import {
+  fuzzyIndices,
   groupTasks,
   metaWidthFor,
   relativeDue,
@@ -20,7 +22,7 @@ import {
   type TaskGroup,
 } from "../state.ts";
 import { mix, priorityColors, type TuiTheme } from "../theme.ts";
-import { EmptyState } from "./primitives.tsx";
+import { EmptyState, highlightSpans } from "./primitives.tsx";
 
 interface TaskListProps {
   theme: TuiTheme;
@@ -38,9 +40,19 @@ interface TaskListProps {
   blocked: ReadonlySet<number>;
   /** Tasks marked for a bulk action. */
   marked?: ReadonlySet<number>;
+  /** Free text of the active filter; the letters it matched light up in
+   * each title, so the ranking is explained rather than a mystery. */
+  query?: string;
+  /** Task the running focus session is attached to, marked in its row so
+   * the header timer and the list agree on what is being worked on. */
+  focusTaskId?: number | null;
+  /** In-place refresh counts per task; a row glows when its count moves. */
+  revisions?: ReadonlyMap<number, number>;
   onSelect: (index: number) => void;
   onActivate: (index: number) => void;
   onToggleStatus: (index: number) => void;
+  /** A double click on a row; the caller opens it for editing. */
+  onOpen?: (index: number) => void;
   emptyIcon: string;
   emptyTitle: string;
   emptyHint?: string;
@@ -81,6 +93,29 @@ const MAX_VISIBLE_TAGS = 2;
  * trailing padding and the scrollbar gutter. */
 const ROW_CHROME = 2 + 1 + 3 + 1 + 1;
 
+/** Two clicks on the same row inside this window open it for editing. */
+const DOUBLE_CLICK_MS = 400;
+
+/** Section headers take the tone of what they hold, so the eye lands on
+ * the overdue block before reading a word. */
+function groupTone(theme: TuiTheme, label: string): string {
+  switch (label) {
+    case "Overdue":
+    case "Urgent":
+      return theme.dark ? mix(theme.danger, theme.textMuted, 0.25) : theme.danger;
+    case "Today":
+    case "High":
+      return theme.warning;
+    case "This week":
+    case "Medium":
+      return theme.info;
+    case "Done":
+      return theme.success;
+    default:
+      return theme.textMuted;
+  }
+}
+
 /** Four-dot progress, easier to scan than a tiny bar. */
 function progressDots(completed: number, total: number): string {
   if (total === 0) return "";
@@ -111,12 +146,19 @@ interface RowModel {
   recurring: boolean;
   blocked: boolean;
   marked: boolean;
+  /** The running focus session is attached to this task. */
+  focusing: boolean;
   dueLabel: string;
   dueLevel: DueLevel;
   progress: string;
   tags: string;
   /** "✓ date" for completed tasks; empty otherwise. */
   doneLabel: string;
+  /** Title positions the filter text matched; empty without a query. */
+  matches: number[];
+  /** Changes after mount make the row glow: an in-place refresh from this
+   * session, or a newer stored timestamp from another connection. */
+  flashKey: string;
 }
 
 interface RowProps extends RowModel {
@@ -145,11 +187,14 @@ const TaskRow = memo(function TaskRow({
   recurring,
   blocked,
   marked,
+  focusing,
   dueLabel,
   dueLevel,
   progress,
   tags,
   doneLabel,
+  matches,
+  flashKey,
   theme,
   selected,
   focused,
@@ -161,6 +206,7 @@ const TaskRow = memo(function TaskRow({
   onToggleStatus,
 }: RowProps) {
   const [hover, setHover] = useState(false);
+  const flash = useFlash(flashKey);
 
   const done = status === Status.Done;
   const priorityColor = priorityColors(theme)[priority] ?? theme.textMuted;
@@ -171,12 +217,17 @@ const TaskRow = memo(function TaskRow({
       : theme.textMuted;
 
   // The selection keeps its fill whether or not the list has focus; the rail
-  // and the bold title are what say "keys go here".
-  const background = selected
+  // and the bold title are what say "keys go here". An edit tints the row
+  // for a moment on top of that, then fades back.
+  const restingBg = selected
     ? theme.selectionBg
     : hover
       ? theme.hoverBg
       : undefined;
+  const background =
+    flash > 0
+      ? mix(restingBg ?? theme.bg, theme.accentSoft, flash * 0.9)
+      : restingBg;
 
   // The rail says where the cursor is; a mark is a second, independent state
   // and gets its own column, or marking the row under the cursor would be
@@ -194,8 +245,19 @@ const TaskRow = memo(function TaskRow({
 
   // Fixed cells on the title line eat into the title's room.
   const extras =
-    (blocked ? 2 : 0) + (recurring ? 2 : 0) + (priorityGlyph ? 2 : 0);
+    (blocked ? 2 : 0) +
+    (focusing ? 2 : 0) +
+    (recurring ? 2 : 0) +
+    (priorityGlyph ? 2 : 0);
   const shownTitle = fit(title, Math.max(titleSpace - extras, 0));
+  // Only letters that survived the trim light up; the ellipsis never does.
+  const lit = matches.filter((i) => i < shownTitle.length && shownTitle[i] === title[i]);
+  const titleTone = done ? theme.textMuted : selected ? theme.text : theme.textDim;
+  const titleAttributes = done
+    ? TextAttributes.STRIKETHROUGH
+    : selected && focused
+      ? TextAttributes.BOLD
+      : undefined;
 
   // Second line, left-packed: an empty due cell does not hold its column.
   let dueCell = "";
@@ -251,21 +313,21 @@ const TaskRow = memo(function TaskRow({
           </text>
         ) : null}
 
+        {focusing ? (
+          <text flexShrink={0} fg={theme.warning} attributes={TextAttributes.BOLD}>
+            {"▶ "}
+          </text>
+        ) : null}
+
         <text
-          fg={done ? theme.textMuted : selected ? theme.text : theme.textDim}
-          attributes={
-            done
-              ? TextAttributes.STRIKETHROUGH
-              : selected && focused
-                ? TextAttributes.BOLD
-                : undefined
-          }
+          fg={titleTone}
+          attributes={titleAttributes}
           flexGrow={1}
           // The title is trimmed by hand above; no-wrap keeps the row one
           // line tall should a width estimate ever be off.
           wrapMode="none"
         >
-          {shownTitle}
+          {highlightSpans(shownTitle, lit, titleTone, theme.accent, titleAttributes)}
         </text>
 
         {recurring ? (
@@ -311,6 +373,7 @@ interface ListCallbacks {
   onSelect: (index: number) => void;
   onActivate: (index: number) => void;
   onToggleStatus: (index: number) => void;
+  onOpen?: (index: number) => void;
 }
 
 /** Scrollable, mouse-aware task list. */
@@ -326,20 +389,33 @@ export const TaskList = memo(function TaskList({
   now,
   blocked,
   marked,
+  query = "",
+  focusTaskId = null,
+  revisions,
   onSelect,
   onActivate,
   onToggleStatus,
+  onOpen,
   emptyIcon,
   emptyTitle,
   emptyHint,
 }: TaskListProps) {
   // Rows get handlers created once; the latest callbacks live behind a ref
   // so an inline closure from the caller never re-renders every row.
-  const callbacks = useRef<ListCallbacks>({ onSelect, onActivate, onToggleStatus });
-  callbacks.current = { onSelect, onActivate, onToggleStatus };
+  const callbacks = useRef<ListCallbacks>({ onSelect, onActivate, onToggleStatus, onOpen });
+  callbacks.current = { onSelect, onActivate, onToggleStatus, onOpen };
+  // A second click on the row already under the cursor opens it, the way a
+  // double click does everywhere else; the first click still selects.
+  const lastClick = useRef({ index: -1, at: 0 });
   const handleSelect = useCallback((index: number) => {
     callbacks.current.onSelect(index);
     callbacks.current.onActivate(index);
+    const now = Date.now();
+    const again =
+      lastClick.current.index === index &&
+      now - lastClick.current.at < DOUBLE_CLICK_MS;
+    lastClick.current = again ? { index: -1, at: 0 } : { index, at: now };
+    if (again) callbacks.current.onOpen?.(index);
   }, []);
   const handleToggle = useCallback((index: number) => {
     callbacks.current.onToggleStatus(index);
@@ -349,8 +425,11 @@ export const TaskList = memo(function TaskList({
   // keeps the row models stable while the caller's clock ticks.
   const nowKey = Math.floor(now.ms / 15_000);
   const rows = useMemo(
-    () => tasks.map((task) => toRowModel(task, cfg, now, blocked, marked)),
-    [tasks, cfg, nowKey, blocked, marked],
+    () =>
+      tasks.map((task) =>
+        toRowModel(task, cfg, now, blocked, marked, query, focusTaskId, revisions),
+      ),
+    [tasks, cfg, nowKey, blocked, marked, query, focusTaskId, revisions],
   );
   const groups = useMemo(
     () => groupTasks(tasks, sort, now),
@@ -407,6 +486,9 @@ function toRowModel(
   now: GoTime,
   blocked: ReadonlySet<number>,
   marked: ReadonlySet<number> | undefined,
+  query: string,
+  focusTaskId: number | null,
+  revisions: ReadonlyMap<number, number> | undefined,
 ): RowModel {
   const done = task.status === Status.Done;
   const due = task.dueDate && !done ? relativeDue(task.dueDate, now) : null;
@@ -418,11 +500,16 @@ function toRowModel(
     recurring: task.recurFreq !== RecurFreq.None,
     blocked: blocked.has(task.id),
     marked: marked?.has(task.id) ?? false,
+    focusing: focusTaskId === task.id,
     dueLabel: due?.label ?? "",
     dueLevel: due?.level ?? DueLevel.None,
     progress: progressDots(completedSubtasks(task), task.subtasks.length),
     tags: tagCellFor(task.tags, MAX_VISIBLE_TAGS),
     doneLabel: done ? `✓ ${formatDate(cfg, task.updatedAt)}` : "",
+    // A task can match on its description or tags alone; then nothing in
+    // the title lights up, which is honest.
+    matches: query === "" ? [] : (fuzzyIndices(query, task.title) ?? []),
+    flashKey: `${revisions?.get(task.id) ?? 0}/${task.updatedAt.ms}`,
   };
 }
 
@@ -520,14 +607,28 @@ function ScrollingList({
       {groups.map((group, g) => (
         <box key={group.label} flexDirection="column" gap={gap}>
           {headed ? (
-            <text
-              id={`task-group-${g}`}
-              fg={theme.textMuted}
-              attributes={TextAttributes.BOLD}
-              wrapMode="none"
-            >
-              {`  ${group.label.toUpperCase()}  ${group.tasks.length}`}
-            </text>
+            <box id={`task-group-${g}`} flexDirection="row" paddingRight={1}>
+              <text
+                flexShrink={0}
+                fg={groupTone(theme, group.label)}
+                attributes={TextAttributes.BOLD}
+                wrapMode="none"
+              >
+                {`  ${group.label.toUpperCase()}  ${group.tasks.length}`}
+              </text>
+              {/* A hairline to the panel edge makes the section read as a
+                  band rather than a stray label between two rows. Drawn as
+                  a top border so it ends where the rows end, whether or not
+                  the scrollbar is taking a column. */}
+              <box
+                flexGrow={1}
+                height={1}
+                marginLeft={1}
+                border={["top"]}
+                borderStyle="single"
+                borderColor={theme.border}
+              />
+            </box>
           ) : null}
           {group.tasks.map((task) => {
             const index = indexOf.get(task.id) ?? 0;
@@ -542,7 +643,7 @@ function ScrollingList({
                 showMeta={showMeta}
                 titleSpace={titleSpace}
                 metaWidth={metaWidth}
-                          showMarks={showMarks}
+                showMarks={showMarks}
                 onSelect={onSelect}
                 onToggleStatus={onToggleStatus}
               />

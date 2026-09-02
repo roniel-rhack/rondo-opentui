@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
 const FRAME_MS = 16;
+/** Coarser tick for the row glow: a dozen repaints, not thirty, per edit. */
+const FLASH_MS = 40;
 
 function easeOutCubic(t: number): number {
   return 1 - (1 - t) ** 3;
@@ -109,4 +111,30 @@ export function useCountdown(
   }, [key, duration, steps]);
 
   return remaining;
+}
+
+/**
+ * Jumps to 1 whenever `key` changes after mount and eases back to 0 over
+ * `duration` ms. A row uses it to glow for a moment when the task under it
+ * was edited, so the change reads where it happened and not only in the
+ * toast. The first render never flashes: a restored list is not news.
+ */
+export function useFlash(key: unknown, duration = 480): number {
+  const [value, setValue] = useState(0);
+  const seen = useRef(key);
+
+  useEffect(() => {
+    if (Object.is(seen.current, key)) return;
+    seen.current = key;
+    const start = Date.now();
+    setValue(1);
+    const id = setInterval(() => {
+      const t = Math.min((Date.now() - start) / duration, 1);
+      setValue(1 - easeOutCubic(t));
+      if (t >= 1) clearInterval(id);
+    }, FLASH_MS);
+    return () => clearInterval(id);
+  }, [key, duration]);
+
+  return value;
 }

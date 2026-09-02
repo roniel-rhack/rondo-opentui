@@ -55,6 +55,8 @@ interface TaskDetailProps {
   /** Whether a blocker of this task is still open; a Done blocker does not
    * block, and the list row draws the same distinction. */
   blocked: boolean;
+  /** The running focus session is attached to this task. */
+  focusing?: boolean;
   blockedByTitles: Map<number, string>;
   /** Clicking a tag chip filters the list by it. */
   onFilterTag?: (tag: string) => void;
@@ -268,6 +270,7 @@ function TaskBody({
   onSelectRow,
   onToggleSubtask,
   blocked,
+  focusing = false,
   blockedByTitles,
   onFilterTag,
   ref,
@@ -389,6 +392,12 @@ function TaskBody({
           <>
             <box width={1} />
             <Chip theme={theme} label="BLOCKED" color={theme.danger} filled bold />
+          </>
+        ) : null}
+        {focusing ? (
+          <>
+            <box width={1} />
+            <Chip theme={theme} label="▶ FOCUSING" color={theme.warning} filled bold />
           </>
         ) : null}
         {task.recurFreq !== RecurFreq.None ? (

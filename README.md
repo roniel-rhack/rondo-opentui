@@ -164,8 +164,8 @@ Inside dialogs: `tab` / `shift+tab` move between fields, `←` / `→` pick a
 segmented option, `ctrl+s` saves (multiline fields keep `enter` for new
 lines), `esc` cancels.
 
-Mouse: click tabs, rows, tags and status glyphs, drag the divider to resize
-the panels, scroll with the wheel.
+Mouse: click tabs, rows, tags and status glyphs, double-click a row to edit
+it, drag the divider to resize the panels, scroll with the wheel.
 
 ### Session and live data
 
@@ -206,7 +206,18 @@ same time. Two TS-only pieces survive that:
   shortcuts.
 - **Feedback everywhere.** Hover states on rows, tabs, chips, palette entries
   and buttons; focused panels get an accent border and a `●` marker; the filter
-  bar shows `matches/total` and turns red when nothing matches.
+  bar shows `matches/total` and turns red when nothing matches. An edited row
+  glows for a moment, so a change reads where it landed and not only in the
+  toast.
+- **Explained ranking.** The letters a filter or palette query matched light
+  up in every row, so a fuzzy hit is never a mystery; a whole-word hit beats a
+  scattered one and an early hit beats a late one.
+- **Sections that read as bands.** Group headers take the tone of what they
+  hold — overdue in red, today in amber — and run a hairline to the panel
+  edge. The task a focus session is attached to carries a `▶` in the list and
+  a `FOCUSING` chip in its detail, so the header timer and the list agree.
+- **Journal at a glance.** Each day in the journal previews the opening words
+  of its first entry under the date, markdown stripped.
 
 ### What changed versus the Go TUI
 

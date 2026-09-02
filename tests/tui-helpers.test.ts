@@ -72,6 +72,16 @@ describe("focusStatusMessage", () => {
     );
   });
 
+  test("a work session names the task it will log to", () => {
+    expect(
+      focusStatusMessage(false, SessionKind.Work, cfg, { id: 7, title: "Ship it" }),
+    ).toBe("Focus started (25m) · #7 Ship it");
+    // Breaks are time away from the task, so they do not name it.
+    expect(
+      focusStatusMessage(false, SessionKind.ShortBreak, cfg, { id: 7, title: "Ship it" }),
+    ).toBe("Break started (5m)");
+  });
+
   test("starting a break says break, with the break duration", () => {
     expect(focusStatusMessage(false, SessionKind.ShortBreak, cfg)).toBe(
       "Break started (5m)",

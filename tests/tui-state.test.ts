@@ -29,7 +29,10 @@ import {
   fitChips,
   fitHints,
   fitTags,
+  fuzzyIndices,
+  fuzzyIndicesAfter,
   fuzzyScore,
+  plainExcerpt,
   groupTasks,
   dueSentence,
   hintKeysMissingFromHelp,
@@ -1016,5 +1019,41 @@ describe("hintSpecs with marks (3.15)", () => {
     expect(plain.map((h) => h.key)).toContain("v");
     expect(plain.map((h) => h.key)).toContain("#");
     expect(plain.map((h) => h.key)).toContain("m");
+  });
+});
+
+describe("fuzzyIndices", () => {
+  test("a whole occurrence wins over an earlier scattered one", () => {
+    expect(fuzzyIndices("subt", "Task Add subtask")).toEqual([9, 10, 11, 12]);
+    expect(fuzzyScore("subt", "Task Add subtask")).toBe(
+      fuzzyScore("subt", "task add subtask"),
+    );
+  });
+
+  test("falls back to the greedy walk and reports every letter", () => {
+    expect(fuzzyIndices("wtr", "Write the report")).toEqual([0, 3, 10]);
+    expect(fuzzyIndices("zzz", "Write the report")).toBeNull();
+    expect(fuzzyIndices("", "anything")).toEqual([]);
+  });
+
+  test("re-bases on the drawn text and prefers a match inside it", () => {
+    expect(fuzzyIndicesAfter("subt", "Task ", "Add subtask")).toEqual([4, 5, 6, 7]);
+    // "#12 fix" only matches with the id in front; the id's hits are dropped.
+    expect(fuzzyIndicesAfter("12f", "#12 ", "fix it")).toEqual([0]);
+    expect(fuzzyIndicesAfter("zzz", "#12 ", "fix it")).toEqual([]);
+  });
+});
+
+describe("plainExcerpt", () => {
+  test("strips the markdown the app renders", () => {
+    expect(plainExcerpt("# Title\n\n- **Bold** and `code` and *em*")).toBe(
+      "Title Bold and code and em",
+    );
+  });
+
+  test("still trims to the width with an ellipsis", () => {
+    expect(plainExcerpt("> a quoted line that runs on and on", 12)).toBe(
+      "a quoted li…",
+    );
   });
 });

@@ -3,10 +3,10 @@ import { useKeyboard } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Status, type Task } from "../../core/task/task.ts";
 import type { PaletteAction } from "../palette.ts";
-import { fuzzyScore } from "../state.ts";
+import { fuzzyIndices, fuzzyIndicesAfter, fuzzyScore } from "../state.ts";
 import { mix, type TuiTheme } from "../theme.ts";
 import { Button, Overlay, overlayBodyRows } from "./Overlay.tsx";
-import { ChipButton, Section } from "./primitives.tsx";
+import { ChipButton, Section, highlightSpans } from "./primitives.tsx";
 
 /** Rows a list dialog can show under its search field: the overlay body
  * minus the field and its padding, capped so a tall terminal still reads as
@@ -348,6 +348,8 @@ interface CommandPaletteProps {
   screenWidth: number;
   screenHeight: number;
   onPickTask?: (id: number) => void;
+  /** Called with the id of the action that ran, for the Recent group. */
+  onRun?: (id: string) => void;
   onClose: () => void;
 }
 
@@ -359,6 +361,7 @@ export function CommandPalette({
   screenWidth,
   screenHeight,
   onPickTask,
+  onRun,
   onClose,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
@@ -411,8 +414,10 @@ export function CommandPalette({
 
   const pick = (item: PaletteItem) => {
     onClose();
-    if (item.kind === "action") item.action.run();
-    else onPickTask?.(item.task.id);
+    if (item.kind === "action") {
+      onRun?.(item.action.id);
+      item.action.run();
+    } else onPickTask?.(item.task.id);
   };
 
   useKeyboard((key: KeyEvent) => {
@@ -465,6 +470,7 @@ export function CommandPalette({
                 key={paletteKey(line.item)}
                 theme={theme}
                 item={line.item}
+                query={query}
                 selected={line.index === selected}
                 prefixed={query !== ""}
                 onPress={() => pick(line.item)}
@@ -529,7 +535,8 @@ interface FuzzyPickerProps<T> {
   screenHeight: number;
   onPick: (item: T) => void;
   onClose: () => void;
-  renderRow: (item: T, selected: boolean) => ReactNode;
+  /** `query` is the live search text, so a row can light its matches. */
+  renderRow: (item: T, selected: boolean, query: string) => ReactNode;
 }
 
 /** Search field over a list, shared by the task and tag pickers. */
@@ -617,7 +624,7 @@ function FuzzyPicker<T>({
                 >
                   {isSelected ? "┃ " : "│ "}
                 </text>
-                {renderRow(item, isSelected)}
+                {renderRow(item, isSelected, query)}
               </box>
             );
           })
@@ -666,28 +673,34 @@ export function TaskPickerDialog({
       screenHeight={screenHeight}
       onPick={(task) => onPick(task.id)}
       onClose={onClose}
-      renderRow={(task, isSelected) => (
-        <>
-          <text flexShrink={0} fg={theme.textMuted}>
-            {`#${task.id}`.padEnd(5)}
-          </text>
-          <text
-            fg={
-              task.status === Status.Done
-                ? theme.textMuted
-                : isSelected
-                  ? theme.text
-                  : theme.textDim
-            }
-            attributes={isSelected ? TextAttributes.BOLD : undefined}
-            flexGrow={1}
-            wrapMode="none"
-            truncate
-          >
-            {task.title}
-          </text>
-        </>
-      )}
+      renderRow={(task, isSelected, query) => {
+        const tone =
+          task.status === Status.Done
+            ? theme.textMuted
+            : isSelected
+              ? theme.text
+              : theme.textDim;
+        const attributes = isSelected ? TextAttributes.BOLD : undefined;
+        // Ranked on the title and its tags; a hit on a tag alone lights
+        // nothing, which is honest about where the match was.
+        const lit = fuzzyIndices(query, task.title) ?? [];
+        return (
+          <>
+            <text flexShrink={0} fg={theme.textMuted}>
+              {`#${task.id}`.padEnd(5)}
+            </text>
+            <text
+              fg={tone}
+              attributes={attributes}
+              flexGrow={1}
+              wrapMode="none"
+              truncate
+            >
+              {highlightSpans(task.title, lit, tone, theme.accent, attributes)}
+            </text>
+          </>
+        );
+      }}
     />
   );
 }
@@ -744,22 +757,31 @@ export function TagPickerDialog({
       screenHeight={screenHeight}
       onPick={(row) => onPick(row.tag)}
       onClose={onClose}
-      renderRow={(row, isSelected) => (
+      renderRow={(row, isSelected, query) => {
+        const tone = isSelected ? theme.text : theme.textDim;
+        const attributes = isSelected ? TextAttributes.BOLD : undefined;
+        const label = row.tag === null ? "all" : `#${row.tag}`;
+        // The row prints a "#" the haystack does not carry.
+        const lit = (fuzzyIndices(query, tagHaystack(row)) ?? []).map(
+          (i) => (row.tag === null ? i : i + 1),
+        );
+        return (
         <>
           <text
-            fg={isSelected ? theme.text : theme.textDim}
-            attributes={isSelected ? TextAttributes.BOLD : undefined}
+            fg={tone}
+            attributes={attributes}
             flexGrow={1}
             wrapMode="none"
             truncate
           >
-            {row.tag === null ? "all" : `#${row.tag}`}
+            {highlightSpans(label, lit, tone, theme.accent, attributes)}
           </text>
           <text flexShrink={0} fg={theme.textMuted}>
             {row.tag === null ? "clear filter" : String(row.count)}
           </text>
         </>
-      )}
+        );
+      }}
     />
   );
 }
@@ -767,6 +789,7 @@ export function TagPickerDialog({
 function PaletteRow({
   theme,
   item,
+  query,
   selected,
   prefixed,
   onPress,
@@ -774,6 +797,7 @@ function PaletteRow({
 }: {
   theme: TuiTheme;
   item: PaletteItem;
+  query: string;
   selected: boolean;
   /** Print the group before the label; otherwise rows sit under a header. */
   prefixed: boolean;
@@ -783,6 +807,14 @@ function PaletteRow({
   const group = item.kind === "action" ? item.action.group : TASK_GROUP;
   const label = item.kind === "action" ? item.action.label : item.task.title;
   const hint = item.kind === "action" ? item.action.hint : undefined;
+  // Ranked against "group label" or "#id title"; only the label is drawn,
+  // so its hits are re-based on it.
+  const lit =
+    item.kind === "action"
+      ? fuzzyIndicesAfter(query, `${group} `, label)
+      : fuzzyIndicesAfter(query, `#${item.task.id} `, label);
+  const tone = selected ? theme.text : theme.textDim;
+  const attributes = selected ? TextAttributes.BOLD : undefined;
   return (
     <box
       flexDirection="row"
@@ -805,13 +837,13 @@ function PaletteRow({
         </text>
       ) : null}
       <text
-        fg={selected ? theme.text : theme.textDim}
-        attributes={selected ? TextAttributes.BOLD : undefined}
+        fg={tone}
+        attributes={attributes}
         flexGrow={1}
         wrapMode="none"
         truncate
       >
-        {label}
+        {highlightSpans(label, lit, tone, theme.accent, attributes)}
       </text>
       {hint ? (
         <box backgroundColor={theme.surfaceAlt} paddingLeft={1} paddingRight={1}>

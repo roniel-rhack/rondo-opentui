@@ -18,6 +18,10 @@ export interface TaskData {
   reloadAll: () => void;
   /** Swaps single tasks in place; every other row keeps its identity. */
   refreshTasks: (ids: readonly number[]) => void;
+  /** How many times each task was refreshed in place this session; a row
+   * glows when its count moves, which is how an edit shows where it landed
+   * even when the stored timestamp did not change. */
+  revisions: ReadonlyMap<number, number>;
 }
 
 /** Everything the app reads from the stores, plus the poll that notices a
@@ -26,6 +30,9 @@ export function useTaskData(data: RondoData, notify: Notify): TaskData {
   const [tasks, setTasks] = useState<Task[]>(() => data.listTasks());
   const [notes, setNotes] = useState<Note[]>(() => data.listNotes(false));
   const [showHidden, setHidden] = useState(false);
+  const [revisions, setRevisions] = useState<ReadonlyMap<number, number>>(
+    () => new Map(),
+  );
 
   const reloadTasks = useCallback(() => {
     setTasks(data.listTasks());
@@ -57,6 +64,11 @@ export function useTaskData(data: RondoData, notify: Notify): TaskData {
     (ids: readonly number[]) => {
       const fresh = new Map(ids.map((id) => [id, data.refreshTask(id)]));
       setTasks((prev) => withTasks(prev, fresh));
+      setRevisions((prev) => {
+        const next = new Map(prev);
+        for (const id of ids) next.set(id, (prev.get(id) ?? 0) + 1);
+        return next;
+      });
     },
     [data],
   );
@@ -84,5 +96,6 @@ export function useTaskData(data: RondoData, notify: Notify): TaskData {
     reloadNotes,
     reloadAll,
     refreshTasks,
+    revisions,
   };
 }

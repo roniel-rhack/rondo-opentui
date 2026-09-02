@@ -14,7 +14,7 @@ import { SessionKind } from "../src/core/focus/focus.ts";
 import { RondoData } from "../src/tui/data.ts";
 import { usePomodoro, type PomodoroState } from "../src/tui/hooks/usePomodoro.ts";
 import { useSmoothScrollIntoView } from "../src/tui/hooks/useSmoothScroll.ts";
-import { useCountdown, useTween } from "../src/tui/hooks/useTween.ts";
+import { useCountdown, useFlash, useTween } from "../src/tui/hooks/useTween.ts";
 
 // OpenTUI's React root re-renders itself once the renderer is ready, outside
 // of act(). The warning is library-internal noise, so keep it out of the report.
@@ -269,5 +269,37 @@ describe("usePomodoro", () => {
     expect(p.latest()).toBe(running);
     await p.call((s) => s.stop());
     p.renderer.destroy();
+  });
+});
+
+describe("useFlash", () => {
+  test("stays at zero on mount and glows once per key change", async () => {
+    const seen: number[] = [];
+    const probe = await mountProbe(
+      { key: 1 },
+      ({ key }) => {
+        const value = useFlash(key, 200);
+        seen.push(value);
+        return createElement("text", null, value.toFixed(2));
+      },
+    );
+    expect(seen.every((v) => v === 0)).toBe(true);
+
+    await probe.set({ key: 2 });
+    await probe.settle(40);
+    const mid = seen[seen.length - 1]!;
+    expect(mid).toBeGreaterThan(0);
+    expect(mid).toBeLessThan(1);
+
+    await probe.settle(300);
+    expect(seen[seen.length - 1]).toBe(0);
+    expect(probe.captureCharFrame()).toContain("0.00");
+
+    // The same key again is not a change.
+    const before = seen.length;
+    await probe.set({ key: 2 });
+    await probe.settle(60);
+    expect(seen.slice(before).every((v) => v === 0)).toBe(true);
+    probe.renderer.destroy();
   });
 });

@@ -398,3 +398,31 @@ export function buildPaletteActions(ctx: PaletteContext): PaletteAction[] {
   }
   return actions;
 }
+
+/** Group the palette shows first for actions run earlier this session. */
+export const RECENT_GROUP = "Recent";
+/** How many recently run actions the palette keeps at the top. */
+export const RECENT_LIMIT = 5;
+
+/** `ids` with `id` moved to the front and the list capped, so the palette's
+ * Recent group reads newest first and never grows past a glance. */
+export function rememberRecent(ids: readonly string[], id: string): string[] {
+  return [id, ...ids.filter((x) => x !== id)].slice(0, RECENT_LIMIT);
+}
+
+/** `actions` with the ones in `recentIds` lifted into a leading Recent
+ * group, in that order; the rest keep their groups. An id the current tab
+ * no longer offers is skipped rather than shown as a dead row. */
+export function withRecent(
+  actions: readonly PaletteAction[],
+  recentIds: readonly string[],
+): PaletteAction[] {
+  const byId = new Map(actions.map((a) => [a.id, a]));
+  const recent: PaletteAction[] = [];
+  for (const id of recentIds) {
+    const action = byId.get(id);
+    if (action) recent.push({ ...action, group: RECENT_GROUP });
+  }
+  const lifted = new Set(recent.map((a) => a.id));
+  return [...recent, ...actions.filter((a) => !lifted.has(a.id))];
+}

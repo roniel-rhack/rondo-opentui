@@ -135,6 +135,11 @@ Hard-won, all of them cost time once:
 - **`‼` (U+203C) measures two columns.** It breaks a fixed-width one-column
   glyph cell; prefer a single-width glyph (`◆`, `▲`) for anything laid out
   next to fixed-width neighbors.
+- **A hairline that must end where rows end is a border, not a string.**
+  Rows inside a scrollbox are a column narrower while the scrollbar shows,
+  so a `"─".repeat(n)` computed from the panel width is off by one in one of
+  the two states. `<box flexGrow={1} height={1} border={["top"]} />` is
+  sized by yoga and lands on the same column as the rows either way.
 - **`contentOptions` gap is the only gap that works on a `<scrollbox>`.**
   `gap` on the outer `<scrollbox>`/`<box>` props is not wired through; pass
   it inside `contentOptions={{ gap }}` instead.
