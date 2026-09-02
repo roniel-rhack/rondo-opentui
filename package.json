@@ -1,6 +1,6 @@
 {
   "name": "rondo-opentui",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "RonDO \u2014 terminal productivity app (tasks + journal + pomodoro) built with OpenTUI and React",
   "module": "src/index.tsx",
   "type": "module",
