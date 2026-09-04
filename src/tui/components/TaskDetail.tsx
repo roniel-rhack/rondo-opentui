@@ -36,10 +36,12 @@ import {
   Section,
 } from "./primitives.tsx";
 
-/** Keyboard access to the panel when no row can carry the cursor. */
+/** Keyboard access to reading without changing the selected row. */
 export interface TaskDetailHandle {
   /** Scrolls the panel by `lines`; negative scrolls up. */
   scrollBy: (lines: number) => void;
+  getScrollTop: () => number;
+  scrollTo: (top: number) => void;
 }
 
 interface TaskDetailProps {
@@ -287,7 +289,7 @@ function TaskBody({
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [task.id]);
 
-  useSmoothScrollIntoView(
+  const stopScrolling = useSmoothScrollIntoView(
     scrollRef,
     focused && current ? detailRowId(current) : undefined,
   );
@@ -295,9 +297,17 @@ function TaskBody({
   useImperativeHandle(
     ref,
     () => ({
-      scrollBy: (lines) => scrollRef.current?.scrollBy({ x: 0, y: lines }),
+      getScrollTop: () => scrollRef.current?.scrollTop ?? 0,
+      scrollTo: (top) => {
+        stopScrolling();
+        scrollRef.current?.scrollTo(top);
+      },
+      scrollBy: (lines) => {
+        stopScrolling();
+        scrollRef.current?.scrollBy({ x: 0, y: lines });
+      },
     }),
-    [],
+    [stopScrolling],
   );
 
   const now = GoTime.now();
@@ -338,7 +348,7 @@ function TaskBody({
       ref={scrollRef}
       // Never focused: a focused scrollbox answers j/k itself and would move
       // the viewport on top of the cursor. The cursor row is scrolled into
-      // view instead, and `scrollBy` covers tasks with no rows at all.
+      // view instead, and page scrolling moves the viewport independently.
       focused={false}
       flexGrow={1}
       scrollX={false}
@@ -413,12 +423,6 @@ function TaskBody({
       </box>
 
       <box paddingTop={1} flexDirection="column">
-        <Field
-          theme={theme}
-          label="ID"
-          value={`#${task.id}`}
-          color={theme.textDim}
-        />
         {task.dueDate ? (
           done ? (
             <Field
@@ -441,12 +445,6 @@ function TaskBody({
             />
           )
         ) : null}
-        <Field
-          theme={theme}
-          label="Created"
-          value={formatDate(cfg, task.createdAt)}
-          color={theme.textDim}
-        />
         {logged > 0 ? (
           <Field theme={theme} label="Logged" value={formatDuration(logged)} />
         ) : null}
@@ -592,6 +590,27 @@ function TaskBody({
           })}
         </Section>
       ) : null}
+
+      <Section theme={theme} title="Details">
+        <Field
+          theme={theme}
+          label="ID"
+          value={`#${task.id}`}
+          color={theme.textDim}
+        />
+        <Field
+          theme={theme}
+          label="Created"
+          value={formatDate(cfg, task.createdAt)}
+          color={theme.textDim}
+        />
+        <Field
+          theme={theme}
+          label="Updated"
+          value={formatDateTime(cfg, task.updatedAt)}
+          color={theme.textDim}
+        />
+      </Section>
 
       <box height={1} />
     </scrollbox>

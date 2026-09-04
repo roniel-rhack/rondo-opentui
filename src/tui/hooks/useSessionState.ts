@@ -55,6 +55,8 @@ export function useSessionSave(state: TuiState): () => void {
     selectedTaskId,
     selectedNoteDate,
     density,
+    layout,
+    reducedMotion,
   } = state;
   useEffect(() => {
     if (!seen.current) {
@@ -70,11 +72,15 @@ export function useSessionSave(state: TuiState): () => void {
       selectedTaskId,
       selectedNoteDate,
       density,
+      ...(layout ? { layout } : {}),
+      ...(reducedMotion !== undefined ? { reducedMotion } : {}),
     };
     const id = setTimeout(flush, STATE_SAVE_MS);
     return () => clearTimeout(id);
   }, [
     density,
+    layout,
+    reducedMotion,
     flush,
     selectedNoteDate,
     selectedTaskId,

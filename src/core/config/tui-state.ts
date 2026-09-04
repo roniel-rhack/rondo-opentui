@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { configDir } from "./config.ts";
 
 export type Density = "auto" | "dense" | "comfortable";
+export type PanelLayout = "auto" | "single" | "split";
 
 /**
  * Session state the TUI restores on the next launch. Lives in its own file
@@ -17,6 +18,8 @@ export interface TuiState {
   selectedTaskId: number | null;
   selectedNoteDate: string | null;
   density: Density;
+  layout?: PanelLayout;
+  reducedMotion?: boolean;
 }
 
 const DENSITIES: readonly Density[] = ["auto", "dense", "comfortable"];
@@ -64,6 +67,10 @@ function fromJSON(raw: unknown): TuiState {
     density: DENSITIES.includes(r.density as Density)
       ? (r.density as Density)
       : d.density,
+    ...(["auto", "single", "split"].includes(r.layout as string)
+      ? { layout: r.layout as PanelLayout }
+      : {}),
+    ...(typeof r.reducedMotion === "boolean" ? { reducedMotion: r.reducedMotion } : {}),
   };
 }
 

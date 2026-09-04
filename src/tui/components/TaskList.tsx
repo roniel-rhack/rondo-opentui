@@ -1,6 +1,6 @@
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
 import { useRenderer } from "@opentui/react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { formatDate, type Config } from "../../core/config/config.ts";
 import { RecurFreq } from "../../core/task/recur.ts";
 import {
@@ -12,6 +12,7 @@ import {
 import type { GoTime } from "../../core/time.ts";
 import { DueLevel } from "../../core/ui/overdue.ts";
 import { useSmoothScrollIntoView } from "../hooks/useSmoothScroll.ts";
+import { cellWidth, fitCells } from "../text.ts";
 import { useFlash } from "../hooks/useTween.ts";
 import {
   fuzzyIndices,
@@ -25,6 +26,8 @@ import { mix, priorityColors, type TuiTheme } from "../theme.ts";
 import { EmptyState, highlightSpans } from "./primitives.tsx";
 
 interface TaskListProps {
+  viewportRef?: RefObject<ScrollBoxRenderable | null>;
+  restoreScroll?: { top: number } | null;
   theme: TuiTheme;
   cfg: Config;
   tasks: Task[];
@@ -128,13 +131,6 @@ function tagCellFor(tags: readonly string[], max: number): string {
   const shown = tags.slice(0, max).map((t) => `#${t}`);
   const extra = tags.length - shown.length;
   return `${shown.join(" ")}${extra > 0 ? ` +${extra}` : ""}`;
-}
-
-/** Trims the tail: the renderer elides in the middle, which reads badly. */
-function fit(text: string, space: number): string {
-  if (text.length <= space) return text;
-  if (space <= 1) return space === 1 ? "…" : "";
-  return `${text.slice(0, space - 1).trimEnd()}…`;
 }
 
 /** Everything a row needs, as primitives, so React.memo can skip it. */
@@ -249,7 +245,7 @@ const TaskRow = memo(function TaskRow({
     (focusing ? 2 : 0) +
     (recurring ? 2 : 0) +
     (priorityGlyph ? 2 : 0);
-  const shownTitle = fit(title, Math.max(titleSpace - extras, 0));
+  const shownTitle = fitCells(title, Math.max(titleSpace - extras, 0));
   // Only letters that survived the trim light up; the ellipsis never does.
   const lit = matches.filter((i) => i < shownTitle.length && shownTitle[i] === title[i]);
   const titleTone = done ? theme.textMuted : selected ? theme.text : theme.textDim;
@@ -267,7 +263,7 @@ const TaskRow = memo(function TaskRow({
     dueCell = dueLabel === "" ? "" : dueLabel.padEnd(DUE_WIDTH);
     progressCell =
       progress === "" ? "" : tags === "" ? progress : progress.padEnd(PROGRESS_WIDTH);
-    tagCell = fit(tags, Math.max(metaWidth - dueCell.length - progressCell.length, 0));
+    tagCell = fitCells(tags, Math.max(metaWidth - cellWidth(dueCell) - cellWidth(progressCell), 0));
   }
   const hasMeta = done || dueCell !== "" || progressCell !== "" || tagCell !== "";
 
@@ -378,6 +374,8 @@ interface ListCallbacks {
 
 /** Scrollable, mouse-aware task list. */
 export const TaskList = memo(function TaskList({
+  viewportRef,
+  restoreScroll,
   theme,
   cfg,
   tasks,
@@ -462,6 +460,8 @@ export const TaskList = memo(function TaskList({
 
   return (
     <ScrollingList
+      viewportRef={viewportRef}
+      restoreScroll={restoreScroll}
       theme={theme}
       tasks={tasks}
       rows={rows}
@@ -514,6 +514,8 @@ function toRowModel(
 }
 
 interface ScrollingListProps {
+  viewportRef?: RefObject<ScrollBoxRenderable | null>;
+  restoreScroll?: { top: number } | null;
   theme: TuiTheme;
   tasks: Task[];
   rows: RowModel[];
@@ -532,6 +534,8 @@ interface ScrollingListProps {
 
 /** Keeps the selected row inside the viewport as the cursor moves. */
 function ScrollingList({
+  viewportRef,
+  restoreScroll,
   theme,
   tasks,
   rows,
@@ -547,7 +551,8 @@ function ScrollingList({
   onSelect,
   onToggleStatus,
 }: ScrollingListProps) {
-  const scrollRef = useRef<ScrollBoxRenderable | null>(null);
+  const ownScrollRef = useRef<ScrollBoxRenderable | null>(null);
+  const scrollRef = viewportRef ?? ownScrollRef;
   const previous = useRef(selected);
 
   // Scroll the row *after* the selected one into view, so moving through the
@@ -582,7 +587,14 @@ function ScrollingList({
       root.off("layout-changed", onLayout);
     };
   }, [renderer, groups, gap, showMeta]);
-  useSmoothScrollIntoView(scrollRef, anchorId, settled);
+  useSmoothScrollIntoView(scrollRef, restoreScroll ? undefined : anchorId, settled);
+  useEffect(() => {
+    if (!restoreScroll) return;
+    const apply = () => scrollRef.current?.scrollTo(restoreScroll.top);
+    apply();
+    renderer.root.once("layout-changed", apply);
+    return () => { renderer.root.off("layout-changed", apply); };
+  }, [restoreScroll, scrollRef, renderer, settled]);
 
   return (
     <scrollbox

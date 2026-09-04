@@ -3,7 +3,7 @@
 #   bun run build
 #   PATH="$PWD/dist:$PATH" vhs assets/demo.tape
 #
-# The tape seeds a throwaway profile in /tmp/rondo-demo so the recording always
+# The tape seeds a fresh throwaway profile so the recording always
 # shows the same data, then drives the interface with the keyboard.
 
 Output assets/demo.gif
@@ -18,7 +18,7 @@ Set Theme { "name": "RonDO", "background": "#1e1e1e", "foreground": "#e4e4e4", "
 
 # ─── Setup (hidden) ───
 Hide
-Type "export RONDO_HOME=/tmp/rondo-demo PS1='$ ' && scripts/demo-seed.sh >/dev/null && clear"
+Type "export RONDO_HOME=$(mktemp -d /tmp/rondo-demo.XXXXXX) PS1='$ ' && scripts/demo-seed.sh >/dev/null && clear"
 Enter
 Sleep 2s
 Show
@@ -72,13 +72,16 @@ Sleep 1s
 # ─── Quick-add: tokens set tag, due, priority and recurrence inline ───
 Type "a"
 Sleep 1s
-Type "Ship the 2.0 release #release @2026-09-05 !high ~w"
+Type "Ship the 2.0 release #release @tomorrow !high ~w"
 Sleep 1.5s
 Tab
 Sleep 400ms
 Type "Tag, publish the binaries and update the tap."
 Sleep 1s
-Ctrl+S
+Ctrl+N
+Sleep 1s
+Type "Publish the release notes #docs"
+Enter
 Sleep 2s
 
 # ─── One key completes the task just created ───
@@ -101,12 +104,10 @@ Sleep 1.2s
 Type "v"
 Sleep 1.8s
 
-# ─── Mark two tasks and act on both at once ───
-Type "m"
-Sleep 500ms
-Down
-Sleep 500ms
-Type "m"
+# ─── Extend a range, then select every visible task ───
+Type "J"
+Sleep 800ms
+Type "M"
 Sleep 500ms
 Space
 Sleep 1.5s
@@ -120,6 +121,8 @@ Type "landing"
 Sleep 1.2s
 Enter
 Sleep 1.8s
+Backspace
+Sleep 1s
 
 # ─── Statistics ───
 Type "S"
@@ -138,6 +141,14 @@ Type "Shipped the OpenTUI port. Mouse, overlays and a command palette."
 Sleep 700ms
 Ctrl+S
 Sleep 2s
+Type "/"
+Type "wireframes"
+Enter
+Sleep 1.5s
+Type "}"
+Sleep 800ms
+Escape
+Escape
 
 # ─── Help ───
 Type "?"
@@ -152,8 +163,12 @@ Type "T"
 Sleep 2s
 Type "T"
 Sleep 1.2s
+Type '\'
+Sleep 1s
+Type '\'
+Sleep 1s
 
-# The focus session from the seed data is still running, so q asks first.
+# Quit; confirm if a focus session is still running.
 Type "q"
 Sleep 1.5s
 Type "y"

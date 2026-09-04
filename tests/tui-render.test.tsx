@@ -343,7 +343,7 @@ describe("TUI rendering", () => {
     const list = captureCharFrame();
     expect(list).toContain("● Active");
     expect(list).toContain("2 tasks · l details");
-    expect(list.split("\n")[18]).toMatch(/^  l  details /);
+    expect(list.split("\n")[18]).toMatch(/^  a  add  space  done /);
     expect(list).toContain("Refactor the parser");
     // The detail panel is not on screen while the list is focused.
     expect(list).not.toContain("OPEN BY PRIORITY");
@@ -680,6 +680,7 @@ describe("TUI inputs", () => {
 
     await press("a");
     await type("Pick a date");
+    await press("TAB");
 
     // "+1w" only appears in the shortcut row, so it is a safe anchor.
     const lines = captureCharFrame().split("\n");
@@ -741,6 +742,10 @@ describe("TUI list density", () => {
     await setup.flush();
 
     // Only look at the list column; the detail panel keeps the full wording.
+    for (let i = 0; i < 2; i++) {
+      await act(async () => { setup.mockInput.pressKey("\\"); });
+      await setup.flush();
+    }
     const listColumn = setup
       .captureCharFrame()
       .split("\n")
@@ -758,7 +763,9 @@ describe("TUI list density", () => {
   });
 
   test("completed tasks show their completion date instead of metadata", async () => {
-    const { captureCharFrame, data, goToTab, renderer } = await mount(90, 20);
+    const { captureCharFrame, data, goToTab, press, renderer } = await mount(90, 20);
+    await press("\\");
+    await press("\\");
 
     // The list opens on Active, which hides the done task used here.
     await goToTab("all");
@@ -1164,6 +1171,7 @@ describe("TUI review 2 fixes", () => {
     const { captureCharFrame, press, renderer } = await mount();
 
     await press("a");
+    await press("TAB");
     expect(captureCharFrame()).toContain("#work");
     renderer.destroy();
   });
@@ -1183,6 +1191,7 @@ describe("TUI review 2 fixes", () => {
     const { captureCharFrame, press, renderer } = await mount();
 
     await press("a");
+    await press("TAB");
     expect(captureCharFrame()).toContain("Week");
     renderer.destroy();
   });
@@ -1320,6 +1329,7 @@ describe("TUI review 3 — task form and settings", () => {
     const { captureCharFrame, press, renderer } = await mount(80, 24);
 
     await press("a");
+    await press("TAB");
     const frame = captureCharFrame();
     const rows = overlayRows(frame);
     const text = rows.join("\n");
@@ -1334,7 +1344,7 @@ describe("TUI review 3 — task form and settings", () => {
     }
     // The footer already says how to save, so the buttons row is gone.
     expect(text).not.toContain("Save");
-    expect(text).toContain("enter (title) / ctrl+s save · tab field · esc cancel");
+    expect(text).toContain("enter save · ctrl+n save + new · tab options · esc cancel");
     // The overlay ends above the status bar: nothing runs off-screen.
     const bottom = frame.split("\n").findIndex((l) => l.includes("esc cancel"));
     expect(bottom).toBeLessThan(23);
@@ -1371,6 +1381,7 @@ describe("TUI review 3 — task form and settings", () => {
 
     await press("a");
     await type("Stepped");
+    await press("TAB");
     const lines = captureCharFrame().split("\n");
     const row = lines.findIndex((l) => l.includes("◂ Low ▸"));
     expect(row).toBeGreaterThan(0);
@@ -1394,6 +1405,7 @@ describe("TUI review 3 — task form and settings", () => {
     const { captureCharFrame, press, renderer } = await mount(100, 30);
 
     await press("a");
+    await press("TAB");
     const lines = captureCharFrame().split("\n");
     const row = lines.find((l) => l.includes("Urgent"));
     expect(row).toBeDefined();
@@ -1463,7 +1475,7 @@ describe("TUI review 3 — task form and settings", () => {
 
     await press("P");
     expect(captureCharFrame()).toContain(
-      "↑↓ field · ←→ / space change · enter / ctrl+s save · esc cancel",
+      "↑↓ field · type value · ←→ change · enter save · esc cancel",
     );
     await press("l");
     await press("s", { ctrl: true });
@@ -1481,9 +1493,9 @@ describe("TUI review 3 — task form and settings", () => {
 
     await press("a");
     const frame = captureCharFrame();
-    expect(frame).toContain("enter (title) / ctrl+s save · tab field · esc cancel");
+    expect(frame).toContain("enter save · ctrl+n save + new · tab options · esc cancel");
     expect(frame).not.toContain("tab move");
-    expect(frame.split("ctrl+s save")).toHaveLength(2);
+    expect(frame.split("ctrl+n save + new")).toHaveLength(2);
     renderer.destroy();
   });
 
@@ -1628,7 +1640,7 @@ describe("TUI review 3 — dialogs", () => {
     const bottom = lines.findIndex((l) => l.includes("╰"));
     expect(bottom).toBeLessThanOrEqual(17);
     expect(lines[18]).not.toMatch(/[│╰╯]/);
-    expect(lines[18]).toContain("add");
+    expect(lines[18]).toContain("enter  select");
     renderer.destroy();
   });
 
@@ -1901,9 +1913,13 @@ describe("TUI review 3 — dialogs", () => {
     await press("k", { ctrl: true });
     let frame = captureCharFrame();
     expect(frame).toMatch(/│  TASK\s+│/);
-    expect(frame).toMatch(/│  VIEW\s+│/);
     expect(frame).toMatch(/│    ┃ New task\s+a/);
     expect(frame).not.toContain("Task     New task");
+    for (let i = 0; i < 60 && !frame.includes("│  VIEW"); i++) {
+      await press("n", { ctrl: true });
+      frame = captureCharFrame();
+    }
+    expect(frame).toMatch(/│  VIEW\s+│/);
 
     for (let i = 0; i < 60; i++) await press("n", { ctrl: true });
     frame = captureCharFrame();
@@ -2004,6 +2020,8 @@ describe("TUI review 3 — detail and journal", () => {
 
   test("80×24: a bare task shows no empty sections, only affordances", async () => {
     const { captureCharFrame, press, renderer } = await mount(80, 24);
+    await press("\\");
+    await press("\\");
 
     // "Refactor the parser" has no description, subtasks, notes or time.
     const bare = captureCharFrame();
@@ -2402,6 +2420,8 @@ describe("TUI review 3 — task list", () => {
 
   test("80 columns: titles trim at the tail and the priority glyph keeps its gap", async () => {
     const m = await mountWith(backlog, 80, 24);
+    await m.press("\\");
+    await m.press("\\");
     // Newest first, from the top: the glyph sequence below is by creation.
     await m.press("F1");
     await m.press("g");
@@ -2484,7 +2504,7 @@ describe("TUI review 3 — task list", () => {
     await m.press("F3");
     await m.settle();
     const frame = m.captureCharFrame();
-    expect(frame).toContain("⇅ Priority");
+    expect(frame).toContain("Sorted by priority");
     expect(frame).toContain("┃");
     m.renderer.destroy();
   });
@@ -2741,12 +2761,13 @@ describe("TUI review 3 — panels", () => {
   });
 
   test("1.4: the status bar never garbles and keeps ? and ^k", async () => {
-    for (const w of [80, 84, 90, 50]) {
+    for (const w of [80, 84, 90, 50, 100]) {
       const { captureCharFrame, renderer } = await mount(w, 24);
       const status = statusRow(captureCharFrame(), 24);
       expect(status).toContain(" ?  help ");
       expect(status).toContain(" ^k  ");
-      expect(status).toContain(" ⇅ Due date");
+      if (w >= 100) expect(status).toContain(" ⇅ Due date");
+      else expect(status).not.toContain("⇅");
       expect(status).not.toMatch(/[a-z]⇅/);
       expect(status).not.toContain("spacedone");
       expect(status.length).toBeLessThanOrEqual(w);
@@ -2854,10 +2875,10 @@ describe("TUI review 3 — panels", () => {
         messageId={0}
         messageMs={3000}
         sort="created"
-        width={80}
+        width={100}
         onCycleSort={() => calls.push("sort")}
       />,
-      80,
+      100,
       3,
     );
     const row = setup.captureCharFrame().split("\n")[0]!;
@@ -2916,8 +2937,12 @@ describe("TUI review 3 — panels", () => {
 
     // The tail is below the fold at 24 rows; j scrolls down to it.
     expect(frame).not.toContain("Previous / next tag");
-    for (let i = 0; i < 40; i++) await press("j");
-    const scrolled = captureCharFrame();
+    const wanted = ["VIEWS & FILTERS", "Previous / next tag", "MARKS", "Act on every marked task", "Clear marks"];
+    let scrolled = "";
+    for (let i = 0; i < 40 && !wanted.every((text) => scrolled.includes(text)); i++) {
+      await press("j");
+      scrolled += captureCharFrame();
+    }
     expect(scrolled).toContain("VIEWS & FILTERS");
     expect(scrolled).toContain("Previous / next tag");
     // Bulk editing has no home in the other sections, and esc is where it
@@ -2982,7 +3007,7 @@ describe("TUI review 3 — panels", () => {
     expect(lines.slice(0, 3).join("\n")).toContain("Statistics");
     // The status bar keeps its two rows: the overlay ends above them.
     expect(footer + 1).toBeLessThan(18);
-    expect(lines[18]).toContain("^k");
+    expect(lines[18]).toContain("↑↓  scroll");
     renderer.destroy();
   });
 
@@ -3261,7 +3286,7 @@ describe("TUI review 3 — keys and selection", () => {
     renderer.destroy();
   });
 
-  test("3.6: in the detail panel a page walks the rows or scrolls the text", async () => {
+  test("3.6: detail paging scrolls text while keeping the selected row", async () => {
     const longDescription = Array.from(
       { length: 20 },
       (_, i) => `Line ${i + 1} of the spec`,
@@ -3292,9 +3317,12 @@ describe("TUI review 3 — keys and selection", () => {
     await press("h");
     await press("G");
     await press("l");
+    const beforePage = detailColumn(captureCharFrame());
     await press(PAGE_DOWN);
     await settle(flush);
-    expect(captureCharFrame()).toContain("┃ ▢ Draft intro");
+    expect(detailColumn(captureCharFrame())).not.toBe(beforePage);
+    expect(captureCharFrame()).toContain("┃ ▢ Collect numbers");
+    expect(captureCharFrame()).not.toContain("┃ ▢ Draft intro");
     renderer.destroy();
   });
 
@@ -3333,10 +3361,12 @@ describe("TUI review 3 — keys and selection", () => {
 
   test("1.10: the panel ratio stops where either panel would become unusable", async () => {
     const { captureCharFrame, press, renderer } = await mount(80, 24);
+    await press("\\");
+    await press("\\");
     const dividerAt = () => captureCharFrame().split("\n")[1]!.indexOf("╮");
 
     for (let i = 0; i < 12; i++) await press(">");
-    expect(dividerAt()).toBe(39);
+    expect(dividerAt()).toBe(38);
     expect(captureCharFrame().split("\n")[5]).toContain("Pending");
 
     for (let i = 0; i < 12; i++) await press("<");
@@ -3949,7 +3979,7 @@ describe("TUI review 3 — filters, views, marks and persistence", () => {
     const lines = captureCharFrame().split("\n");
     const row = lines.findIndex((l) => l.includes("Tags") && l.includes("#work"));
     expect(row).toBeGreaterThan(0);
-    await click(lines[row]!.indexOf("#work") + 1, row);
+    await click(lines[row]!.lastIndexOf("#work") + 1, row);
 
     const frame = captureCharFrame();
     expect(frame).toContain("1 of 2");
@@ -4300,6 +4330,7 @@ describe("TUI review 3 — follow-ups", () => {
     );
 
     await press("a");
+    await press("TAB");
     const clean = captureCharFrame().split("\n");
     // The chips fit on one row: no label wraps into a stray fragment below.
     const chipRows = clean.filter((l) => /today +tomorrow/.test(l));
@@ -4307,6 +4338,7 @@ describe("TUI review 3 — follow-ups", () => {
     expect(chipRows[0]).toContain("#code");
     expect(clean.some((l) => /^│ │ +y +│ │$/.test(l))).toBe(false);
 
+    await press("TAB", { shift: true });
     await type("Tiny");
     await press("TAB");
     await press("TAB");
@@ -4318,7 +4350,7 @@ describe("TUI review 3 — follow-ups", () => {
     // The chips are what yields to the message, not the message to them.
     expect(lines.some((l) => l.includes("tomorrow   "))).toBe(false);
     // The status bar is still there under the overlay.
-    expect(lines[18]).toContain("^k");
+    expect(lines[18]).toContain("^s");
     renderer.destroy();
   });
 
@@ -4330,7 +4362,7 @@ describe("TUI review 3 — follow-ups", () => {
     const bottom = lines.findIndex((l) => l.includes("↑↓ / j k scroll"));
     expect(bottom).toBeGreaterThan(0);
     expect(bottom + 1).toBeLessThan(22);
-    expect(lines[22]).toContain("^k");
+    expect(lines[22]).toContain("↑↓  scroll");
     renderer.destroy();
   });
 

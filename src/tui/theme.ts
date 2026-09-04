@@ -60,8 +60,7 @@ const DARK: TuiTheme = {
 
   text: "#e4e4e4",
   textDim: "#a6a6a6",
-  // 4.8:1 on bg — muted, but still readable hints and placeholders.
-  textMuted: "#8a8a8a",
+  textMuted: "#a3a3a3",
   textOn: "#0d1417",
 
   accent: "#22d3ee",
@@ -94,8 +93,7 @@ const LIGHT: TuiTheme = {
 
   text: "#101527",
   textDim: "#4b5570",
-  // 4.7:1 on bg — the old #8a93ab measured 2.9 and was unreadable.
-  textMuted: "#667089",
+  textMuted: "#555f76",
   textOn: "#ffffff",
 
   accent: "#0e7490",

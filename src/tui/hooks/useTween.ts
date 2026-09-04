@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useReducedMotion } from "./useMotion.ts";
 
 const FRAME_MS = 16;
 /** Coarser tick for the row glow: a dozen repaints, not thirty, per edit. */
@@ -22,6 +23,7 @@ export function useTween(
   duration = 180,
   resetKey?: unknown,
 ): number {
+  const reduced = useReducedMotion();
   const [state, setState] = useState({ value: target, key: resetKey });
   const fromRef = useRef(target);
   const startRef = useRef(0);
@@ -33,6 +35,10 @@ export function useTween(
   }
 
   useEffect(() => {
+    if (reduced) {
+      setState({ value: target, key: resetKey });
+      return;
+    }
     if (value === target) return;
     fromRef.current = value;
     startRef.current = Date.now();
@@ -47,9 +53,9 @@ export function useTween(
 
     return () => clearInterval(id);
     // `value` is intentionally excluded: restarting on every frame would stall.
-  }, [target, duration, resetKey]);
+  }, [target, duration, resetKey, reduced]);
 
-  return value;
+  return reduced ? target : value;
 }
 
 /**
@@ -58,10 +64,11 @@ export function useTween(
  * animation entirely and reports 1 from the first render.
  */
 export function useEntrance(duration = 140): number {
+  const reduced = useReducedMotion();
   const [progress, setProgress] = useState(duration > 0 ? 0 : 1);
 
   useEffect(() => {
-    if (duration <= 0) return;
+    if (duration <= 0 || reduced) return;
     const start = Date.now();
     const id = setInterval(() => {
       const t = Math.min((Date.now() - start) / duration, 1);
@@ -69,9 +76,9 @@ export function useEntrance(duration = 140): number {
       if (t >= 1) clearInterval(id);
     }, FRAME_MS);
     return () => clearInterval(id);
-  }, [duration]);
+  }, [duration, reduced]);
 
-  return progress;
+  return reduced ? 1 : progress;
 }
 
 /**
@@ -120,12 +127,17 @@ export function useCountdown(
  * toast. The first render never flashes: a restored list is not news.
  */
 export function useFlash(key: unknown, duration = 480): number {
+  const reduced = useReducedMotion();
   const [value, setValue] = useState(0);
   const seen = useRef(key);
 
   useEffect(() => {
     if (Object.is(seen.current, key)) return;
     seen.current = key;
+    if (reduced) {
+      setValue(0);
+      return;
+    }
     const start = Date.now();
     setValue(1);
     const id = setInterval(() => {
@@ -134,7 +146,7 @@ export function useFlash(key: unknown, duration = 480): number {
       if (t >= 1) clearInterval(id);
     }, FLASH_MS);
     return () => clearInterval(id);
-  }, [key, duration]);
+  }, [key, duration, reduced]);
 
-  return value;
+  return reduced ? 0 : value;
 }

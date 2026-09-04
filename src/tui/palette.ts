@@ -26,6 +26,18 @@ export interface PaletteContext {
   tab: TabId;
   /** Tasks marked for a bulk action; only then is "Clear marks" offered. */
   marked: number;
+  panel?: 0 | 1;
+  row?: "subtask" | "note" | "timelog" | "entry" | null;
+  editRow?: () => void;
+  deleteRow?: () => void;
+  toggleRow?: () => void;
+  markVisible?: () => void;
+  goBack?: () => void;
+  cycleLayout?: () => void;
+  toggleMotion?: () => void;
+  undoLabel?: string | null;
+  previousMatch?: () => void;
+  nextMatch?: () => void;
   addTask: () => void;
   editTask: () => void;
   toggleDone: () => void;
@@ -67,6 +79,9 @@ export interface PaletteContext {
 
 /** Every action the palette can run, in the order it groups them. */
 export function buildPaletteActions(ctx: PaletteContext): PaletteAction[] {
+  const detail = ctx.panel === 1;
+  const bulk = !detail && ctx.marked > 0;
+  const target = bulk ? `${ctx.marked} marked tasks` : "selected task";
   // Task actions act on the current selection; the journal cannot see it,
   // so they disappear there instead of mutating something invisible.
   const taskActions: PaletteAction[] =
@@ -84,14 +99,14 @@ export function buildPaletteActions(ctx: PaletteContext): PaletteAction[] {
             id: "task.edit",
             group: "Task",
             label: "Edit selected task",
-            hint: "e",
+            hint: detail ? undefined : "e",
             run: ctx.editTask,
           },
           {
             id: "task.done",
             group: "Task",
-            label: "Mark done / reopen",
-            hint: "space",
+            label: bulk ? `Mark done / reopen ${target}` : "Mark done / reopen",
+            hint: detail ? undefined : "space",
             run: ctx.toggleDone,
           },
           {
@@ -104,28 +119,28 @@ export function buildPaletteActions(ctx: PaletteContext): PaletteAction[] {
           {
             id: "task.delete",
             group: "Task",
-            label: "Delete selected task",
-            hint: "d",
+            label: `Delete ${target}`,
+            hint: detail ? undefined : "d",
             run: ctx.deleteTask,
           },
           {
             id: "task.priorityUp",
             group: "Task",
-            label: "Priority up",
+            label: bulk ? `Priority up for ${target}` : "Priority up",
             hint: "+",
             run: () => ctx.stepPriority(1),
           },
           {
             id: "task.priorityDown",
             group: "Task",
-            label: "Priority down",
+            label: bulk ? `Priority down for ${target}` : "Priority down",
             hint: "-",
             run: () => ctx.stepPriority(-1),
           },
           {
             id: "task.due",
             group: "Task",
-            label: "Set due date",
+            label: bulk ? `Set due date for ${target}` : "Set due date",
             hint: "@",
             run: ctx.setDue,
           },
@@ -168,9 +183,13 @@ export function buildPaletteActions(ctx: PaletteContext): PaletteAction[] {
             id: "task.mark",
             group: "Task",
             label: "Mark for bulk action",
-            hint: "m",
+            hint: detail ? undefined : "m",
             run: ctx.mark,
           },
+          ...(ctx.markVisible ? [{
+            id: "task.markVisible", group: "Task", label: "Select all visible tasks",
+            hint: detail ? undefined : "M", run: ctx.markVisible,
+          }] : []),
           ...(ctx.marked > 0
             ? [
                 {
@@ -278,14 +297,14 @@ export function buildPaletteActions(ctx: PaletteContext): PaletteAction[] {
       id: "journal.add",
       group: "Journal",
       label: "Add journal entry for today",
-      hint: "a",
+      hint: ctx.tab === "journal" ? "a" : undefined,
       run: () => ctx.addJournalEntry("today"),
     },
     {
       id: "journal.addDay",
       group: "Journal",
       label: "Add entry to selected day",
-      hint: "A",
+      hint: ctx.tab === "journal" ? "A" : undefined,
       run: () => ctx.addJournalEntry("selected"),
     },
     ...journalActions,
@@ -345,7 +364,7 @@ export function buildPaletteActions(ctx: PaletteContext): PaletteAction[] {
       hint: "f",
       run: ctx.toggleFocus,
     },
-    { id: "app.undo", group: "App", label: "Undo", hint: "u", run: ctx.undo },
+    { id: "app.undo", group: "App", label: ctx.undoLabel ? `Undo: ${ctx.undoLabel}` : "Undo", hint: "u", run: ctx.undo },
     {
       id: "app.reload",
       group: "App",
@@ -386,6 +405,20 @@ export function buildPaletteActions(ctx: PaletteContext): PaletteAction[] {
     },
     { id: "app.quit", group: "App", label: "Quit", hint: "q", run: ctx.quit },
   ];
+
+  if (detail && ctx.row) {
+    const row = ctx.row === "timelog" ? "time log" : ctx.row === "entry" ? "journal entry" : ctx.row;
+    if (ctx.editRow) actions.push({ id: "detail.edit", group: "Selected row", label: `Edit selected ${row}`, hint: "e", run: ctx.editRow });
+    if (ctx.deleteRow) actions.push({ id: "detail.delete", group: "Selected row", label: `Delete selected ${row}`, hint: "d", run: ctx.deleteRow });
+    if (ctx.row === "subtask" && ctx.toggleRow) actions.push({ id: "detail.toggle", group: "Selected row", label: "Toggle selected subtask", hint: "space", run: ctx.toggleRow });
+  }
+  if (ctx.goBack) actions.push({ id: "view.back", group: "View", label: "Return to previous context", hint: "backspace", run: ctx.goBack });
+  if (ctx.cycleLayout) actions.push({ id: "view.layout", group: "View", label: "Cycle layout: auto / single / split", hint: "\\", run: ctx.cycleLayout });
+  if (ctx.toggleMotion) actions.push({ id: "view.motion", group: "View", label: "Toggle reduced motion", run: ctx.toggleMotion });
+  if (ctx.tab === "journal" && ctx.previousMatch && ctx.nextMatch) {
+    actions.push({ id: "journal.previousMatch", group: "Journal", label: "Previous search match", hint: "{", run: ctx.previousMatch });
+    actions.push({ id: "journal.nextMatch", group: "Journal", label: "Next search match", hint: "}", run: ctx.nextMatch });
+  }
 
   for (const t of TABS) {
     actions.push({

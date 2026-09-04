@@ -2,6 +2,7 @@ import { TextAttributes } from "@opentui/core";
 import React, { memo, useEffect, useState } from "react";
 import { formatTimer } from "../../core/focus/focus.ts";
 import { GoTime } from "../../core/time.ts";
+import { cellWidth, fitCells } from "../text.ts";
 import type { TuiTheme } from "../theme.ts";
 import { TABS, type TabCounts, type TabId } from "../state.ts";
 import { Meter } from "./primitives.tsx";
@@ -43,14 +44,15 @@ interface TabButtonProps {
   theme: TuiTheme;
   label: string;
   keycap: string;
-  count: number;
+  count: number | null;
   active: boolean;
   compact: boolean;
   onPress: () => void;
 }
 
-function tabWidth(label: string, count: number, compact: boolean): number {
-  return 2 + (compact ? 0 : 2) + label.length + 1 + String(count).length;
+function tabWidth(label: string, count: number | null, compact: boolean): number {
+  return 2 + (compact ? 0 : 2) + cellWidth(label) +
+    (count === null ? 0 : 1 + String(count).length);
 }
 
 function TabButton({
@@ -87,7 +89,9 @@ function TabButton({
       <text fg={fg} attributes={active ? TextAttributes.BOLD : undefined}>
         {label}
       </text>
-      <text fg={active ? theme.textOn : theme.textMuted}>{` ${count}`}</text>
+      {count === null ? null : (
+        <text fg={active ? theme.textOn : theme.textMuted}>{` ${count}`}</text>
+      )}
     </box>
   );
 }
@@ -170,11 +174,6 @@ function FocusTimer({
   );
 }
 
-/** Truncated by hand: the renderer elides in the middle, which reads badly. */
-function trimTitle(title: string, cap: number): string {
-  return title.length > cap ? `${title.slice(0, cap - 1)}…` : title;
-}
-
 /** Top bar: brand, clickable tabs, live focus timer and clock. */
 export const Header = memo(function Header({
   theme,
@@ -185,38 +184,53 @@ export const Header = memo(function Header({
   compact,
   width,
 }: HeaderProps) {
-  const brand = compact ? "◆" : "◆ RonDO";
-  const gap = compact ? 1 : 2;
-  const divider = compact ? "│" : " │ ";
-
-  // Everything but the timer block is fixed; the timer gets what is left and
-  // sheds its optional parts (title, then dots, then meter) before any tab or
-  // the clock would have to give way.
-  let fixed = 2 + brand.length + gap + CLOCK_WIDTH;
-  TABS.forEach((tab, index) => {
-    if (index > 0 && TABS[index - 1]!.group !== tab.group) {
-      fixed += divider.length;
-    }
-    fixed += tabWidth(tab.label, counts[tab.id], compact);
-  });
-  const spare = width - fixed - FOCUS_GAP;
-
-  // Below the label's budget the digits alone still tell the time; below
-  // even that, the header gives up on the timer rather than clip a tab.
-  const showLabel = spare >= focus.label.length + 1 + TIMER_WIDTH + 1;
-  const showTimer = showLabel || spare >= TIMER_WIDTH + 1;
-  let room = spare - (showLabel ? focus.label.length + 1 : 0) - TIMER_WIDTH - 1;
+  let brand = compact ? "◆" : "◆ RonDO";
+  let gap = compact ? 1 : 2;
+  let divider = compact ? "│" : " │ ";
+  let labels = TABS.map((tab) => tab.label);
+  let compactTabs = compact;
+  let showCounts = true;
+  const running = focus.endAt !== null;
+  const timerWidth = running
+    ? cellWidth(formatTimer(Math.max(focus.endAt! - Date.now(), 0) * 1e6))
+    : TIMER_WIDTH;
+  const timerMinimum = running ? FOCUS_GAP + timerWidth + 1 : 0;
+  const fixedWidth = () => {
+    let fixed = 2 + cellWidth(brand) + gap;
+    TABS.forEach((tab, index) => {
+      if (index > 0 && TABS[index - 1]!.group !== tab.group) fixed += cellWidth(divider);
+      fixed += tabWidth(labels[index]!, showCounts ? counts[tab.id] : null, compactTabs);
+    });
+    return fixed;
+  };
+  if (fixedWidth() + timerMinimum > width) {
+    brand = "◆";
+    gap = 1;
+    divider = "│";
+    labels = ["Act", "Done", "All", "Jnl"];
+    compactTabs = false;
+  }
+  if (fixedWidth() + timerMinimum > width) showCounts = false;
+  if (fixedWidth() + timerMinimum > width) labels = ["A", "D", "All", "J"];
+  if (fixedWidth() + timerMinimum > width) {
+    brand = "";
+    gap = 0;
+  }
+  const fixed = fixedWidth();
+  const showClock = fixed + timerMinimum + CLOCK_WIDTH <= width;
+  const spare = width - fixed - (showClock ? CLOCK_WIDTH : 0) - FOCUS_GAP;
+  const showLabel = spare >= cellWidth(focus.label) + 1 + timerWidth + 1;
+  const showTimer = spare >= timerWidth + 1;
+  let room = spare - (showLabel ? cellWidth(focus.label) + 1 : 0) - timerWidth - 1;
   const showMeter = !compact && room >= METER_WIDTH + 1;
   if (showMeter) room -= METER_WIDTH + 1;
-  const showDots = !compact && room >= focus.cycleDots.length + 1;
-  if (showDots) room -= focus.cycleDots.length + 1;
-  const title =
-    focus.task && !compact && room >= MIN_TITLE
-      ? trimTitle(focus.task, room - 3)
-      : undefined;
-
+  const showDots = !compact && room >= cellWidth(focus.cycleDots) + 1;
+  if (showDots) room -= cellWidth(focus.cycleDots) + 1;
+  const title = focus.task && !compact && room >= MIN_TITLE
+    ? fitCells(focus.task, room - 3)
+    : undefined;
   const idle = `next: ${focus.nextLabel}`;
-  const showIdle = spare >= idle.length + 1;
+  const showIdle = spare >= cellWidth(idle) + 1;
 
   return (
     <box flexDirection="column" flexShrink={0}>
@@ -243,11 +257,11 @@ export const Header = memo(function Header({
             ) : null}
             <TabButton
               theme={theme}
-              label={tab.label}
+              label={labels[index]!}
               keycap={String(index + 1)}
-              count={counts[tab.id]}
+              count={showCounts ? counts[tab.id] : null}
               active={tab.id === activeTab}
-              compact={compact}
+              compact={compactTabs}
               onPress={() => onSelectTab(tab.id)}
             />
           </React.Fragment>
@@ -272,7 +286,7 @@ export const Header = memo(function Header({
             {`${idle} `}
           </text>
         ) : null}
-        <Clock theme={theme} />
+        {showClock ? <Clock theme={theme} /> : null}
       </box>
     </box>
   );

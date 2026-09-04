@@ -694,10 +694,10 @@ describe("indexOfNoteDate (2.7)", () => {
 
 describe("clampRatio / listWidthFor (1.10)", () => {
   test("keeps both panels above their minimum width", () => {
-    expect(clampRatio(0.8, 80)).toBeCloseTo(0.5);
+    expect(clampRatio(0.8, 80)).toBeCloseTo(39 / 80);
     expect(clampRatio(0.2, 80)).toBeCloseTo(34 / 80);
     expect(clampRatio(0.4, 100)).toBe(0.4);
-    expect(listWidthFor(0.8, 80)).toBe(40);
+    expect(listWidthFor(0.8, 80)).toBe(39);
     expect(listWidthFor(0.2, 80)).toBe(34);
     expect(listWidthFor(0.4, 100)).toBe(40);
   });
@@ -770,8 +770,10 @@ describe("hintSpecs (5.4)", () => {
     ]);
   });
 
-  test("compact lists lead with the key that reaches the other panel", () => {
-    expect(keys(hintSpecs({ tab: "active", panel: 0, compact: true, searching: false }))[0]).toBe("l");
+  test("compact task lists prioritize capture, completion and search before details", () => {
+    const compact = hintSpecs({ tab: "active", panel: 0, compact: true, searching: false });
+    expect(keys(compact).slice(0, 3)).toEqual(["a", "space", "/"]);
+    expect(compact.find((hint) => hint.action === "details")?.key).toBe("enter");
     expect(keys(hintSpecs({ tab: "active", panel: 0, compact: false, searching: false }))[0]).toBe("a");
     expect(keys(hintSpecs({ tab: "journal", panel: 0, compact: true, searching: false }))[0]).toBe("l");
   });

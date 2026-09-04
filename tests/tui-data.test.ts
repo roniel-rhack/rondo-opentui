@@ -282,9 +282,9 @@ describe("RondoData time log edit (3.10)", () => {
     const log = data.tasks.getById(t.id)!.timeLogs[0]!;
 
     const action = data.replaceTimeLog(t.id, log, 90 * Minute, "review");
-    expect(action.kind).toBe("bulk");
     const edited = data.tasks.getById(t.id)!.timeLogs;
     expect(edited).toHaveLength(1);
+    expect(edited[0]!.id).toBe(log.id);
     expect(edited[0]!.duration).toBe(90 * Minute);
     expect(edited[0]!.note).toBe("review");
     expect(edited[0]!.loggedAt.equal(log.loggedAt)).toBe(true);
@@ -292,6 +292,7 @@ describe("RondoData time log edit (3.10)", () => {
     data.undo(action);
     const back = data.tasks.getById(t.id)!.timeLogs;
     expect(back).toHaveLength(1);
+    expect(back[0]!.id).toBe(log.id);
     expect(back[0]!.duration).toBe(45 * Minute);
     expect(back[0]!.note).toBe("pairing");
   });

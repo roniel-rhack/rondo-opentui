@@ -287,7 +287,7 @@ function SortSegment({
   );
 }
 
-/** Bottom bar: key hints, or the active toast with a draining timer bar. */
+/** Bottom bar keeps key hints above the active toast and its timer. */
 export const StatusBar = memo(function StatusBar({
   theme,
   hints,
@@ -299,7 +299,7 @@ export const StatusBar = memo(function StatusBar({
   onCycleSort,
   width,
 }: StatusBarProps) {
-  const remaining = useCountdown(message ? messageId : null, messageMs, width);
+  const remaining = useCountdown(message ? messageId : null, messageMs, 6);
 
   const tone =
     messageKind === "error"
@@ -319,9 +319,10 @@ export const StatusBar = memo(function StatusBar({
           ? "✓"
           : "•";
 
-  const sortLabel = sort ? `⇅ ${SORT_LABELS[sort]}` : "";
+  const showSort = sort !== undefined && width >= 100;
+  const sortLabel = showSort ? `⇅ ${SORT_LABELS[sort]}` : "";
   // Horizontal padding, then the sort segment and its leading gap.
-  const available = width - 2 - (sort ? sortLabel.length + 1 : 0);
+  const available = width - 2 - (showSort ? sortLabel.length + 1 : 0);
   const shown = fitHints(hints, available);
 
   return (
@@ -333,16 +334,6 @@ export const StatusBar = memo(function StatusBar({
         paddingRight={1}
         backgroundColor={theme.surface}
       >
-        {message ? (
-          <box flexDirection="row" flexGrow={1} minWidth={0}>
-            <text fg={tone} attributes={TextAttributes.BOLD} flexShrink={0}>
-              {`${icon} `}
-            </text>
-            <text fg={theme.text} flexGrow={1} wrapMode="none" truncate>
-              {message}
-            </text>
-          </box>
-        ) : (
           <box flexDirection="row" flexGrow={1} minWidth={0}>
             {shown.map((hint) => (
               <KeyHint
@@ -354,8 +345,7 @@ export const StatusBar = memo(function StatusBar({
               />
             ))}
           </box>
-        )}
-        {sort ? (
+        {showSort ? (
           <SortSegment theme={theme} label={sortLabel} onPress={onCycleSort} />
         ) : null}
       </box>
@@ -363,6 +353,15 @@ export const StatusBar = memo(function StatusBar({
       {/* Toast timer: a hairline that drains as the message expires. The row
           is always present so the layout never jumps when a toast appears. */}
       <box height={1} flexDirection="row">
+        {message ? (
+          <box flexDirection="row" flexGrow={1} minWidth={0} paddingLeft={1}>
+            <text fg={tone} attributes={TextAttributes.BOLD} flexShrink={0}>{`${icon} `}</text>
+            <text fg={theme.text} width={Math.max(1, width - 9)} flexShrink={0} wrapMode="none" truncate>{message}</text>
+            <box width={6} flexShrink={0}>
+              <Meter theme={theme} ratio={remaining} width={6} color={tone} trackColor={theme.bg} thin />
+            </box>
+          </box>
+        ) : (
         <Meter
           theme={theme}
           ratio={message ? remaining : 0}
@@ -371,6 +370,7 @@ export const StatusBar = memo(function StatusBar({
           trackColor={theme.bg}
           thin
         />
+        )}
       </box>
     </box>
   );
@@ -387,7 +387,7 @@ interface HelpOverlayProps {
 // rest. Marks sits with the filters because both narrow what the keys act on.
 const HELP_COLUMNS: [HelpSection[], HelpSection[]] = [
   [HELP_SECTIONS[0]!, HELP_SECTIONS[1]!, HELP_SECTIONS[5]!, HELP_SECTIONS[6]!],
-  [HELP_SECTIONS[3]!, HELP_SECTIONS[2]!, HELP_SECTIONS[4]!],
+  [HELP_SECTIONS[3]!, HELP_SECTIONS[2]!, HELP_SECTIONS[4]!, HELP_SECTIONS[7]!],
 ];
 
 function HelpColumn({

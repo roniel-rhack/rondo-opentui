@@ -177,9 +177,22 @@ describe("exportContent", () => {
 });
 
 describe("theme accessibility", () => {
-  test("muted text meets 4.5:1 on the page background", () => {
-    expect(tuiTheme(true).textMuted).toBe("#8a8a8a");
-    expect(tuiTheme(false).textMuted).toBe("#667089");
+  test("muted text meets 4.5:1 on page, raised and selection backgrounds", () => {
+    const luminance = (hex: string) => {
+      const rgb = [1, 3, 5].map((offset) => {
+        const channel = parseInt(hex.slice(offset, offset + 2), 16) / 255;
+        return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * rgb[0]! + 0.7152 * rgb[1]! + 0.0722 * rgb[2]!;
+    };
+    for (const dark of [true, false]) {
+      const theme = tuiTheme(dark);
+      const text = luminance(theme.textMuted);
+      for (const surface of [theme.bg, theme.surfaceAlt, theme.surfaceHigh, theme.selectionBg]) {
+        const background = luminance(surface);
+        expect((Math.max(text, background) + 0.05) / (Math.min(text, background) + 0.05)).toBeGreaterThanOrEqual(4.5);
+      }
+    }
   });
 
   test("Low priority uses the readable dim tone", () => {

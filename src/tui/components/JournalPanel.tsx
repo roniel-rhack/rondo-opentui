@@ -1,5 +1,5 @@
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
-import { useRef, useState } from "react";
+import { useImperativeHandle, useRef, useState, type Ref } from "react";
 import {
   formatNoteTitle,
   formatTime,
@@ -8,11 +8,13 @@ import {
 import type { Note } from "../../core/journal/journal.ts";
 import { GoTime } from "../../core/time.ts";
 import { useSmoothScrollIntoView } from "../hooks/useSmoothScroll.ts";
-import { plainExcerpt, plural } from "../state.ts";
+import { journalExcerpt, searchJournal } from "../journal-search.ts";
+import { fuzzyIndices, plainExcerpt, plural } from "../state.ts";
 import { mix, type TuiTheme } from "../theme.ts";
-import { EmptyState, MarkdownText } from "./primitives.tsx";
+import { EmptyState, MarkdownText, highlightSpans } from "./primitives.tsx";
 
 interface NoteListProps {
+  query?: string;
   theme: TuiTheme;
   cfg: Config;
   notes: Note[];
@@ -30,6 +32,7 @@ const PREVIEW_CHROME = 2 + 2 + 1 + 1;
 
 /** Left panel of the Journal tab: one row per day. */
 export function NoteList({
+  query = "",
   theme,
   cfg,
   notes,
@@ -56,6 +59,7 @@ export function NoteList({
 
   return (
     <NoteRows
+      query={query}
       theme={theme}
       cfg={cfg}
       notes={notes}
@@ -75,6 +79,7 @@ interface NoteRowsProps extends NoteListProps {
 
 /** Scroll container that follows the selected day. */
 function NoteRows({
+  query = "",
   theme,
   cfg,
   notes,
@@ -114,9 +119,11 @@ function NoteRows({
         const isSelected = index === selected;
         const rail = isSelected ? "┃" : "│";
         const railTone = isSelected && focused ? theme.accent : theme.borderSubtle;
-        // The first entry's opening words, so a day can be told apart from
-        // its neighbours without opening it.
-        const preview = plainExcerpt(note.entries[0]?.body ?? "", previewWidth);
+        const match = searchJournal([note], query)[0]?.entryIds[0];
+        const entry = note.entries.find((entry) => entry.id === match) ?? note.entries[0];
+        const preview = query.trim() === ""
+          ? plainExcerpt(entry?.body ?? "", previewWidth)
+          : journalExcerpt(entry?.body ?? "", query, previewWidth);
         return (
           <box
             key={note.id}
@@ -149,7 +156,8 @@ function NoteRows({
                 {rail}
               </text>
               <text fg={theme.textMuted} wrapMode="none">
-                {` ${preview}`}
+                {" "}
+                {highlightSpans(preview, fuzzyIndices(query.trim(), preview) ?? [], theme.textMuted, theme.accent)}
               </text>
             </box>
           </box>
@@ -159,7 +167,15 @@ function NoteRows({
   );
 }
 
+export interface EntryListHandle {
+  scrollBy: (lines: number) => void;
+  getScrollTop: () => number;
+  scrollTo: (top: number) => void;
+}
+
 interface EntryListProps {
+  query?: string;
+  ref?: Ref<EntryListHandle>;
   theme: TuiTheme;
   cfg: Config;
   note: Note | null;
@@ -170,6 +186,8 @@ interface EntryListProps {
 
 /** Right panel of the Journal tab: the selected day's entries. */
 export function EntryList({
+  query = "",
+  ref,
   theme,
   cfg,
   note,
@@ -201,6 +219,8 @@ export function EntryList({
 
   return (
     <EntryRows
+      query={query}
+      ref={ref}
       theme={theme}
       cfg={cfg}
       note={note}
@@ -213,6 +233,8 @@ export function EntryList({
 
 /** Scroll container that follows the selected entry. */
 function EntryRows({
+  query = "",
+  ref,
   theme,
   cfg,
   note,
@@ -222,11 +244,24 @@ function EntryRows({
 }: EntryListProps & { note: Note }) {
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
   const selectedId = note.entries[selected]?.id;
+  const matches = searchJournal([note], query)[0]?.entryIds ?? [];
 
-  useSmoothScrollIntoView(
+  const stopScrolling = useSmoothScrollIntoView(
     scrollRef,
     selectedId === undefined ? undefined : `entry-${selectedId}`,
   );
+
+  useImperativeHandle(ref, () => ({
+    getScrollTop: () => scrollRef.current?.scrollTop ?? 0,
+    scrollTo: (top) => {
+      stopScrolling();
+      scrollRef.current?.scrollTo(top);
+    },
+    scrollBy: (lines) => {
+      stopScrolling();
+      scrollRef.current?.scrollBy({ x: 0, y: lines });
+    },
+  }), [stopScrolling]);
 
   return (
     <scrollbox
@@ -252,6 +287,7 @@ function EntryRows({
           id={`entry-${entry.id}`}
           theme={theme}
           time={formatTime(cfg, entry.createdAt)}
+          matchLabel={matches.includes(entry.id) ? `Match ${matches.indexOf(entry.id) + 1}/${matches.length}` : undefined}
           body={entry.body}
           selected={index === selected}
           focused={focused}
@@ -263,6 +299,7 @@ function EntryRows({
 }
 
 interface EntryRowProps {
+  matchLabel?: string;
   theme: TuiTheme;
   id: string;
   time: string;
@@ -274,6 +311,7 @@ interface EntryRowProps {
 
 /** One journal entry: timestamp rail on the left, prose on the right. */
 function EntryRow({
+  matchLabel,
   theme,
   id,
   time,
@@ -291,7 +329,9 @@ function EntryRow({
       : mix(theme.selectionBg, theme.bg, 0.45)
     : hover
       ? theme.hoverBg
-      : undefined;
+      : matchLabel
+        ? theme.accentSoft
+        : undefined;
   const active = selected && focused;
   return (
     <box
@@ -310,7 +350,9 @@ function EntryRow({
         {selected ? "┃" : "│"}
       </text>
       <box flexDirection="column" flexGrow={1} paddingLeft={1}>
-        <text fg={active ? theme.accent : theme.textMuted}>{time}</text>
+        <text fg={active || matchLabel ? theme.accent : theme.textMuted}>
+          {matchLabel ? `${time} · ${matchLabel}` : time}
+        </text>
         <MarkdownText theme={theme} content={body} />
       </box>
     </box>

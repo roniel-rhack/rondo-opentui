@@ -127,6 +127,7 @@ export function Overlay({
         <box
           flexDirection="row"
           height={1}
+          flexShrink={0}
           paddingLeft={1}
           paddingRight={1}
           backgroundColor={theme.surfaceAlt}
@@ -149,6 +150,7 @@ export function Overlay({
         <box
           flexDirection="column"
           flexGrow={1}
+          minHeight={0}
           paddingLeft={2}
           paddingRight={2}
         >
@@ -158,6 +160,7 @@ export function Overlay({
         {footer ? (
           <box
             height={1}
+            flexShrink={0}
             paddingLeft={2}
             paddingRight={2}
             backgroundColor={theme.surfaceAlt}

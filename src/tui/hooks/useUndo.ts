@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { RondoData, UndoAction } from "../data.ts";
 import type { Notify } from "./useToast.ts";
 
@@ -12,6 +12,7 @@ export interface Undo {
   /** Reverses the last recorded action, or says there is nothing to take
    * back. */
   undo: () => void;
+  nextUndoLabel: string | null;
 }
 
 /**
@@ -30,9 +31,11 @@ export function useUndo(
   // from one stdin chunk before React commits, and every one of them must see
   // what the previous press already popped.
   const stack = useRef<UndoAction[]>([]);
+  const [nextUndoLabel, setNextUndoLabel] = useState<string | null>(null);
 
   const pushUndo = useCallback((action: UndoAction) => {
     stack.current = [action, ...stack.current].slice(0, UNDO_DEPTH);
+    setNextUndoLabel(action.label);
   }, []);
 
   const undo = useCallback(() => {
@@ -47,9 +50,11 @@ export function useUndo(
     try {
       data.undo(action);
     } catch (err) {
+      stack.current = [action, ...rest];
       notify(`Could not undo: ${(err as Error).message}`, "error");
       return;
     }
+    setNextUndoLabel(rest[0]?.label ?? null);
     // A restored task keeps its id, so the cursor can go back to it.
     if (action.kind === "task") onTaskRestored(action.task.id);
     reloadAll();
@@ -64,5 +69,5 @@ export function useUndo(
     );
   }, [data, notify, onTaskRestored, reloadAll]);
 
-  return { pushUndo, undo };
+  return { pushUndo, undo, nextUndoLabel };
 }

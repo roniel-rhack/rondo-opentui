@@ -1,5 +1,6 @@
+import { cellWidth, fitCells } from "./text.ts";
 import type { Config } from "../core/config/config.ts";
-import type { Density, TuiState } from "../core/config/tui-state.ts";
+import type { Density, PanelLayout, TuiState } from "../core/config/tui-state.ts";
 import { writeJSON, writeNotes, writeTasks } from "../core/export/export.ts";
 import { SessionKind } from "../core/focus/focus.ts";
 import { dateTitle, type Note } from "../core/journal/journal.ts";
@@ -126,6 +127,8 @@ export interface RestoredTuiState {
   selectedTaskId: number | null;
   selectedNoteDate: string | null;
   density: Density;
+  layout?: PanelLayout;
+  reducedMotion?: boolean;
 }
 
 const SORT_KEYS: readonly SortKey[] = ["created", "due", "priority"];
@@ -143,6 +146,8 @@ export function restoreTuiState(saved: TuiState): RestoredTuiState {
     selectedTaskId: saved.selectedTaskId,
     selectedNoteDate: saved.selectedNoteDate,
     density: saved.density,
+    ...(saved.layout ? { layout: saved.layout } : {}),
+    ...(saved.reducedMotion !== undefined ? { reducedMotion: saved.reducedMotion } : {}),
   };
 }
 
@@ -668,7 +673,7 @@ export function fitTags(
   const shown: { tag: string; count: number }[] = [];
   let used = 0;
   for (const t of tags) {
-    const cost = t.tag.length + String(t.count).length + 4;
+    const cost = cellWidth(t.tag) + String(t.count).length + 4;
     if (used + cost > budget) break;
     used += cost;
     shown.push(t);
@@ -889,7 +894,7 @@ const DETAIL_MIN_WIDTH = 40;
  * below its minimum. On a terminal too narrow for both the list wins. */
 export function clampRatio(ratio: number, width: number): number {
   const min = LIST_MIN_WIDTH / width;
-  const max = Math.max(min, (width - DETAIL_MIN_WIDTH) / width);
+  const max = Math.max(min, (width - DETAIL_MIN_WIDTH - 1) / width);
   return Math.min(Math.max(ratio, min), max);
 }
 
@@ -923,7 +928,7 @@ export function fitChips(labels: readonly string[], available: number): number {
   let used = 0;
   let n = 0;
   for (const label of labels) {
-    used += label.length + 3;
+    used += cellWidth(label) + 3;
     if (used > available) break;
     n++;
   }
@@ -949,11 +954,10 @@ export function openFirst(tasks: readonly Task[]): Task[] {
   ];
 }
 
-/** One line of at most `max` characters, for quoting what a dialog acts on. */
+/** One line of at most `max` terminal cells, for quoting what a dialog acts on. */
 export function excerptOf(text: string, max = 48): string {
   const flat = text.replace(/\s+/g, " ").trim();
-  if (flat.length <= max) return flat;
-  return `${flat.slice(0, max - 1).trimEnd()}…`;
+  return fitCells(flat, max);
 }
 
 /** `excerptOf` with the markdown the app renders stripped first, so a
@@ -995,7 +999,10 @@ export type HintAction =
   | "keep"
   | "clear"
   | "palette"
-  | "help";
+  | "help"
+  | "closeModal"
+  | "previousMatch"
+  | "nextMatch";
 
 export interface HintSpec {
   key: string;
@@ -1009,6 +1016,10 @@ export interface HintContext {
   panel: 0 | 1;
   compact: boolean;
   searching: boolean;
+  modal?: string;
+  creating?: boolean;
+  multiline?: boolean;
+  hasMatches?: boolean;
   /** Kind of the detail row under the cursor; null or absent when the
    * detail panel has no rows to walk. */
   row?: DetailRow["kind"] | null;
@@ -1028,6 +1039,28 @@ const HINT_TAIL: HintSpec[] = [
  * from the end keeps the keys that matter; the palette and help close every
  * list. */
 export function hintSpecs(ctx: HintContext): HintSpec[] {
+  if (ctx.modal && ctx.modal !== "none") {
+    const cancel: HintSpec = { key: "esc", label: "close", action: "closeModal" };
+    if (ctx.modal === "task-form") return [
+      { key: "^s", label: "save", action: null },
+      ...(ctx.creating ? [{ key: "^n", label: "save + new", action: null }] : []),
+      { key: "tab", label: "field", action: null }, cancel,
+    ];
+    if (ctx.modal === "prompt") return [
+      { key: ctx.multiline ? "^s" : "enter", label: "save", action: null }, cancel,
+    ];
+    if (ctx.modal === "confirm") return [
+      { key: "y", label: "confirm", action: null },
+      { key: "n", label: "cancel", action: "closeModal" }, cancel,
+    ];
+    if (ctx.modal === "help" || ctx.modal === "stats") return [
+      { key: "↑↓", label: "scroll", action: null }, cancel,
+    ];
+    return [
+      { key: "↑↓", label: "move", action: null },
+      { key: "enter", label: ctx.modal === "settings" ? "save" : "select", action: null }, cancel,
+    ];
+  }
   if (ctx.searching) {
     return [
       { key: "↑↓", label: "move", action: null },
@@ -1039,6 +1072,10 @@ export function hintSpecs(ctx: HintContext): HintSpec[] {
   if (ctx.tab === "journal") {
     if (ctx.panel === 1) {
       return [
+        ...(ctx.hasMatches ? [
+          { key: "{", label: "prev", action: "previousMatch" as const },
+          { key: "}", label: "next", action: "nextMatch" as const },
+        ] : []),
         { key: "e", label: "edit", action: "edit" },
         { key: "d", label: "delete", action: "delete" },
         { key: "a", label: "add", action: "add" },
@@ -1095,16 +1132,16 @@ export function hintSpecs(ctx: HintContext): HintSpec[] {
     ];
   }
   return [
-    ...(ctx.compact ? [{ key: "l", label: "details", action: "details" as const }] : []),
     { key: "a", label: "add", action: "add" },
-    { key: "e", label: "edit", action: "edit" },
     // The Done tab's keys do the opposite of what they do elsewhere, and the
     // bar is where that has to be said.
     { key: "space", label: ctx.done ? "reopen" : "done", action: "done" },
+    { key: "/", label: "search", action: "filter" },
+    { key: "e", label: "edit", action: "edit" },
+    ...(ctx.compact ? [{ key: "enter", label: "details", action: "details" as const }] : []),
     { key: "s", label: ctx.done ? "restart" : "start", action: "start" },
     { key: "d", label: "delete", action: "delete" },
     { key: "t", label: "subtask", action: "subtask" },
-    { key: "/", label: "filter", action: "filter" },
     { key: "v", label: "view", action: "view" },
     { key: "#", label: "tag", action: "tag" },
     { key: "@", label: "due", action: "due" },
@@ -1137,6 +1174,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       ["f", "Start / stop focus"],
       ["z", "Density"],
       ["< >, drag", "Resize panels"],
+      ["\\", "Layout: auto / single / split"],
       ["y / n", "Confirm / cancel a dialog"],
       ["q, ctrl+c", "Quit (asks while focus runs)"],
     ],
@@ -1150,6 +1188,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       ["h l ← →", "Switch panel"],
       ["tab shift+tab", "Next / previous tab"],
       ["enter", "Open detail / edit row"],
+      ["backspace", "Return after a global jump"],
       ["esc", "Marks, then detail, then filter,"],
       ["", "then view"],
       ["click, wheel", "Select row, scroll"],
@@ -1169,6 +1208,7 @@ export const HELP_SECTIONS: HelpSection[] = [
     "Tasks",
     [
       ["a", "Add task"],
+      ["ctrl+n", "Save new task and add another"],
       ["e", "Edit task"],
       ["d", "Delete (undo with u)"],
       ["space", "Mark done / reopen"],
@@ -1194,6 +1234,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       ["x", "Hide note"],
       ["H", "Show hidden"],
       ["/", "Search entries"],
+      ["{ }", "Previous / next search match"],
     ],
   ],
   [
@@ -1211,15 +1252,20 @@ export const HELP_SECTIONS: HelpSection[] = [
     "Marks",
     [
       ["m", "Mark task for bulk action"],
+      ["M", "Select all visible tasks"],
+      ["J K", "Extend selection down / up"],
       ["space d + - @", "Act on every marked task"],
       ["esc", "Clear marks"],
     ],
   ],
+  ["Forms", [["^s", "Save"], ["^n", "Save new task and add another"], ["tab", "Next field / more options"], ["esc", "Cancel / close"]]],
 ];
 
 /** Every surface the status bar draws hints for, so the check below sees the
  * same keys the user does. */
 const HINT_CONTEXTS: HintContext[] = [
+  ...["task-form", "prompt", "confirm", "help", "stats", "settings", "palette"].map((modal) => ({ tab: "active" as const, panel: 0 as const, compact: false, searching: false, modal, creating: true, multiline: true })),
+  { tab: "journal", panel: 1, compact: false, searching: false, hasMatches: true },
   { tab: "active", panel: 0, compact: false, searching: false },
   { tab: "active", panel: 0, compact: true, searching: false },
   { tab: "active", panel: 0, compact: false, searching: false, marked: 2 },

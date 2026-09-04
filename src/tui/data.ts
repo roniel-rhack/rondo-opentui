@@ -11,9 +11,10 @@ import {
   statusString,
   type Priority,
   type Task,
+  type Subtask,
 } from "../core/task/task.ts";
 import type { Note } from "../core/journal/journal.ts";
-import { DateOnly, type GoTime } from "../core/time.ts";
+import { DateOnly, GoTime, RFC3339 } from "../core/time.ts";
 
 export interface TaskDraft {
   title: string;
@@ -27,8 +28,16 @@ export interface TaskDraft {
 /** Undoable action captured before a destructive operation. */
 export type UndoAction =
   | { kind: "task"; label: string; task: Task }
-  | { kind: "subtask"; label: string; taskId: number; title: string; completed: boolean; position: number }
-  | { kind: "entry"; label: string; noteId: number; body: string; createdAt: GoTime }
+  | { kind: "task-created"; label: string; taskId: number }
+  | { kind: "task-edited"; label: string; task: Task }
+  | { kind: "subtask"; label: string; id: number; taskId: number; title: string; completed: boolean; position: number }
+  | { kind: "subtask-added"; label: string; id: number }
+  | { kind: "subtask-edited"; label: string; subtask: Subtask }
+  | { kind: "entry"; label: string; id: number; noteId: number; body: string; createdAt: GoTime }
+  | { kind: "entry-added"; label: string; id: number; noteId: number; createdNote: boolean }
+  | { kind: "entry-edited"; label: string; id: number; body: string }
+  | { kind: "note-hidden"; label: string; noteId: number; hidden: boolean }
+  | { kind: "dependency"; label: string; taskId: number; blockerId: number; existed: boolean }
   | {
       kind: "status";
       label: string;
@@ -38,8 +47,11 @@ export type UndoAction =
       prevRecurInterval: number;
       spawnedId: number | null;
     }
-  | { kind: "note"; label: string; taskId: number; body: string; createdAt: GoTime }
-  | { kind: "timelog"; label: string; taskId: number; duration: number; note: string; loggedAt: GoTime }
+  | { kind: "note"; label: string; id: number; taskId: number; body: string; createdAt: GoTime }
+  | { kind: "note-added"; label: string; id: number }
+  | { kind: "note-edited"; label: string; id: number; body: string }
+  | { kind: "timelog"; label: string; id: number; taskId: number; duration: number; note: string; loggedAt: GoTime }
+  | { kind: "timelog-edited"; label: string; id: number; duration: number; note: string }
   | { kind: "timelog-added"; label: string; logId: number }
   | { kind: "priority"; label: string; taskId: number; prev: Priority }
   | { kind: "due"; label: string; taskId: number; prev: GoTime | null }
@@ -108,7 +120,8 @@ export class RondoData {
     return t;
   }
 
-  updateTask(task: Task, draft: TaskDraft): void {
+  updateTask(task: Task, draft: TaskDraft): UndoAction {
+    const previous = { ...task, tags: [...task.tags] };
     task.title = draft.title;
     task.description = draft.description;
     task.priority = draft.priority;
@@ -122,6 +135,11 @@ export class RondoData {
         task.recurInterval > 0 ? task.recurInterval : 1,
       );
     }
+    return {
+      kind: "task-edited",
+      label: `Edited "${previous.title}"`,
+      task: previous,
+    };
   }
 
   /**
@@ -229,34 +247,68 @@ export class RondoData {
   }
 
   /** Marks taskId as blocked by blockerId, refusing cycles and self-blocks. */
-  addDependency(taskId: number, blockerId: number): void {
+  addDependency(taskId: number, blockerId: number): UndoAction | null {
+    if (this.tasks.listBlockerIds(taskId).includes(blockerId)) return null;
     if (
       hasCycle(taskId, [blockerId], (id) => this.tasks.listBlockerIds(id))
     ) {
       throw new Error("that would create a dependency cycle");
     }
     this.tasks.setBlocker(taskId, blockerId);
+    return {
+      kind: "dependency",
+      label: `Blocked #${taskId} on #${blockerId}`,
+      taskId,
+      blockerId,
+      existed: false,
+    };
   }
 
-  removeDependency(taskId: number, blockerId: number): void {
+  removeDependency(taskId: number, blockerId: number): UndoAction | null {
+    if (!this.tasks.listBlockerIds(taskId).includes(blockerId)) return null;
     this.tasks.removeBlocker(taskId, blockerId);
+    return {
+      kind: "dependency",
+      label: `Unblocked #${taskId} from #${blockerId}`,
+      taskId,
+      blockerId,
+      existed: true,
+    };
   }
 
-  /** False when the task is gone — deleted from another connection while a
+  /** Null when the task is gone — deleted from another connection while a
    * prompt for it was open — so the caller can say so instead of letting a
    * foreign-key error escape. */
-  addSubtask(taskId: number, title: string): boolean {
-    if (!this.tasks.getById(taskId)) return false;
+  addSubtask(taskId: number, title: string): UndoAction | null {
+    if (!this.tasks.getById(taskId)) return null;
     this.tasks.addSubtask(taskId, title);
-    return true;
+    return {
+      kind: "subtask-added",
+      label: `Added subtask "${title}"`,
+      id: this.insertedId(),
+    };
   }
 
-  toggleSubtask(id: number): void {
+  toggleSubtask(id: number): UndoAction | null {
+    const subtask = this.subtaskById(id);
+    if (!subtask) return null;
     this.tasks.toggleSubtask(id);
+    return {
+      kind: "subtask-edited",
+      label: `Toggled subtask "${subtask.title}"`,
+      subtask,
+    };
   }
 
-  editSubtask(id: number, title: string): void {
+  editSubtask(id: number, title: string): UndoAction | null {
+    const subtask = this.subtaskById(id);
+    if (!subtask) return null;
     this.tasks.updateSubtask(id, title);
+    return {
+      kind: "subtask-edited",
+      label: `Edited subtask "${subtask.title}"`,
+      subtask,
+    };
   }
 
   deleteSubtask(
@@ -267,6 +319,7 @@ export class RondoData {
     return {
       kind: "subtask",
       label: `Deleted subtask "${subtask.title}"`,
+      id: subtask.id,
       taskId,
       title: subtask.title,
       completed: subtask.completed,
@@ -274,15 +327,25 @@ export class RondoData {
     };
   }
 
-  /** False when the task no longer exists; see `addSubtask`. */
-  addTaskNote(taskId: number, body: string): boolean {
-    if (!this.tasks.getById(taskId)) return false;
+  /** Null when the task no longer exists; see `addSubtask`. */
+  addTaskNote(taskId: number, body: string): UndoAction | null {
+    if (!this.tasks.getById(taskId)) return null;
     this.tasks.addNote(taskId, body);
-    return true;
+    return { kind: "note-added", label: "Added note", id: this.insertedId() };
   }
 
-  editTaskNote(noteId: number, body: string): void {
+  editTaskNote(noteId: number, body: string): UndoAction | null {
+    const previous = this.db
+      .query("SELECT body FROM task_notes WHERE id = ?")
+      .get(noteId) as { body: string } | null;
+    if (!previous) return null;
     this.tasks.updateNote(noteId, body);
+    return {
+      kind: "note-edited",
+      label: "Edited note",
+      id: noteId,
+      body: previous.body,
+    };
   }
 
   deleteTaskNote(
@@ -293,17 +356,18 @@ export class RondoData {
     return {
       kind: "note",
       label: "Deleted note",
+      id: note.id,
       taskId,
       body: note.body,
       createdAt: note.createdAt,
     };
   }
 
-  /** False when the task no longer exists; see `addSubtask`. */
-  logTime(taskId: number, duration: number, note: string): boolean {
-    if (!this.tasks.getById(taskId)) return false;
+  /** Null when the task no longer exists; see `addSubtask`. */
+  logTime(taskId: number, duration: number, note: string): UndoAction | null {
+    if (!this.tasks.getById(taskId)) return null;
     this.tasks.addTimeLog(taskId, duration, note);
-    return true;
+    return { kind: "timelog-added", label: "Added time log", logId: this.insertedId() };
   }
 
   deleteTimeLog(
@@ -314,6 +378,7 @@ export class RondoData {
     return {
       kind: "timelog",
       label: "Deleted time log",
+      id: log.id,
       taskId,
       duration: log.duration,
       note: log.note,
@@ -321,42 +386,61 @@ export class RondoData {
     };
   }
 
-  /**
-   * Rewrites a time log in place: the row is replaced, keeping its original
-   * timestamp, and the undo drops the replacement before restoring the old
-   * entry.
-   */
   replaceTimeLog(
     taskId: number,
     log: { id: number; duration: number; note: string; loggedAt: GoTime },
     duration: number,
     note: string,
   ): UndoAction {
-    const removed = this.deleteTimeLog(taskId, log);
-    this.tasks.restoreTimeLog(taskId, duration, note, log.loggedAt);
-    const row = this.db.query("SELECT last_insert_rowid() AS id").get() as {
-      id: number;
-    };
+    const previous = this.tasks.listTimeLogs(taskId).find((row) => row.id === log.id);
+    if (!previous) throw new Error(`time log ${log.id} not found`);
+    this.db.run("UPDATE time_logs SET duration = ?, note = ? WHERE id = ?", [
+      duration,
+      note,
+      log.id,
+    ]);
     return {
-      kind: "bulk",
+      kind: "timelog-edited",
       label: "Edited time log",
-      actions: [
-        removed,
-        { kind: "timelog-added", label: "Added time log", logId: row.id },
-      ],
+      id: log.id,
+      duration: previous.duration,
+      note: previous.note,
     };
   }
 
-  addJournalEntry(body: string, dateStr?: string): Note {
-    const note = dateStr
-      ? this.journal.getOrCreate(dateStr)
-      : this.journal.getOrCreateToday();
+  addJournalEntry(
+    body: string,
+    dateStr = GoTime.now().format(DateOnly),
+  ): { note: Note; undo: UndoAction } {
+    const existed = this.db
+      .query("SELECT id FROM journal_notes WHERE date = ?")
+      .get(dateStr) !== null;
+    const note = this.journal.getOrCreate(dateStr);
     this.journal.addEntry(note.id, body);
-    return note;
+    return {
+      note,
+      undo: {
+        kind: "entry-added",
+        label: "Added journal entry",
+        id: this.insertedId(),
+        noteId: note.id,
+        createdNote: !existed,
+      },
+    };
   }
 
-  editJournalEntry(entryId: number, body: string): void {
+  editJournalEntry(entryId: number, body: string): UndoAction {
+    const previous = this.db
+      .query("SELECT body FROM journal_entries WHERE id = ?")
+      .get(entryId) as { body: string } | null;
+    if (!previous) throw new Error(`entry ${entryId} not found`);
     this.journal.updateEntry(entryId, body);
+    return {
+      kind: "entry-edited",
+      label: "Edited journal entry",
+      id: entryId,
+      body: previous.body,
+    };
   }
 
   deleteJournalEntry(entry: {
@@ -369,31 +453,95 @@ export class RondoData {
     return {
       kind: "entry",
       label: "Deleted journal entry",
+      id: entry.id,
       noteId: entry.noteId,
       body: entry.body,
       createdAt: entry.createdAt,
     };
   }
 
-  toggleNoteHidden(noteId: number): void {
+  toggleNoteHidden(noteId: number): UndoAction {
+    const previous = this.db
+      .query("SELECT hidden FROM journal_notes WHERE id = ?")
+      .get(noteId) as { hidden: number } | null;
+    if (!previous) throw new Error(`note ${noteId} not found`);
     this.journal.toggleHidden(noteId);
+    return {
+      kind: "note-hidden",
+      label: previous.hidden ? "Restored journal day" : "Hid journal day",
+      noteId,
+      hidden: previous.hidden !== 0,
+    };
+  }
+
+  private insertedId(): number {
+    return (this.db.query("SELECT last_insert_rowid() AS id").get() as {
+      id: number;
+    }).id;
+  }
+
+  private subtaskById(id: number): Subtask | null {
+    const row = this.db
+      .query("SELECT id, title, completed, position FROM subtasks WHERE id = ?")
+      .get(id) as (Omit<Subtask, "completed"> & { completed: number }) | null;
+    return row ? { ...row, completed: row.completed !== 0 } : null;
   }
 
   undo(action: UndoAction): void {
+    this.db.transaction(() => this.restoreAction(action))();
+  }
+
+  private restoreAction(action: UndoAction): void {
     switch (action.kind) {
       case "task":
-        this.tasks.restore(action.task);
+        this.tasks.restore({ ...action.task, subtasks: [], notes: [], timeLogs: [] });
+        for (const subtask of action.task.subtasks) {
+          this.restoreAction({ kind: "subtask", label: action.label, taskId: action.task.id, ...subtask });
+        }
+        for (const note of action.task.notes) {
+          this.restoreAction({ kind: "note", label: action.label, ...note });
+        }
+        for (const log of action.task.timeLogs) {
+          this.restoreAction({ kind: "timelog", label: action.label, ...log });
+        }
         break;
+      case "task-created":
+        this.tasks.delete(action.taskId);
+        break;
+      case "task-edited": {
+        const task = this.tasks.getById(action.task.id);
+        if (!task) break;
+        this.updateTask(task, action.task);
+        this.tasks.updateRecurrence(task.id, action.task.recurFreq, action.task.recurInterval);
+        break;
+      }
       case "subtask":
-        this.tasks.restoreSubtask(
-          action.taskId,
-          action.title,
-          action.completed,
-          action.position,
-        );
+        this.db.run("INSERT INTO subtasks (id, task_id, title, completed, position) VALUES (?,?,?,?,?)", [action.id, action.taskId, action.title, action.completed ? 1 : 0, action.position]);
+        break;
+      case "subtask-added":
+        this.tasks.deleteSubtask(action.id);
+        break;
+      case "subtask-edited":
+        this.db.run("UPDATE subtasks SET title = ?, completed = ?, position = ? WHERE id = ?", [action.subtask.title, action.subtask.completed ? 1 : 0, action.subtask.position, action.subtask.id]);
         break;
       case "entry":
-        this.journal.restoreEntry(action.noteId, action.body, action.createdAt);
+        this.db.run("INSERT INTO journal_entries (id, note_id, body, created_at) VALUES (?,?,?,?)", [action.id, action.noteId, action.body, action.createdAt.format(RFC3339)]);
+        break;
+      case "entry-added":
+        this.journal.deleteEntry(action.id);
+        if (action.createdNote) {
+          this.db.run("DELETE FROM journal_notes WHERE id = ? AND NOT EXISTS (SELECT 1 FROM journal_entries WHERE note_id = ?)", [action.noteId, action.noteId]);
+        }
+        break;
+      case "entry-edited":
+        this.journal.updateEntry(action.id, action.body);
+        break;
+      case "note-hidden":
+        this.db.run("UPDATE journal_notes SET hidden = ? WHERE id = ?", [action.hidden ? 1 : 0, action.noteId]);
+        break;
+      case "dependency":
+        if (action.existed) this.addDependency(action.taskId, action.blockerId);
+        else this.tasks.removeBlocker(action.taskId, action.blockerId);
         break;
       case "status": {
         const task = this.tasks.getById(action.taskId);
@@ -410,15 +558,19 @@ export class RondoData {
         break;
       }
       case "note":
-        this.tasks.restoreNote(action.taskId, action.body, action.createdAt);
+        this.db.run("INSERT INTO task_notes (id, task_id, body, created_at) VALUES (?,?,?,?)", [action.id, action.taskId, action.body, action.createdAt.format(RFC3339)]);
+        break;
+      case "note-added":
+        this.tasks.deleteNote(action.id);
+        break;
+      case "note-edited":
+        this.tasks.updateNote(action.id, action.body);
         break;
       case "timelog":
-        this.tasks.restoreTimeLog(
-          action.taskId,
-          action.duration,
-          action.note,
-          action.loggedAt,
-        );
+        this.db.run("INSERT INTO time_logs (id, task_id, duration, note, logged_at) VALUES (?,?,?,?,?)", [action.id, action.taskId, action.duration, action.note, action.loggedAt.format(RFC3339)]);
+        break;
+      case "timelog-edited":
+        this.db.run("UPDATE time_logs SET duration = ?, note = ? WHERE id = ?", [action.duration, action.note, action.id]);
         break;
       case "timelog-added":
         this.tasks.deleteTimeLog(action.logId);
@@ -439,7 +591,7 @@ export class RondoData {
       }
       case "bulk":
         for (let i = action.actions.length - 1; i >= 0; i--) {
-          this.undo(action.actions[i]!);
+          this.restoreAction(action.actions[i]!);
         }
         break;
     }

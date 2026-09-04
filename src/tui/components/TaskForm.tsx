@@ -1,7 +1,7 @@
 import { TextAttributes, type KeyEvent } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
+import { useKeyboard, useRenderer } from "@opentui/react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { TextareaRenderable } from "@opentui/core";
+import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 import { RecurFreq, recurFreqString } from "../../core/task/recur.ts";
 import { Priority, priorityString } from "../../core/task/task.ts";
 import { DateOnly, GoTime } from "../../core/time.ts";
@@ -32,11 +32,12 @@ interface TaskFormProps {
   theme: TuiTheme;
   title: string;
   initial: TaskFormValues;
+  creating?: boolean;
   /** Existing tags offered as clickable chips, most used first. */
   knownTags?: string[];
   screenWidth: number;
   screenHeight: number;
-  onSubmit: (values: TaskFormValues) => void;
+  onSubmit: (values: TaskFormValues, keepOpen?: boolean) => void;
   onCancel: () => void;
 }
 
@@ -185,6 +186,7 @@ export function TaskForm({
   theme,
   title,
   initial,
+  creating = false,
   knownTags = [],
   screenWidth,
   screenHeight,
@@ -192,16 +194,24 @@ export function TaskForm({
   onCancel,
 }: TaskFormProps) {
   const [values, setValues] = useState<TaskFormValues>(initial);
+  const [expanded, setExpanded] = useState(!creating);
+  const [continuing, setContinuing] = useState(false);
+  const scrollRef = useRef<ScrollBoxRenderable | null>(null);
+  const renderer = useRenderer();
   const titleRef = useRef<TextareaRenderable | null>(null);
   const descriptionRef = useRef<TextareaRenderable | null>(null);
   const [fieldIndex, setFieldIndex] = useState(0);
   const [error, setError] = useState<Problem | null>(null);
 
   const field: FieldId = FIELDS[fieldIndex] ?? "title";
-  const focus = (id: FieldId) => setFieldIndex(FIELDS.indexOf(id));
+  const focus = (id: FieldId) => {
+    if (id !== "title") setExpanded(true);
+    setFieldIndex(FIELDS.indexOf(id));
+  };
 
   const compact = screenHeight < COMPACT_BELOW;
   const narrow = screenWidth - 4 < FULL_WIDTH;
+  const stacked = screenWidth < 60;
 
   // The overlay cannot grow past the status bar, so the optional rows are
   // budgeted against what is left: the error message always wins, and the
@@ -210,13 +220,18 @@ export function TaskForm({
     screenHeight,
     compact ? COMPACT_HEIGHT : FULL_HEIGHT,
   );
-  const errorRows = error ? (compact ? 1 : 2) : 0;
+  const errorRows = error
+    ? Math.ceil((error.message.length + 2) / Math.max(Math.min(FULL_WIDTH, screenWidth - 4) - 6, 1))
+    : 0;
   const spareRows =
-    bodyRows - (compact ? COMPACT_FIELD_ROWS : FULL_FIELD_ROWS) - errorRows;
+    bodyRows - (compact ? COMPACT_FIELD_ROWS : FULL_FIELD_ROWS) -
+    (stacked ? (compact ? 6 : 8) : 0) - errorRows;
   // Each column of the due/tags row keeps its own chips on one line; what
   // does not fit is dropped rather than wrapped.
   const columnWidth =
-    Math.floor((Math.min(FULL_WIDTH, screenWidth - 4) - 6) / 2) - 1;
+    stacked
+      ? Math.min(FULL_WIDTH, screenWidth - 4) - 7
+      : Math.floor((Math.min(FULL_WIDTH, screenWidth - 4) - 6) / 2) - 1;
   const dateChips = spareRows >= 1
     ? DATE_SHORTCUTS.slice(
         0,
@@ -244,6 +259,23 @@ export function TaskForm({
     if (area) area.cursorOffset = area.plainText.length;
   }, []);
 
+  useEffect(() => {
+    const reveal = () => {
+      const box = scrollRef.current;
+      const child = box?.content.findDescendantById(`task-form-${field}`);
+      if (!box || !child) return;
+      const offset = child.y - box.content.y;
+      const height = box.viewport.height;
+      const target = child.height > height
+        ? offset
+        : Math.max(offset + child.height - height, Math.min(box.scrollTop, offset));
+      box.scrollTop = Math.max(0, Math.min(target, box.scrollHeight - height));
+    };
+    renderer.root.on("layout-changed", reveal);
+    reveal();
+    return () => { renderer.root.off("layout-changed", reveal); };
+  }, [renderer, field, expanded, screenWidth, screenHeight, errorRows]);
+
   // The textareas own their buffers, so read the latest text from the refs.
   // The title is conceptually one line: whatever enter left behind in the
   // buffer collapses back into spaces.
@@ -255,7 +287,7 @@ export function TaskForm({
     description: descriptionRef.current?.plainText ?? values.description,
   });
 
-  const submit = () => {
+  const submit = (keepOpen = false) => {
     const latest = current();
     setValues(latest);
 
@@ -263,9 +295,20 @@ export function TaskForm({
     const problem = validate(merged);
     if (problem) {
       setError(problem);
+      focus(problem.field);
       return;
     }
-    onSubmit(merged);
+    onSubmit(merged, keepOpen);
+    if (keepOpen) {
+      const next = { ...merged, title: "", description: "" };
+      titleRef.current?.setText("");
+      descriptionRef.current?.setText("");
+      lastTitle.current = "";
+      setValues(next);
+      setContinuing(true);
+      setError(null);
+      focus("title");
+    }
   };
 
   /** A stray click on the scrim only closes the form while nothing was typed. */
@@ -281,7 +324,18 @@ export function TaskForm({
     );
   };
 
-  const clearError = () => setError(null);
+  const clearError = (id: FieldId, value: string) => setError((problem) => {
+    if (problem?.field !== id) return problem;
+    if (id === "title") return parseQuickAdd(value, GoTime.now()).title.trim() ? null : problem;
+    if (id === "due") {
+      try {
+        parseDueInput(value, GoTime.now());
+      } catch {
+        return problem;
+      }
+    }
+    return null;
+  });
   const lastTitle = useRef(initial.title);
 
   // The title is one line: the newline a failed enter-submit leaves behind
@@ -301,7 +355,7 @@ export function TaskForm({
     setValues((prev) => ({ ...prev, title: text }));
     if (text !== lastTitle.current) {
       lastTitle.current = text;
-      clearError();
+      clearError("title", text);
     }
   };
 
@@ -329,7 +383,13 @@ export function TaskForm({
       return;
     }
     if (key.ctrl && key.name === "s") {
+      key.preventDefault();
       submit();
+      return;
+    }
+    if (key.ctrl && key.name === "n" && creating) {
+      key.preventDefault();
+      submit(true);
       return;
     }
     // Enter still submits from the title even though it is a textarea; the
@@ -339,6 +399,8 @@ export function TaskForm({
       return;
     }
     if (key.name === "tab") {
+      key.preventDefault();
+      setExpanded(true);
       setFieldIndex(
         (i) => (i + (key.shift ? -1 : 1) + FIELDS.length) % FIELDS.length,
       );
@@ -348,10 +410,13 @@ export function TaskForm({
     // belong to the editor.
     if (field !== "description") {
       if (key.name === "down") {
+        key.preventDefault();
+        setExpanded(true);
         setFieldIndex((i) => Math.min(i + 1, FIELDS.length - 1));
         return;
       }
       if (key.name === "up") {
+        key.preventDefault();
         setFieldIndex((i) => Math.max(i - 1, 0));
         return;
       }
@@ -366,6 +431,14 @@ export function TaskForm({
 
   const quick = parseQuickAdd(values.title, GoTime.now());
   const tokenPreview = quickAddPreview(quick);
+  const carriedMetadata = continuing
+    ? `Keeping ${[
+        priorityString(values.priority),
+        values.due ? `due ${values.due}` : "",
+        ...splitTags(values.tags).map((tag) => `#${tag}`),
+        values.recur === RecurFreq.None ? "" : recurFreqString(values.recur),
+      ].filter(Boolean).join(" · ")}`
+    : null;
   const due = duePreview(values.due, GoTime.now());
 
   const labelColor = (id: FieldId) =>
@@ -400,7 +473,7 @@ export function TaskForm({
 
   /** Compact layout: the label rides on the frame's top border instead. */
   const frameTitle = (text: string, extra?: string) =>
-    compact ? ` ${text}${extra ? ` ${extra}` : ""} ` : undefined;
+    compact ? ` ${text}${extra && (stacked || screenWidth >= 70) ? ` ${extra}` : ""} ` : undefined;
 
   const frame = (
     id: FieldId,
@@ -408,6 +481,7 @@ export function TaskForm({
     children: ReactNode,
   ) => (
     <box
+      id={`task-form-${id}`}
       border
       borderStyle="rounded"
       // The offending field wears the error, not just the message below.
@@ -443,10 +517,10 @@ export function TaskForm({
         value={value}
         placeholder={placeholder}
         onInput={(v) => {
-          clearError();
+          clearError(id, v);
           onInput(v);
         }}
-        onSubmit={submit}
+        onSubmit={() => submit()}
         backgroundColor="transparent"
         textColor={theme.text}
         placeholderColor={theme.textMuted}
@@ -459,6 +533,7 @@ export function TaskForm({
   // instead, so the segmented options never outgrow the frame.
   const controlFrame = (id: FieldId, title: string, children: ReactNode) => (
     <box
+      id={`task-form-${id}`}
       flexDirection="row"
       border
       borderStyle="rounded"
@@ -538,15 +613,25 @@ export function TaskForm({
       theme={theme}
       title={title}
       width={FULL_WIDTH}
-      height={compact ? COMPACT_HEIGHT : FULL_HEIGHT}
+      height={expanded ? (compact ? COMPACT_HEIGHT : FULL_HEIGHT) : 12}
       screenWidth={screenWidth}
       screenHeight={screenHeight}
-      footer="enter (title) / ctrl+s save · tab field · esc cancel"
+      footer={creating
+        ? "enter save · ctrl+n save + new · tab options · esc cancel"
+        : "enter (title) / ctrl+s save · tab field · esc cancel"}
       onBackdropClick={() => {
         if (isPristine()) onCancel();
       }}
       onClose={onCancel}
     >
+      <scrollbox
+        ref={scrollRef}
+        flexGrow={1}
+        minHeight={0}
+        focused={false}
+        scrollX={false}
+        contentOptions={{ flexDirection: "column" }}
+      >
       {label("title", "Title")}
       {/* A textarea so long titles wrap into view instead of scrolling away
           under the cursor; enter still submits. */}
@@ -555,7 +640,7 @@ export function TaskForm({
         {
           height: compact ? 3 : 5,
           title: frameTitle("Title"),
-          bottomTitle: tokenPreview ?? undefined,
+          bottomTitle: tokenPreview ?? carriedMetadata ?? undefined,
         },
         <textarea
           ref={titleRef}
@@ -571,10 +656,11 @@ export function TaskForm({
         />,
       )}
 
+      {expanded ? <>
       {label("description", "Description", "markdown · multiline")}
       {frame(
         "description",
-        { grow: true, title: frameTitle("Description") },
+        { height: compact ? 3 : 5, title: frameTitle("Description") },
         <textarea
           ref={descriptionRef}
           focused={field === "description"}
@@ -593,8 +679,9 @@ export function TaskForm({
         />,
       )}
 
-      <box flexDirection="row" flexShrink={0}>
-        <box flexGrow={1} paddingRight={1} flexDirection="column">
+      <box flexDirection={stacked ? "column" : "row"} flexShrink={0}>
+        <box flexGrow={1} flexBasis={stacked ? undefined : 0} minWidth={0}
+          paddingRight={stacked ? 0 : 1} flexDirection="column">
           {label(
             "due",
             "Due date",
@@ -620,7 +707,7 @@ export function TaskForm({
                 label={shortcut.label}
                 onPress={() => {
                   focus("due");
-                  clearError();
+                  clearError("due", "");
                   setValues({
                     ...values,
                     due:
@@ -637,7 +724,7 @@ export function TaskForm({
           ) : null}
         </box>
 
-        <box flexGrow={1} flexDirection="column">
+        <box flexGrow={1} flexBasis={stacked ? undefined : 0} minWidth={0} flexDirection="column">
           {label("tags", "Tags", "comma separated")}
           {textInput(
             "tags",
@@ -664,8 +751,9 @@ export function TaskForm({
         </box>
       </box>
 
-      <box flexDirection="row" flexShrink={0}>
-        <box flexDirection="column" flexGrow={1} paddingRight={1}>
+      <box flexDirection={stacked ? "column" : "row"} flexShrink={0}>
+        <box flexDirection="column" flexGrow={1} flexBasis={stacked ? undefined : 0}
+          minWidth={0} paddingRight={stacked ? 0 : 1}>
           {label("priority", "Priority")}
           {control(
             "priority",
@@ -679,7 +767,7 @@ export function TaskForm({
           )}
         </box>
 
-        <box flexDirection="column" flexGrow={1}>
+        <box flexDirection="column" flexGrow={1} flexBasis={stacked ? undefined : 0} minWidth={0}>
           {label("recur", "Repeats")}
           {control(
             "recur",
@@ -694,17 +782,24 @@ export function TaskForm({
         </box>
       </box>
 
+      </> : (
+        <box flexDirection="row" paddingTop={1} flexShrink={0}>
+          <Button theme={theme} label="More options · Tab" onPress={() => focus("description")} />
+        </box>
+      )}
+      </scrollbox>
+
       {error ? (
-        <box height={compact ? 1 : 2} paddingTop={compact ? 0 : 1} flexShrink={0}>
+        <box height={errorRows} flexShrink={0}>
           <text fg={theme.danger} attributes={TextAttributes.BOLD}>
             {`⚠ ${error.message}`}
           </text>
         </box>
       ) : null}
 
-      {compact ? null : (
+      {compact || !expanded ? null : (
         <box flexDirection="row" paddingTop={1} flexShrink={0}>
-          <Button theme={theme} label="Save" primary onPress={submit} />
+          <Button theme={theme} label="Save" primary onPress={() => submit()} />
           <Button theme={theme} label="Cancel" onPress={onCancel} />
         </box>
       )}

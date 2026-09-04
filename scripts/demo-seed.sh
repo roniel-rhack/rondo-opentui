@@ -10,7 +10,10 @@ set -euo pipefail
 BIN="${RONDO_BIN:-./dist/rondo-opentui}"
 : "${RONDO_HOME:?set RONDO_HOME to a throwaway directory}"
 
-rm -rf "$RONDO_HOME"
+if [ -d "$RONDO_HOME" ] && [ -n "$(find "$RONDO_HOME" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+  echo "Use an empty throwaway RONDO_HOME directory" >&2
+  exit 1
+fi
 mkdir -p "$RONDO_HOME"
 
 # BSD (macOS) and GNU date take different flags for relative days.

@@ -1,6 +1,6 @@
-import { TextAttributes, type KeyEvent } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
-import { useState, type ReactNode } from "react";
+import { TextAttributes, type InputRenderable, type KeyEvent, type ScrollBoxRenderable } from "@opentui/core";
+import { useKeyboard, useRenderer } from "@opentui/react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Config } from "../../core/config/config.ts";
 import type { TuiTheme } from "../theme.ts";
 import { Button, Overlay } from "./Overlay.tsx";
@@ -103,39 +103,130 @@ export function SettingsOverlay({
 }: SettingsOverlayProps) {
   const [draft, setDraft] = useState<Config>(cfg);
   const [index, setIndex] = useState(0);
+  const [editing, setEditing] = useState<{ index: number; text: string; select: boolean } | null>(null);
+  const editingRef = useRef(editing);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<InputRenderable | null>(null);
+  const scrollRef = useRef<ScrollBoxRenderable | null>(null);
+  const renderer = useRenderer();
 
   const themeIndex = NUMBER_FIELDS.length + BOOL_FIELDS.length;
   const total = themeIndex + 1;
+  const stacked = screenWidth < 50;
 
-  const adjust = (delta: number) => {
-    if (index < NUMBER_FIELDS.length) {
-      const field = NUMBER_FIELDS[index]!;
+  const updateEditing = (next: typeof editing) => {
+    editingRef.current = next;
+    setEditing(next);
+  };
+
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input || !editing) return;
+    if (editing.select) input.selectAll();
+    else input.cursorOffset = input.plainText.length;
+  }, [editing?.index]);
+
+  useEffect(() => {
+    const reveal = () => scrollRef.current?.scrollChildIntoView(`settings-${index}`);
+    renderer.root.on("layout-changed", reveal);
+    reveal();
+    return () => { renderer.root.off("layout-changed", reveal); };
+  }, [renderer, index, screenHeight, error]);
+
+  const pendingDraft = () => {
+    const active = editingRef.current;
+    if (!active) return draft;
+    const field = NUMBER_FIELDS[active.index]!;
+    const raw = inputRef.current?.value ?? active.text;
+    const value = Number(raw);
+    if (!/^\d+$/.test(raw) || value < field.min || value > field.max) {
+      setError(`${field.label}: ${field.min}–${field.max}`);
+      return null;
+    }
+    return field.set(draft, value);
+  };
+
+  const commitNumber = () => {
+    const next = pendingDraft();
+    if (!next) return null;
+    setDraft(next);
+    updateEditing(null);
+    setError(null);
+    return next;
+  };
+
+  const save = () => {
+    const next = pendingDraft();
+    if (next) onSave(next);
+  };
+
+  const select = (next: number) => {
+    if (editing?.index === next) return;
+    if (commitNumber()) setIndex(next);
+  };
+
+  const editNumber = (at: number, text?: string) => {
+    if (editing?.index === at) return;
+    const base = commitNumber();
+    if (!base) return;
+    setIndex(at);
+    updateEditing({ index: at, text: text ?? String(NUMBER_FIELDS[at]!.get(base)), select: text === undefined });
+  };
+
+  const adjust = (delta: number, at = index) => {
+    const base = commitNumber();
+    if (!base) return;
+    setIndex(at);
+    if (at < NUMBER_FIELDS.length) {
+      const field = NUMBER_FIELDS[at]!;
       const next = Math.min(
-        Math.max(field.get(draft) + delta, field.min),
+        Math.max(field.get(base) + delta, field.min),
         field.max,
       );
-      setDraft(field.set(draft, next));
+      setDraft(field.set(base, next));
       return;
     }
-    if (index < themeIndex) {
-      const field = BOOL_FIELDS[index - NUMBER_FIELDS.length]!;
-      setDraft(field.set(draft, !field.get(draft)));
+    if (at < themeIndex) {
+      const field = BOOL_FIELDS[at - NUMBER_FIELDS.length]!;
+      setDraft(field.set(base, !field.get(base)));
       return;
     }
-    const at = THEME_VALUES.indexOf(draft.theme as (typeof THEME_VALUES)[number]);
+    const current = THEME_VALUES.indexOf(base.theme as (typeof THEME_VALUES)[number]);
     const next =
       THEME_VALUES[
-        (Math.max(at, 0) + delta + THEME_VALUES.length) % THEME_VALUES.length
+        (Math.max(current, 0) + delta + THEME_VALUES.length) % THEME_VALUES.length
       ]!;
-    setDraft({ ...draft, theme: next });
+    setDraft({ ...base, theme: next });
   };
 
   // A stray click on the scrim only closes the dialog while nothing changed.
-  const pristine = JSON.stringify(draft) === JSON.stringify(cfg);
+  const pristine = !editing && JSON.stringify(draft) === JSON.stringify(cfg);
 
   useKeyboard((key: KeyEvent) => {
     if (key.ctrl && key.name === "s") {
-      onSave(draft);
+      key.preventDefault();
+      save();
+      return;
+    }
+    if (key.name === "return") {
+      key.preventDefault();
+      save();
+      return;
+    }
+    if (key.name === "tab") {
+      key.preventDefault();
+      select((index + (key.shift ? -1 : 1) + total) % total);
+      return;
+    }
+    if (editingRef.current && !inputRef.current && /^\d$/.test(key.sequence)) {
+      key.preventDefault();
+      updateEditing({ ...editingRef.current, text: editingRef.current.text + key.sequence });
+      return;
+    }
+    if (editing && !["escape", "down", "up"].includes(key.name)) return;
+    if (!key.ctrl && /^\d$/.test(key.sequence) && index < NUMBER_FIELDS.length) {
+      key.preventDefault();
+      editNumber(index, key.sequence);
       return;
     }
     switch (key.name) {
@@ -144,11 +235,13 @@ export function SettingsOverlay({
         break;
       case "down":
       case "j":
-        setIndex((i) => Math.min(i + 1, total - 1));
+        key.preventDefault();
+        select(Math.min(index + 1, total - 1));
         break;
       case "up":
       case "k":
-        setIndex((i) => Math.max(i - 1, 0));
+        key.preventDefault();
+        select(Math.max(index - 1, 0));
         break;
       case "left":
       case "h":
@@ -160,9 +253,6 @@ export function SettingsOverlay({
         break;
       case "space":
         adjust(1);
-        break;
-      case "return":
-        onSave(draft);
         break;
       default:
         break;
@@ -177,39 +267,61 @@ export function SettingsOverlay({
   ) => (
     <box
       key={id}
-      flexDirection="row"
+      id={`settings-${rowIndex}`}
+      flexDirection={stacked ? "column" : "row"}
+      flexShrink={0}
       backgroundColor={rowIndex === index ? theme.selectionBg : undefined}
-      onMouseDown={() => setIndex(rowIndex)}
+      onMouseDown={() => select(rowIndex)}
     >
-      <text fg={rowIndex === index ? theme.accent : theme.textMuted}>
-        {rowIndex === index ? "▌ " : "  "}
-      </text>
-      <text fg={theme.text} flexGrow={1}>
-        {label}
-      </text>
-      {value}
+      <box flexDirection="row" flexGrow={stacked ? undefined : 1} minWidth={0} flexShrink={0}>
+        <text flexShrink={0} fg={rowIndex === index ? theme.accent : theme.textMuted}>
+          {rowIndex === index ? "▌ " : "  "}
+        </text>
+        <text fg={theme.text} flexGrow={1} wrapMode="none">
+          {label}
+        </text>
+      </box>
+      <box flexDirection="row" flexShrink={0} paddingLeft={stacked ? 2 : 0}>
+        {value}
+      </box>
     </box>
   );
 
-  const stepper = (value: string) => (
+  const stepper = (value: string, at: number) => (
     <>
-      <text fg={theme.textMuted}>{"← "}</text>
-      <text fg={theme.accent} attributes={TextAttributes.BOLD}>
-        {value.padStart(5)}
-      </text>
-      <text fg={theme.textMuted}>{" →"}</text>
+      <box flexShrink={0} onMouseDown={(event) => { event.stopPropagation(); adjust(-1, at); }}>
+        <text fg={theme.textMuted}>{"← "}</text>
+      </box>
+      {editing?.index === at ? (
+        <input ref={inputRef} focused width={5} value={editing.text}
+          onInput={(text) => { updateEditing({ ...editing, text }); setError(null); }}
+          backgroundColor={theme.surfaceAlt} textColor={theme.accent} cursorColor={theme.accent} />
+      ) : (
+        <box width={5} flexShrink={0} onMouseDown={(event) => {
+          event.stopPropagation();
+          if (at < NUMBER_FIELDS.length) editNumber(at);
+          else adjust(1, at);
+        }}>
+          <text fg={theme.accent} attributes={TextAttributes.BOLD}>{value.padStart(5)}</text>
+        </box>
+      )}
+      <box flexShrink={0} onMouseDown={(event) => { event.stopPropagation(); adjust(1, at); }}>
+        <text fg={theme.textMuted}>{" →"}</text>
+      </box>
     </>
   );
 
   // Booleans read as toggles, matching the subtask checkboxes; arrows would
   // suggest a range they do not have.
-  const toggle = (on: boolean) => (
-    <text
+  const toggle = (on: boolean, at: number) => (
+    <box flexShrink={0} onMouseDown={(event) => { event.stopPropagation(); adjust(1, at); }}>
+      <text
       fg={on ? theme.success : theme.textMuted}
       attributes={on ? TextAttributes.BOLD : undefined}
     >
       {on ? "▣ on " : "▢ off"}
-    </text>
+      </text>
+    </box>
   );
 
   return (
@@ -217,23 +329,26 @@ export function SettingsOverlay({
       theme={theme}
       title="Settings"
       width={70}
+      height={17}
       screenWidth={screenWidth}
       screenHeight={screenHeight}
-      footer="↑↓ field · ←→ / space change · enter / ctrl+s save · esc cancel"
+      footer="↑↓ field · type value · ←→ change · enter save · esc cancel"
       onBackdropClick={pristine ? onCancel : undefined}
       onClose={onCancel}
     >
-      <box flexDirection="column" paddingTop={1}>
+      <scrollbox ref={scrollRef} focused={false} flexGrow={1} minHeight={0} scrollX={false}
+        contentOptions={{ flexDirection: "column", paddingTop: 1 }}>
         {NUMBER_FIELDS.map((f, i) =>
-          row(f.id, f.label, stepper(String(f.get(draft))), i),
+          row(f.id, f.label, stepper(String(f.get(draft)), i), i),
         )}
         {BOOL_FIELDS.map((f, i) =>
-          row(f.id, f.label, toggle(f.get(draft)), NUMBER_FIELDS.length + i),
+          row(f.id, f.label, toggle(f.get(draft), NUMBER_FIELDS.length + i), NUMBER_FIELDS.length + i),
         )}
-        {row("theme", "Theme", stepper(themeLabel(draft.theme)), themeIndex)}
-      </box>
-      <box flexDirection="row" paddingTop={1}>
-        <Button theme={theme} label="Save" primary onPress={() => onSave(draft)} />
+        {row("theme", "Theme", stepper(themeLabel(draft.theme), themeIndex), themeIndex)}
+      </scrollbox>
+      {error ? <text fg={theme.danger} flexShrink={0}>{error}</text> : null}
+      <box flexDirection="row" paddingTop={1} flexShrink={0}>
+        <Button theme={theme} label="Save" primary onPress={save} />
         <Button theme={theme} label="Cancel" onPress={onCancel} />
       </box>
     </Overlay>

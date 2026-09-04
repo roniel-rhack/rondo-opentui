@@ -1,5 +1,6 @@
 import type { Renderable, ScrollBoxRenderable } from "@opentui/core";
-import { useEffect, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useRef, type RefObject } from "react";
+import { useReducedMotion } from "./useMotion.ts";
 
 const FRAME_MS = 16;
 const MS_PER_LINE = 22;
@@ -50,72 +51,95 @@ export function useSmoothScrollIntoView(
   ref: RefObject<ScrollBoxRenderable | null>,
   childId: string | undefined,
   revision?: unknown,
-): void {
+): () => void {
   // What we last wrote. It is the authoritative position while an animation is
   // running, since reading the box back mid-flight lags a frame behind.
+  const reducedMotion = useReducedMotion();
   const current = useRef<number | null>(null);
+  const cancelScroll = useRef<(() => void) | null>(null);
+  const stopScrolling = useCallback(() => {
+    cancelScroll.current?.();
+    current.current = null;
+  }, []);
 
   useEffect(() => {
     const box = ref.current;
     if (childId === undefined || !box) return;
 
-    const first = box.getChildren()[0];
-    const child = resolveTarget(box, childId);
-    if (!first || !child) return;
-
-    // Offsets are measured against the first row rather than the viewport:
-    // absolute positions lag a layout pass behind a scroll, and holding j down
-    // would then compound the error into an overshoot.
-    const offset = child.y - first.y;
-    const height = box.viewport.height;
-    const max = Math.max(box.scrollHeight - height, 0);
-    // While an animation runs, our own last write is ahead of what the box
-    // reports, so it is the one to measure from.
-    const inFlight = current.current !== null;
-    const from = current.current ?? box.scrollTop;
-
-    let target = from;
-    if (offset < from) target = offset;
-    else if (offset + child.height > from + height) {
-      target = offset + child.height - height;
-    }
-
-    const to = Math.min(Math.max(target, 0), max);
-    if (to === from) {
-      current.current = null;
-      return;
-    }
-
-    // Easing is for a single step. Under key repeat the next target arrives
-    // before the previous one settled, and a jump longer than the viewport
-    // (G, a filter change) has no motion worth showing — both snap, so the
-    // view never trails the cursor.
-    if (inFlight || Math.abs(to - from) > height) {
-      current.current = null;
-      box.scrollTop = to;
-      return;
-    }
-
-    // The distance sets the pace and the bounds keep it snappy either way.
-    const duration = Math.min(
-      Math.max(Math.abs(to - from) * MS_PER_LINE, MIN_MS),
-      MAX_MS,
-    );
-
-    const start = Date.now();
-    const step = () => {
-      const t = Math.min((Date.now() - start) / duration, 1);
-      const next = Math.round(from + (to - from) * easeOutCubic(t));
-      current.current = next;
-      box.scrollTop = next;
-      if (t >= 1) {
-        clearInterval(id);
-        current.current = null;
-      }
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let id: ReturnType<typeof setInterval> | undefined;
+    const cancel = () => {
+      if (retry) clearTimeout(retry);
+      if (id) clearInterval(id);
     };
-    const id = setInterval(step, FRAME_MS);
-    step();
+    cancelScroll.current = cancel;
+    const scroll = (attempt = 0) => {
+      const first = box.getChildren()[0];
+      const child = resolveTarget(box, childId);
+      const pendingLayout = !first || !child || box.viewport.height === 0 ||
+        box.scrollHeight === 0 || child.height === 0;
+      if (pendingLayout && attempt < 3) {
+        retry = setTimeout(() => scroll(attempt + 1), FRAME_MS);
+        return;
+      }
+      if (!first || !child) return;
 
-    return () => clearInterval(id);
-  }, [ref, childId, revision]);
+      // Offsets are measured against the first row rather than the viewport:
+      // absolute positions lag a layout pass behind a scroll, and holding j down
+      // would then compound the error into an overshoot.
+      const offset = child.y - first.y;
+      const height = box.viewport.height;
+      const max = Math.max(box.scrollHeight - height, 0);
+      // While an animation runs, our own last write is ahead of what the box
+      // reports, so it is the one to measure from.
+      const inFlight = current.current !== null;
+      const from = current.current ?? box.scrollTop;
+
+      let target = from;
+      if (child.height >= height || offset < from) target = offset;
+      else if (offset + child.height > from + height) {
+        target = offset + child.height - height;
+      }
+
+      const to = Math.min(Math.max(target, 0), max);
+      if (to === from) {
+        current.current = null;
+        return;
+      }
+
+      // Easing is for a single step. Under key repeat the next target arrives
+      // before the previous one settled, and a jump longer than the viewport
+      // (G, a filter change) has no motion worth showing — both snap, so the
+      // view never trails the cursor.
+      if (reducedMotion || inFlight || Math.abs(to - from) > height) {
+        current.current = null;
+        box.scrollTop = to;
+        return;
+      }
+
+      // The distance sets the pace and the bounds keep it snappy either way.
+      const duration = Math.min(
+        Math.max(Math.abs(to - from) * MS_PER_LINE, MIN_MS),
+        MAX_MS,
+      );
+
+      const start = Date.now();
+      const step = () => {
+        const t = Math.min((Date.now() - start) / duration, 1);
+        const next = Math.round(from + (to - from) * easeOutCubic(t));
+        current.current = next;
+        box.scrollTop = next;
+        if (t >= 1) {
+          if (id) clearInterval(id);
+          current.current = null;
+        }
+      };
+      id = setInterval(step, FRAME_MS);
+      step();
+
+    };
+    scroll();
+    return cancel;
+  }, [ref, childId, revision, reducedMotion]);
+  return stopScrolling;
 }

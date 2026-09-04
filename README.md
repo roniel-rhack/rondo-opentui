@@ -77,6 +77,7 @@ map in-app. The keys you will use most:
 | `/` | Filter: free text, `#tag`, `!high`, `due:today`, `is:blocked` |
 | `v` | Cycle view: all → today → overdue → week → blocked |
 | `ctrl+k` | Command palette over every action and task |
+| `M` / `J` `K` | Select visible tasks / extend a selection range |
 | `1` `2` `3` `4` | Active / Done / All / Journal |
 | `f` | Start / stop a focus session |
 | `?` | Help |
@@ -100,6 +101,7 @@ map in-app. The keys you will use most:
 | `f` | Start / stop focus |
 | `z` | Density (auto / dense / comfortable) |
 | `<` `>`, drag | Resize panels |
+| `\` | Cycle layout: auto / single / split |
 | `y` / `n` | Confirm / cancel a dialog |
 | `q`, `ctrl+c` | Quit (asks while focus runs) |
 
@@ -109,10 +111,11 @@ map in-app. The keys you will use most:
 |-----|--------|
 | `j` `k` `↑` `↓` | Move selection |
 | `g` `G`, `Home` `End` | First / last |
-| `PgUp` `PgDn`, `ctrl+u` `ctrl+d` | Page up / down |
+| `PgUp` `PgDn`, `ctrl+u` `ctrl+d` | Page through the list or scroll detail/journal content |
 | `h` `l` `←` `→` | Switch panel |
 | `enter` | Open detail / edit the row under the cursor |
 | `esc` | Back out one step: marks, detail, query + tag, view |
+| `backspace` | Return to the previous context after a palette task jump |
 
 **Tasks**
 
@@ -129,6 +132,8 @@ map in-app. The keys you will use most:
 | `t` `n` `L` | Add subtask / note / time log |
 | `b` `B` | Block on… / remove blocker… |
 | `m` | Mark for a bulk action, then `space`/`+`/`-`/`@`/`d` apply to all |
+| `M` | Select all currently visible tasks |
+| `J` `K` | Extend a selection range down / up |
 | `o`, `F1` `F2` `F3` | Cycle sort / by created / due / priority |
 | `v` | Cycle view: all → today → overdue → week → blocked |
 | `/` | Filter: free text, `#tag`, `!high`, `due:today`, `is:blocked` |
@@ -152,6 +157,7 @@ map in-app. The keys you will use most:
 | `e` / `d` | Edit / delete the selected entry |
 | `x` / `H` | Hide a note / show hidden notes |
 | `/` | Search entries |
+| `{` `}` | Previous / next matching entry, across days |
 
 </details>
 
@@ -160,17 +166,33 @@ Quick-add tokens work in the title field of `a`/`e` — `#tag` (repeatable),
 `!high` / `!urgent` (or `!1`–`!4`), `~d` / `~w` / `~m` / `~y` for recurrence —
 stripped from the stored title and previewed live as you type.
 
+New tasks open with the title and token preview. Press `tab` or click More options
+to expand all fields. `enter` saves from the title; `ctrl+n` saves and starts
+another task, retaining tags, due date, priority and recurrence while clearing
+title and description. Journal search opens the matching entry directly.
+
+Marks apply only to visible results; changing a filter removes marks outside it.
+Undo follows the latest mutation, including creation and edits; the palette names
+the next action it will undo.
+
 Inside dialogs: `tab` / `shift+tab` move between fields, `←` / `→` pick a
 segmented option, `ctrl+s` saves (multiline fields keep `enter` for new
 lines), `esc` cancels.
 
 Mouse: click tabs, rows, tags and status glyphs, double-click a row to edit
-it, drag the divider to resize the panels, scroll with the wheel.
+it, drag the divider to resize the panels, scroll with the wheel. Settings
+toggles and arrows respond to clicks; type a duration to replace its value.
+
+Below 100 columns, Auto layout shows one full-width panel; `enter` opens the
+detail and `esc` returns. `\` cycles Auto / Single / Split, and `<` / `>` select
+Split while resizing. Split needs at least 75 columns. The palette also offers
+Toggle reduced motion. Primary key hints remain visible during feedback messages.
 
 ### Session and live data
 
 The TUI remembers the tab, sort order, tag filter, view, selected row and
-density across restarts in `~/.todo-app/tui-state.json`. It also polls the
+density, layout and reduced-motion preference across restarts in
+`~/.todo-app/tui-state.json`. It also polls the
 database for changes made from another terminal — the CLI, an agent running
 the skill, or a second `rondo-opentui` — and reloads with a toast when
 something else committed; `R` reloads on demand.
