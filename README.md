@@ -122,16 +122,19 @@ map in-app. The keys you will use most:
 | Key | Action |
 |-----|--------|
 | `a` / `e` | Add / edit |
+| `E` | Edit the whole task from either task panel |
+| `V` | View the task just created outside the current filter |
 | `space` | Mark done / reopen |
 | `s` | Start / stop |
 | `d` | Delete — undo with `u` (confirms only if it blocks another task) |
 | `+` `-` | Priority up / down |
-| `@` | Due date (`t` `m` `w` `n` chips, or a typed date) |
-| `#` | Tag picker |
+| `@` | Due date: type freely, or choose a preset with `↑` / `↓`; `enter` saves |
+| `#` | Filter by tag |
+| `,` | Edit tags for the selected task or visible marked tasks |
 | `[` `]` | Previous / next tag |
 | `t` `n` `L` | Add subtask / note / time log |
 | `b` `B` | Block on… / remove blocker… |
-| `m` | Mark for a bulk action, then `space`/`+`/`-`/`@`/`d` apply to all |
+| `m` | Mark for a bulk action, then `space`/`+`/`-`/`@`/`,`/`d` apply to all |
 | `M` | Select all currently visible tasks |
 | `J` `K` | Extend a selection range down / up |
 | `o`, `F1` `F2` `F3` | Cycle sort / by created / due / priority |
@@ -144,6 +147,8 @@ map in-app. The keys you will use most:
 |-----|--------|
 | `space` | Toggle subtask |
 | `enter`, `e` | Edit the subtask, note or log under the cursor |
+| `E` | Edit the whole task |
+| `D` | Fold / unfold the description |
 | `d` | Delete row |
 | `t` `n` `L` | Add subtask / note / log |
 | `h`, `esc` | Back to list |
@@ -177,15 +182,28 @@ the next action it will undo.
 
 Inside dialogs: `tab` / `shift+tab` move between fields, `←` / `→` pick a
 segmented option, `ctrl+s` saves (multiline fields keep `enter` for new
-lines), `esc` cancels.
+lines). `esc` closes text editors while keeping dirty drafts for the current
+session; reopen the same editor to resume. `ctrl+r` or Discard explicitly removes
+a draft. Successful saves clear it. Date prompts use `↑` / `↓` for presets,
+`enter` to save and `esc` to cancel; typing never activates a preset.
+
+The tag editor (`,`) preserves untouched tags, including differences between
+marked tasks. Type to search or create a tag, `enter` toggles or creates it,
+`tab` switches between search and list, and `ctrl+s` saves. In the list, `space`
+also toggles. Mixed tags show a partial marker and count; one undo restores the
+whole batch.
+
+Task identity stays visible while the inspector scrolls. `D` folds the description;
+click Details to fold administrative metadata. When creation falls outside the
+current results, a banner offers `V` to view it; `backspace` returns to the filter.
 
 Mouse: click tabs, rows, tags and status glyphs, double-click a row to edit
 it, drag the divider to resize the panels, scroll with the wheel. Settings
 toggles and arrows respond to clicks; type a duration to replace its value.
 
-Below 100 columns, Auto layout shows one full-width panel; `enter` opens the
+Below 120 columns, Auto layout shows one full-width panel; `enter` opens the
 detail and `esc` returns. `\` cycles Auto / Single / Split, and `<` / `>` select
-Split while resizing. Split needs at least 75 columns. The palette also offers
+Split while resizing. Split needs at least 75 columns; Auto reserves at least 60 columns for the list. The palette also offers
 Toggle reduced motion. Primary key hints remain visible during feedback messages.
 
 ### Session and live data

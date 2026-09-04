@@ -323,7 +323,12 @@ export const StatusBar = memo(function StatusBar({
   const sortLabel = showSort ? `⇅ ${SORT_LABELS[sort]}` : "";
   // Horizontal padding, then the sort segment and its leading gap.
   const available = width - 2 - (showSort ? sortLabel.length + 1 : 0);
-  const shown = fitHints(hints, available);
+  const compactHints = width < 50
+    ? hints.map((hint) => hint.key === "?" || hint.key === "^k" ? { ...hint, label: "" } : hint)
+    : hints;
+  const shown = width < 50
+    ? fitHints(compactHints, available, ["a", "space", "/", "h", "esc", "?"])
+    : fitHints(hints, available);
 
   return (
     <box flexDirection="column" flexShrink={0}>

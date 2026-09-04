@@ -55,6 +55,7 @@ export type UndoAction =
   | { kind: "timelog-added"; label: string; logId: number }
   | { kind: "priority"; label: string; taskId: number; prev: Priority }
   | { kind: "due"; label: string; taskId: number; prev: GoTime | null }
+  | { kind: "tags"; label: string; taskId: number; prev: string[] }
   | { kind: "bulk"; label: string; actions: UndoAction[] };
 
 /**
@@ -234,6 +235,19 @@ export class RondoData {
       taskId: task.id,
       prev,
     };
+  }
+
+  editTags(taskId: number, changes: { add: string[]; remove: string[] }): UndoAction | null {
+    const task = this.tasks.getById(taskId);
+    if (!task) return null;
+    const normalize = (tags: string[]) => [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
+    const removed = new Set(normalize(changes.remove));
+    const tags = normalize([...task.tags.filter((tag) => !removed.has(tag)), ...changes.add]);
+    if (tags.length === task.tags.length && tags.every((tag, index) => tag === task.tags[index])) return null;
+    const prev = [...task.tags];
+    task.tags = tags;
+    this.tasks.update(task);
+    return { kind: "tags", label: `Edited tags for #${task.id}`, taskId, prev };
   }
 
   deleteTask(task: Task): UndoAction {
@@ -586,6 +600,13 @@ export class RondoData {
         const task = this.tasks.getById(action.taskId);
         if (!task) break;
         task.dueDate = action.prev;
+        this.tasks.update(task);
+        break;
+      }
+      case "tags": {
+        const task = this.tasks.getById(action.taskId);
+        if (!task) break;
+        task.tags = [...action.prev];
         this.tasks.update(task);
         break;
       }

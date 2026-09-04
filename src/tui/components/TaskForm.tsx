@@ -1,12 +1,13 @@
 import { TextAttributes, type KeyEvent } from "@opentui/core";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
+import type { InputRenderable, ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 import { RecurFreq, recurFreqString } from "../../core/task/recur.ts";
 import { Priority, priorityString } from "../../core/task/task.ts";
 import { DateOnly, GoTime } from "../../core/time.ts";
 import { fitChips, parseDueInput, parseQuickAdd, type QuickAdd } from "../state.ts";
 import { mix, priorityColors, type TuiTheme } from "../theme.ts";
+import { fitCells } from "../text.ts";
 import { Button, Overlay, fixedOverlayBodyRows } from "./Overlay.tsx";
 import { ChipButton } from "./primitives.tsx";
 
@@ -32,6 +33,9 @@ interface TaskFormProps {
   theme: TuiTheme;
   title: string;
   initial: TaskFormValues;
+  draft?: TaskFormValues;
+  onDraftChange?: (draft: TaskFormValues | null) => void;
+  onDiscard?: () => void;
   creating?: boolean;
   /** Existing tags offered as clickable chips, most used first. */
   knownTags?: string[];
@@ -186,6 +190,9 @@ export function TaskForm({
   theme,
   title,
   initial,
+  draft,
+  onDraftChange,
+  onDiscard,
   creating = false,
   knownTags = [],
   screenWidth,
@@ -193,13 +200,22 @@ export function TaskForm({
   onSubmit,
   onCancel,
 }: TaskFormProps) {
-  const [values, setValues] = useState<TaskFormValues>(initial);
+  const [values, setValues] = useState<TaskFormValues>(draft ?? initial);
+  const baseline = useRef(initial);
+  const submitted = useRef(false);
+  const draftChange = useRef(onDraftChange);
+  draftChange.current = onDraftChange;
+  const dirty = FIELDS.some((id) => values[id] !== baseline.current[id]);
+  useEffect(() => {
+    if (!submitted.current) draftChange.current?.(dirty ? values : null);
+  }, [values, dirty]);
   const [expanded, setExpanded] = useState(!creating);
   const [continuing, setContinuing] = useState(false);
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
   const renderer = useRenderer();
   const titleRef = useRef<TextareaRenderable | null>(null);
   const descriptionRef = useRef<TextareaRenderable | null>(null);
+  const inputRefs = useRef<Partial<Record<FieldId, InputRenderable | null>>>({});
   const [fieldIndex, setFieldIndex] = useState(0);
   const [error, setError] = useState<Problem | null>(null);
 
@@ -285,11 +301,26 @@ export function TaskForm({
       .replace(/\s+/g, " ")
       .trim(),
     description: descriptionRef.current?.plainText ?? values.description,
+    due: inputRefs.current.due?.value ?? values.due,
+    tags: inputRefs.current.tags?.value ?? values.tags,
   });
+
+  const close = () => {
+    const latest = {
+      ...values,
+      title: titleRef.current?.plainText ?? values.title,
+      description: descriptionRef.current?.plainText ?? values.description,
+      due: inputRefs.current.due?.value ?? values.due,
+      tags: inputRefs.current.tags?.value ?? values.tags,
+    };
+    if (!submitted.current) {
+      draftChange.current?.(FIELDS.some((id) => latest[id] !== baseline.current[id]) ? latest : null);
+    }
+    onCancel();
+  };
 
   const submit = (keepOpen = false) => {
     const latest = current();
-    setValues(latest);
 
     const merged = applyQuickAdd(latest, parseQuickAdd(latest.title, GoTime.now()));
     const problem = validate(merged);
@@ -298,13 +329,17 @@ export function TaskForm({
       focus(problem.field);
       return;
     }
+    submitted.current = true;
+    draftChange.current?.(null);
     onSubmit(merged, keepOpen);
     if (keepOpen) {
       const next = { ...merged, title: "", description: "" };
+      baseline.current = next;
       titleRef.current?.setText("");
       descriptionRef.current?.setText("");
       lastTitle.current = "";
       setValues(next);
+      submitted.current = false;
       setContinuing(true);
       setError(null);
       focus("title");
@@ -336,7 +371,7 @@ export function TaskForm({
     }
     return null;
   });
-  const lastTitle = useRef(initial.title);
+  const lastTitle = useRef(draft?.title ?? initial.title);
 
   // The title is one line: the newline a failed enter-submit leaves behind
   // collapses back into a space, and the error survives that non-change.
@@ -352,6 +387,7 @@ export function TaskForm({
       area.cursorOffset = flat.length;
       return;
     }
+    submitted.current = false;
     setValues((prev) => ({ ...prev, title: text }));
     if (text !== lastTitle.current) {
       lastTitle.current = text;
@@ -379,7 +415,13 @@ export function TaskForm({
 
   useKeyboard((key: KeyEvent) => {
     if (key.name === "escape") {
-      onCancel();
+      close();
+      return;
+    }
+    if (key.ctrl && key.name === "r" && onDiscard) {
+      key.preventDefault();
+      submitted.current = true;
+      onDiscard();
       return;
     }
     if (key.ctrl && key.name === "s") {
@@ -395,6 +437,7 @@ export function TaskForm({
     // Enter still submits from the title even though it is a textarea; the
     // stray newline it inserts is collapsed on read.
     if (key.name === "return" && field === "title") {
+      key.preventDefault();
       submit();
       return;
     }
@@ -431,14 +474,21 @@ export function TaskForm({
 
   const quick = parseQuickAdd(values.title, GoTime.now());
   const tokenPreview = quickAddPreview(quick);
-  const carriedMetadata = continuing
-    ? `Keeping ${[
-        priorityString(values.priority),
-        values.due ? `due ${values.due}` : "",
-        ...splitTags(values.tags).map((tag) => `#${tag}`),
-        values.recur === RecurFreq.None ? "" : recurFreqString(values.recur),
-      ].filter(Boolean).join(" · ")}`
-    : null;
+  const effective = applyQuickAdd(values, quick);
+  const metadata = `${continuing ? "Keeping " : ""}${[
+    priorityString(effective.priority),
+    effective.due ? `due ${effective.due}` : "no due",
+    effective.recur === RecurFreq.None ? "" : recurFreqString(effective.recur),
+  ].filter(Boolean).join(" · ")}`;
+  const metadataTags = splitTags(effective.tags).map((tag) => `#${tag}`).join(" ");
+  const contentWidth = Math.max(Math.min(FULL_WIDTH, screenWidth - 4) - 6, 1);
+  const end = onDraftChange ? "esc close" : "esc cancel";
+  const discardHint = onDiscard ? " · ^r discard" : "";
+  const footer = contentWidth < 45
+    ? `${creating ? "enter" : "^s save"}${discardHint} · ${end}`
+    : creating
+      ? `enter save · ^n next${contentWidth < 60 ? "" : " · tab options"}${discardHint} · ${end}`
+      : `^s save · tab field${discardHint} · ${end}`;
   const due = duePreview(values.due, GoTime.now());
 
   const labelColor = (id: FieldId) =>
@@ -482,11 +532,11 @@ export function TaskForm({
   ) => (
     <box
       id={`task-form-${id}`}
-      border
+      border={expanded || id !== "title" ? true : []}
       borderStyle="rounded"
       // The offending field wears the error, not just the message below.
       borderColor={frameColor(id)}
-      title={layout.title}
+      title={expanded ? layout.title : undefined}
       titleColor={layout.titleColor ?? labelColor(id)}
       bottomTitle={layout.bottomTitle ? ` ${layout.bottomTitle} ` : undefined}
       backgroundColor={
@@ -513,6 +563,7 @@ export function TaskForm({
       id,
       { height: 3, ...layout },
       <input
+        ref={(input) => { inputRefs.current[id] = input; }}
         focused={field === id}
         value={value}
         placeholder={placeholder}
@@ -613,17 +664,21 @@ export function TaskForm({
       theme={theme}
       title={title}
       width={FULL_WIDTH}
-      height={expanded ? (compact ? COMPACT_HEIGHT : FULL_HEIGHT) : 12}
+      height={expanded ? (compact ? COMPACT_HEIGHT : FULL_HEIGHT) : 10}
       screenWidth={screenWidth}
       screenHeight={screenHeight}
-      footer={creating
-        ? "enter save · ctrl+n save + new · tab options · esc cancel"
-        : "enter (title) / ctrl+s save · tab field · esc cancel"}
+      footer={footer}
       onBackdropClick={() => {
-        if (isPristine()) onCancel();
+        if (isPristine()) close();
       }}
-      onClose={onCancel}
+      onClose={close}
     >
+      {dirty && onDiscard ? (
+        <box position="absolute" top={-1} right={3} height={1} zIndex={1}
+          paddingLeft={1} paddingRight={1} backgroundColor={theme.surfaceAlt} onMouseDown={onDiscard}>
+          <text fg={theme.danger}>Discard</text>
+        </box>
+      ) : null}
       <scrollbox
         ref={scrollRef}
         flexGrow={1}
@@ -632,15 +687,15 @@ export function TaskForm({
         scrollX={false}
         contentOptions={{ flexDirection: "column" }}
       >
-      {label("title", "Title")}
+      {expanded ? label("title", "Title") : null}
       {/* A textarea so long titles wrap into view instead of scrolling away
           under the cursor; enter still submits. */}
       {frame(
         "title",
         {
-          height: compact ? 3 : 5,
+          height: !expanded || compact ? 3 : 5,
           title: frameTitle("Title"),
-          bottomTitle: tokenPreview ?? carriedMetadata ?? undefined,
+          bottomTitle: expanded ? tokenPreview ?? undefined : undefined,
         },
         <textarea
           ref={titleRef}
@@ -655,6 +710,10 @@ export function TaskForm({
           cursorColor={theme.accent}
         />,
       )}
+      {!expanded ? <>
+        <text height={1} flexShrink={0} fg={theme.textDim} wrapMode="none">{fitCells(metadata, contentWidth)}</text>
+        <text height={1} flexShrink={0} fg={theme.textMuted} wrapMode="none">{fitCells(metadataTags || "No tags", contentWidth)}</text>
+      </> : null}
 
       {expanded ? <>
       {label("description", "Description", "markdown · multiline")}
@@ -783,7 +842,7 @@ export function TaskForm({
       </box>
 
       </> : (
-        <box flexDirection="row" paddingTop={1} flexShrink={0}>
+        <box flexDirection="row" flexShrink={0}>
           <Button theme={theme} label="More options · Tab" onPress={() => focus("description")} />
         </box>
       )}
@@ -797,12 +856,12 @@ export function TaskForm({
         </box>
       ) : null}
 
-      {compact || !expanded ? null : (
+      {expanded && !compact ? (
         <box flexDirection="row" paddingTop={1} flexShrink={0}>
-          <Button theme={theme} label="Save" primary onPress={() => submit()} />
-          <Button theme={theme} label="Cancel" onPress={onCancel} />
+          {!compact ? <Button theme={theme} label="Save" primary onPress={() => submit()} /> : null}
+          {!compact ? <Button theme={theme} label={onDraftChange ? "Close" : "Cancel"} onPress={close} /> : null}
         </box>
-      )}
+      ) : null}
     </Overlay>
   );
 }

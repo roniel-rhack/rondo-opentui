@@ -100,7 +100,7 @@ import {
   StatusBar,
   TagBar,
 } from "./components/Panels.tsx";
-import { TaskDetail, type TaskDetailHandle } from "./components/TaskDetail.tsx";
+import { TaskDetail, type TaskDetailHandle, type TaskDetailSectionState } from "./components/TaskDetail.tsx";
 import { TaskList } from "./components/TaskList.tsx";
 import {
   CommandPalette,
@@ -111,6 +111,7 @@ import {
   type PromptChip,
 } from "./components/Dialogs.tsx";
 import { TaskForm, emptyTaskForm, type TaskFormValues } from "./components/TaskForm.tsx";
+import { TagEditor } from "./components/TagEditor.tsx";
 import { SettingsOverlay } from "./components/Settings.tsx";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -135,6 +136,7 @@ type Modal =
       initial?: string;
       multiline?: boolean;
       chips?: PromptChip[];
+      draftKey?: string;
       stayOpen?: boolean;
       onSubmit: (value: string) => string | void;
     }
@@ -145,6 +147,7 @@ type Modal =
       tasks: Task[];
       onPick: (taskId: number) => void;
     }
+  | { type: "tag-edit"; tasks: Task[] }
   | { type: "tag-pick" }
   | { type: "palette" }
   | { type: "help" }
@@ -289,7 +292,11 @@ export function App({ data, onQuit }: AppProps) {
   const now = useClock();
 
   const [modal, setModal] = useState<Modal>({ type: "none" });
+  const taskDrafts = useRef(new Map<string, TaskFormValues>());
+  const promptDrafts = useRef(new Map<string, string>());
+  const [createdOutsideId, setCreatedOutsideId] = useState<number | null>(null);
   const detailRef = useRef<TaskDetailHandle | null>(null);
+  const detailSectionState = useRef<TaskDetailSectionState>(new Map());
   const entryRef = useRef<EntryListHandle | null>(null);
   const pendingJournalMatch = useRef<{ noteId: number; entryId: number } | null>(null);
 
@@ -501,8 +508,9 @@ export function App({ data, onQuit }: AppProps) {
   // --------------------------------------------------------------- layout
 
   const isJournal = tab === "journal";
-  const compact = width < 75 || layout === "single" || (layout === "auto" && width < 100);
-  const listWidth = compact ? width : listWidthFor(ratio, width);
+  const compact = width < 75 || layout === "single" || (layout === "auto" && width < 120);
+  const listWidth = compact ? width : listWidthFor(layout === "auto" ? Math.max(ratio, 60 / width) : ratio, width);
+  const createdOutside = isJournal ? undefined : tasks.find((task) => task.id === createdOutsideId && !shown.some((visible) => visible.id === task.id));
   const listGap = rowGap(density, height);
   const showTagBar = !isJournal && (tagBar || filters.tag !== null);
   const showSearchBar = searching || filters.query !== "";
@@ -561,8 +569,10 @@ export function App({ data, onQuit }: AppProps) {
       if (taskId === null) {
         const created = data.createTask(draft);
         pushUndo({ kind: "task-created", label: `Created "${created.title}"`, taskId: created.id });
-        selectedTaskId.current = created.id;
-        notify(`Created "${created.title}"`, "success");
+        const visible = visibleTasks([created], tab, filters, sort, now).length > 0;
+        if (visible) selectedTaskId.current = created.id;
+        else setCreatedOutsideId(created.id);
+        notify(visible ? `Created "${created.title}"` : `Created #${created.id} outside filter · V view`, "success");
       } else {
         const task = data.tasks.getById(taskId);
         if (task) {
@@ -573,7 +583,7 @@ export function App({ data, onQuit }: AppProps) {
       if (!keepOpen) closeModal();
       reloadTasks();
     },
-    [closeModal, data, notify, pushUndo, reloadTasks],
+    [closeModal, data, filters, now, notify, pushUndo, reloadTasks, sort, tab],
   );
 
   // The keyboard hands over a whole stdin chunk before React commits, so an
@@ -709,6 +719,7 @@ export function App({ data, onQuit }: AppProps) {
     setModal({
       type: "prompt",
       title: "New subtask",
+      draftKey: `subtask:new:${taskId}`,
       label: `Subtask for #${taskId} ${title}`,
       placeholder: "Step description",
       stayOpen: true,
@@ -745,6 +756,7 @@ export function App({ data, onQuit }: AppProps) {
       setModal({
         type: "prompt",
         title: "Edit subtask",
+        draftKey: `subtask:${subtask.id}`,
         label: "New title",
         initial: subtask.title,
         onSubmit: (value) => {
@@ -764,6 +776,7 @@ export function App({ data, onQuit }: AppProps) {
       setModal({
         type: "prompt",
         title: "Edit note",
+        draftKey: `note:${note.id}`,
         label: `Note for #${task.id} ${task.title}`,
         initial: note.body,
         multiline: true,
@@ -783,6 +796,7 @@ export function App({ data, onQuit }: AppProps) {
     setModal({
       type: "prompt",
       title: "Edit time log",
+      draftKey: `log:${log.id}`,
       label: `Time for #${task.id} ${task.title}`,
       placeholder: "25m what you did",
       initial: timeLogInput(log),
@@ -838,6 +852,7 @@ export function App({ data, onQuit }: AppProps) {
     setModal({
       type: "prompt",
       title: "Add note",
+      draftKey: `note:new:${taskId}`,
       label: `Note for #${taskId} ${title}`,
       placeholder: "What happened?",
       multiline: true,
@@ -859,6 +874,7 @@ export function App({ data, onQuit }: AppProps) {
     setModal({
       type: "prompt",
       title: "Log time",
+      draftKey: `log:new:${taskId}`,
       label: `Time for #${taskId} ${title}`,
       placeholder: "25m what you did",
       onSubmit: (value) => {
@@ -888,6 +904,7 @@ export function App({ data, onQuit }: AppProps) {
       setModal({
         type: "prompt",
         title: "Journal entry",
+        draftKey: `entry:new:${(target?.date ?? GoTime.now()).format(DateOnly)}`,
         label: target
           ? `Entry for ${formatNoteTitle(cfg, target.date, GoTime.now())}`
           : "Entry for today",
@@ -917,6 +934,7 @@ export function App({ data, onQuit }: AppProps) {
     setModal({
       type: "prompt",
       title: "Edit entry",
+      draftKey: `entry:${entry.id}`,
       label: "Entry text",
       initial: entry.body,
       multiline: true,
@@ -1512,6 +1530,32 @@ export function App({ data, onQuit }: AppProps) {
     });
   }, [filters, history, tasks, notes, now, selectedNote?.id]);
 
+  const revealCreated = useCallback(() => {
+    if (createdOutside && data.refreshTask(createdOutside.id)) goToTask(createdOutside.id);
+  }, [createdOutside, data, goToTask]);
+
+  const toggleDescription = useCallback(() => {
+    if (!isJournal) detailRef.current?.toggleDescription();
+  }, [isJournal]);
+
+  const openTagEditor = useCallback(() => {
+    const targets = bulkActive ? markedTasks : selectedTask ? [selectedTask] : [];
+    if (targets.length > 0) setModal({ type: "tag-edit", tasks: targets });
+  }, [bulkActive, markedTasks, selectedTask]);
+
+  const saveTags = useCallback((targets: Task[], changes: { add: string[]; remove: string[] }) => {
+    const actions = targets.flatMap((task) => {
+      const action = data.editTags(task.id, changes);
+      return action ? [action] : [];
+    });
+    if (actions.length > 0) {
+      pushUndo(actions.length === 1 ? actions[0]! : { kind: "bulk", label: `Tags for ${actions.length} tasks`, actions });
+      refreshTasks(targets.map((task) => task.id));
+      notify(`Tags updated for ${plural(actions.length, "task")} · u undo`, "success");
+    }
+    closeModal();
+  }, [closeModal, data, notify, pushUndo, refreshTasks]);
+
   const openStats = useCallback(() => {
     setModal({
       type: "stats",
@@ -1577,6 +1621,9 @@ export function App({ data, onQuit }: AppProps) {
         nextMatch: () => moveJournalMatch(1),
         addTask: openAddTask,
         editTask: openEditTask,
+        editTags: openTagEditor,
+        revealCreated: createdOutside ? revealCreated : undefined,
+        toggleDescription: !isJournal && panel === 1 ? toggleDescription : undefined,
         toggleDone: pressDone,
         toggleStart: pressStart,
         deleteTask: pressDelete,
@@ -1647,6 +1694,10 @@ export function App({ data, onQuit }: AppProps) {
       openAddTask,
       openBlockPicker,
       openEditTask,
+      openTagEditor,
+      createdOutside,
+      revealCreated,
+      toggleDescription,
       openStats,
       openTagPicker,
       openUnblockPicker,
@@ -1691,6 +1742,7 @@ export function App({ data, onQuit }: AppProps) {
         });
       } else {
         setDetailIndex(clampIndex(detailCursor + delta, rows.length));
+        detailRef.current?.revealSelection();
       }
     },
     [
@@ -1710,11 +1762,13 @@ export function App({ data, onQuit }: AppProps) {
   // density's gap, while the other surfaces are read line by line.
   const listRowHeight = 2 + listGap;
   const listChrome =
-    LIST_CHROME + (showTagBar ? 1 : 0) + (showSearchBar ? 1 : 0);
+    LIST_CHROME + (showTagBar ? 1 : 0) + (showSearchBar ? 1 : 0) + (createdOutside ? 1 : 0);
   const pageBy = useCallback(
     (direction: 1 | -1) => {
       if (panel === 1) {
-        const lines = pageSize(height, 1, DETAIL_CHROME);
+        const lines = tab === "journal"
+          ? pageSize(height, 1, DETAIL_CHROME + (createdOutside ? 1 : 0))
+          : Math.max(1, (detailRef.current?.getViewportHeight() ?? 1) - 1);
         const readingPanel = tab === "journal" ? entryRef : detailRef;
         readingPanel.current?.scrollBy(direction * lines);
         return;
@@ -1724,7 +1778,7 @@ export function App({ data, onQuit }: AppProps) {
       const rowHeight = tab === "journal" ? (panel === 0 ? 2 : 3) : listRowHeight;
       move(direction * pageSize(height, rowHeight, listChrome));
     },
-    [height, listChrome, listRowHeight, move, panel, tab],
+    [createdOutside, height, listChrome, listRowHeight, move, panel, tab],
   );
 
   useKeyboard((key: KeyEvent) => {
@@ -1872,6 +1926,18 @@ export function App({ data, onQuit }: AppProps) {
     }
 
     switch (key.sequence) {
+      case "E":
+        if (!isJournal) openEditTask();
+        break;
+      case "D":
+        if (!isJournal && panel === 1) toggleDescription();
+        break;
+      case "V":
+        revealCreated();
+        break;
+      case ",":
+        if (!isJournal) openTagEditor();
+        break;
       case "M":
         if (!isJournal && panel === 0) markVisible();
         break;
@@ -2019,6 +2085,9 @@ export function App({ data, onQuit }: AppProps) {
     () => ({
       add: () => (isJournal ? addJournalEntry("today") : openAddTask()),
       addDay: () => addJournalEntry("selected"),
+      editTask: openEditTask,
+      editTags: openTagEditor,
+      foldDescription: toggleDescription,
       edit: () =>
         isJournal
           ? editJournalEntry()
@@ -2074,6 +2143,8 @@ export function App({ data, onQuit }: AppProps) {
       openAddTask,
       openBlockPicker,
       openEditTask,
+      openTagEditor,
+      toggleDescription,
       openTagPicker,
       panel,
       pressDelete,
@@ -2101,6 +2172,8 @@ export function App({ data, onQuit }: AppProps) {
         modal: modal.type,
         creating: modal.type === "task-form" && modal.taskId === null,
         multiline: modal.type === "prompt" && modal.multiline,
+        presets: modal.type === "prompt" && !!modal.chips,
+        drafts: modal.type === "prompt" && !!modal.draftKey,
         hasMatches: journalMatches.length > 0,
         row: detailRow?.kind ?? null,
         marked: marked.size,
@@ -2228,6 +2301,13 @@ export function App({ data, onQuit }: AppProps) {
         />
       ) : null}
 
+      {createdOutside ? (
+        <box height={1} flexShrink={0} paddingLeft={1} backgroundColor={theme.surfaceAlt}
+          onMouseDown={revealCreated}>
+          <text fg={theme.accent} wrapMode="none" truncate>{`Created #${createdOutside.id} outside filter · V view`}</text>
+        </box>
+      ) : null}
+
       <box flexGrow={1} flexDirection="row" minHeight={0}>
         {compact && panel === 1 ? null : (
         <box
@@ -2342,11 +2422,13 @@ export function App({ data, onQuit }: AppProps) {
               ) : (
                 <TaskDetail
                   ref={detailRef}
+                  sectionStateRef={detailSectionState}
                   theme={theme}
                   cfg={cfg}
                   task={selectedTask}
                   focused={panel === 1}
                   cursor={detailCursor}
+                  onEditTask={openEditTask}
                   onSelectRow={selectDetailRow}
                   onToggleSubtask={toggleSubtaskAt}
                   blocked={selectedTask ? blocked.has(selectedTask.id) : false}
@@ -2378,10 +2460,23 @@ export function App({ data, onQuit }: AppProps) {
           theme={theme}
           title={modal.title}
           initial={modal.initial}
+          draft={taskDrafts.current.get(String(modal.taskId ?? "new"))}
+          onDraftChange={(draft) => {
+            const key = String(modal.taskId ?? "new");
+            if (draft) taskDrafts.current.set(key, draft);
+            else taskDrafts.current.delete(key);
+          }}
+          onDiscard={() => {
+            taskDrafts.current.delete(String(modal.taskId ?? "new"));
+            closeModal();
+          }}
           knownTags={tagNames}
           screenWidth={width}
           screenHeight={height}
-          onSubmit={(values, keepOpen) => submitTaskForm(values, modal.taskId, keepOpen)}
+          onSubmit={(values, keepOpen) => {
+            submitTaskForm(values, modal.taskId, keepOpen);
+            taskDrafts.current.delete(String(modal.taskId ?? "new"));
+          }}
           onCancel={closeModal}
         />
       ) : null}
@@ -2408,12 +2503,26 @@ export function App({ data, onQuit }: AppProps) {
           label={modal.label}
           placeholder={modal.placeholder}
           initial={modal.initial}
+          draft={modal.draftKey ? promptDrafts.current.get(modal.draftKey) : undefined}
+          onDraftChange={!modal.draftKey ? undefined : (draft) => {
+            const key = modal.draftKey!;
+            if (draft !== null) promptDrafts.current.set(key, draft);
+            else promptDrafts.current.delete(key);
+          }}
+          onDiscard={!modal.draftKey ? undefined : () => {
+            promptDrafts.current.delete(modal.draftKey!);
+            closeModal();
+          }}
           multiline={modal.multiline}
           chips={modal.chips}
           stayOpen={modal.stayOpen}
           screenWidth={width}
           screenHeight={height}
-          onSubmit={modal.onSubmit}
+          onSubmit={(value) => {
+            const result = modal.onSubmit(value);
+            if (typeof result !== "string" && modal.draftKey) promptDrafts.current.delete(modal.draftKey);
+            return result;
+          }}
           onCancel={closeModal}
         />
       ) : null}
@@ -2429,6 +2538,12 @@ export function App({ data, onQuit }: AppProps) {
           onPick={modal.onPick}
           onClose={closeModal}
         />
+      ) : null}
+
+      {modal.type === "tag-edit" ? (
+        <TagEditor theme={theme} tasks={modal.tasks} knownTags={tagNames}
+          screenWidth={width} screenHeight={height}
+          onSubmit={(changes) => saveTags(modal.tasks, changes)} onClose={closeModal} />
       ) : null}
 
       {modal.type === "tag-pick" ? (

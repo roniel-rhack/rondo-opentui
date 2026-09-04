@@ -98,8 +98,6 @@ export function ConfirmDialog({
 }
 
 export interface PromptChip {
-  /** Single character that submits the chip while the field still holds the
-   * value it opened with. */
   key: string;
   label: string;
   value: string;
@@ -111,11 +109,13 @@ interface PromptDialogProps {
   label: string;
   placeholder?: string;
   initial?: string;
+  draft?: string;
+  onDraftChange?: (draft: string | null) => void;
+  onDiscard?: () => void;
   /** Multiline prompts keep enter as a new line; ctrl+s saves. Single-line
    * prompts still wrap long text into view, but enter submits. */
   multiline?: boolean;
-  /** Quick answers under the field. Clicking one, or pressing its key before
-   * the field is edited, submits its value as-is. */
+  /** Arrows preview a quick answer; clicking one submits its value as-is. */
   chips?: PromptChip[];
   /** Keep the dialog open after each accepted value and clear the field, so
    * a series can be entered without reopening; esc ends it. */
@@ -135,6 +135,9 @@ export function PromptDialog({
   label,
   placeholder,
   initial = "",
+  draft,
+  onDraftChange,
+  onDiscard,
   multiline = false,
   chips,
   stayOpen = false,
@@ -143,11 +146,21 @@ export function PromptDialog({
   onSubmit,
   onCancel,
 }: PromptDialogProps) {
-  const [value, setValue] = useState(initial);
+  const [value, setValue] = useState(draft ?? initial);
+  const baseline = useRef(initial);
+  const submitted = useRef(false);
+  const draftChange = useRef(onDraftChange);
+  draftChange.current = onDraftChange;
+  const dirty = value !== baseline.current;
+  useEffect(() => {
+    if (!submitted.current) draftChange.current?.(dirty ? value : null);
+  }, [value, dirty]);
+  const [chipIndex, setChipIndex] = useState(-1);
+  const chipValue = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [accepted, setAccepted] = useState(0);
   const areaRef = useRef<TextareaRenderable | null>(null);
-  const lastText = useRef(initial);
+  const lastText = useRef(draft ?? initial);
 
   // Editing continues at the end, like an input would.
   useEffect(() => {
@@ -157,13 +170,23 @@ export function PromptDialog({
 
   const currentValue = () => areaRef.current?.plainText ?? value;
 
+  const close = () => {
+    const latest = currentValue();
+    if (!submitted.current) draftChange.current?.(latest !== baseline.current ? latest : null);
+    onCancel();
+  };
+
   const deliver = (text: string) => {
     const problem = onSubmit(text);
     if (typeof problem === "string") {
       setError(problem);
       return;
     }
+    submitted.current = true;
+    draftChange.current?.(null);
     if (!stayOpen) return;
+    baseline.current = "";
+    chipValue.current = null;
     const area = areaRef.current;
     if (area) {
       area.setText("");
@@ -171,13 +194,15 @@ export function PromptDialog({
     }
     lastText.current = "";
     setValue("");
+    submitted.current = false;
+    setChipIndex(-1);
     setError(null);
     setAccepted((n) => n + 1);
   };
 
   const submit = () => {
     const text = currentValue().trim();
-    if (text === "") {
+    if (text === "" && chips?.[chipIndex]?.value !== "") {
       setError("Cannot be empty");
       return;
     }
@@ -186,28 +211,38 @@ export function PromptDialog({
 
   useKeyboard((key: KeyEvent) => {
     if (key.name === "escape") {
-      onCancel();
+      close();
       return;
     }
     if (key.ctrl && key.name === "s") {
+      key.preventDefault();
       submit();
+      return;
+    }
+    if (key.ctrl && key.name === "r" && onDiscard) {
+      key.preventDefault();
+      submitted.current = true;
+      onDiscard();
       return;
     }
     if (!multiline && key.name === "return") {
+      key.preventDefault();
       submit();
       return;
     }
-    if (!chips || key.ctrl || key.meta) return;
-    // A prompt pre-filled with the current value — re-dating a task that
-    // already has a due date — must answer the chip letters too; they stop
-    // firing as soon as the user types over what was there.
-    const text = currentValue();
-    if (text !== "" && text !== initial) return;
-    const chip = chips.find((c) => c.key === key.sequence);
-    if (chip) {
-      // Claim the key before the textarea inserts it as text.
+    if (!chips?.length || key.ctrl || key.meta) return;
+    if (key.name === "up" || key.name === "down") {
       key.preventDefault();
-      deliver(chip.value);
+      const next = chipIndex < 0
+        ? key.name === "up" ? chips.length - 1 : 0
+        : (chipIndex + (key.name === "up" ? -1 : 1) + chips.length) % chips.length;
+      const chip = chips[next]!;
+      chipValue.current = chip.value;
+      areaRef.current?.setText(chip.value);
+      if (areaRef.current) areaRef.current.cursorOffset = chip.value.length;
+      setValue(chip.value);
+      setChipIndex(next);
+      setError(null);
     }
   });
 
@@ -227,7 +262,12 @@ export function PromptDialog({
       area.cursorOffset = flat.length;
       return;
     }
+    submitted.current = false;
     setValue(text);
+    if (text !== chipValue.current) {
+      chipValue.current = null;
+      setChipIndex(-1);
+    }
     if (text.trim() !== lastText.current.trim()) {
       lastText.current = text;
       setError(null);
@@ -236,26 +276,27 @@ export function PromptDialog({
 
   // A stray click on the scrim only closes a prompt that has nothing to lose.
   const cancelIfPristine = () => {
-    if (currentValue().trim() === "") onCancel();
+    if (currentValue().trim() === "") close();
   };
 
   const verb = stayOpen ? "add" : "save";
-  const end = stayOpen ? "esc done" : "esc cancel";
-  const footer = multiline
+  const end = onDraftChange ? "esc close" : stayOpen ? "esc done" : "esc cancel";
+  const footer = (multiline
     ? `ctrl+s ${verb} · enter new line · ${end}`
-    : `enter ${verb} · ${end}`;
+    : `${chips?.length ? "↑↓ presets · " : ""}enter ${verb} · ${end}`)
+    + (onDiscard ? " · ctrl+r discard" : "");
 
   return (
     <Overlay
       theme={theme}
       title={title}
-      subtitle={accepted > 0 ? `${accepted} added · esc done` : label}
+      subtitle={accepted > 0 ? `${accepted} added · ${end}` : label}
       width={64}
       screenWidth={screenWidth}
       screenHeight={screenHeight}
       footer={footer}
       onBackdropClick={cancelIfPristine}
-      onClose={onCancel}
+      onClose={close}
     >
       <box flexDirection="column" paddingTop={1}>
         <box
@@ -268,7 +309,7 @@ export function PromptDialog({
           <textarea
             ref={areaRef}
             focused
-            initialValue={initial}
+            initialValue={draft ?? initial}
             placeholder={placeholder}
             wrapMode="word"
             onContentChange={handleChange}
@@ -285,7 +326,7 @@ export function PromptDialog({
               <ChipButton
                 key={chip.key}
                 theme={theme}
-                label={`${chip.key} ${chip.label}`}
+                label={chip.label}
                 onPress={() => deliver(chip.value)}
               />
             ))}
@@ -309,9 +350,10 @@ export function PromptDialog({
           />
           <Button
             theme={theme}
-            label={stayOpen ? "Done" : "Cancel"}
-            onPress={onCancel}
+            label={onDraftChange ? "Close" : stayOpen ? "Done" : "Cancel"}
+            onPress={close}
           />
+          {dirty && onDiscard ? <Button theme={theme} label="Discard" danger onPress={onDiscard} /> : null}
         </box>
       </box>
     </Overlay>

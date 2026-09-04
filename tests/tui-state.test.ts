@@ -844,6 +844,7 @@ describe("hintSpecs (5.4)", () => {
       "d delete",
       "+ - priority",
       "@ due",
+      ", tags",
       "esc clear marks",
       "m mark",
       "^k palette",
@@ -1015,7 +1016,7 @@ describe("restoreTuiState (4.1)", () => {
 describe("hintSpecs with marks (3.15)", () => {
   test("marked tasks turn the list hints into bulk keys", () => {
     const specs = hintSpecs({ tab: "active", panel: 0, compact: false, searching: false, marked: 2 });
-    expect(specs.map((h) => h.key)).toEqual(["space", "d", "+ -", "@", "esc", "m", "^k", "?"]);
+    expect(specs.map((h) => h.key)).toEqual(["space", "d", "+ -", "@", ",", "esc", "m", "^k", "?"]);
     expect(specs.find((h) => h.key === "esc")?.action).toBe("clearMarks");
     const plain = hintSpecs({ tab: "active", panel: 0, compact: false, searching: false, marked: 0 });
     expect(plain.map((h) => h.key)).toContain("v");

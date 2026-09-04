@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { RGBA } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act, type ReactNode } from "react";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CapturedFrame, CapturedSpan } from "@opentui/core";
@@ -12,6 +12,7 @@ import {
   formatDateShort,
   formatNoteTitle,
 } from "../src/core/config/config.ts";
+import { defaultTuiState } from "../src/core/config/tui-state.ts";
 import { open, openMemory } from "../src/core/database/db.ts";
 import { Minute } from "../src/core/duration.ts";
 import { RecurFreq } from "../src/core/task/recur.ts";
@@ -104,6 +105,10 @@ async function mount(
   home = freshHome(),
 ) {
   process.env.RONDO_HOME = home;
+  const statePath = join(home, "tui-state.json");
+  if (width >= 100 && !existsSync(statePath)) {
+    writeFileSync(statePath, JSON.stringify({ ...defaultTuiState(), layout: "split" }));
+  }
   const data = fixture instanceof RondoData ? fixture : seed(cfg);
   if (typeof fixture === "function") fixture(data);
   // Wrapping the initial mount keeps React's act() warnings out of the output.
@@ -403,7 +408,7 @@ describe("TUI flows", () => {
 
     await type("Write the plan");
     await press("RETURN");
-    expect(captureCharFrame()).toContain("1 added · esc done");
+    expect(captureCharFrame()).toContain("1 added · esc close");
     await press("ESCAPE");
 
     const refactor = data
@@ -721,7 +726,7 @@ describe("TUI inputs", () => {
     const { captureCharFrame, press, renderer } = await mount();
 
     await press("t");
-    expect(captureCharFrame()).toContain("enter add · esc done");
+    expect(captureCharFrame()).toContain("enter add · esc close");
     renderer.destroy();
   });
 });
@@ -729,6 +734,7 @@ describe("TUI inputs", () => {
 describe("TUI list density", () => {
   test("overdue rows use a compact marker instead of shouting OVERDUE", async () => {
     const data = seed();
+    process.env.RONDO_HOME = freshHome();
     const late = newTask({
       title: "Late task",
       dueDate: GoTime.now().addDate(0, 0, -30),
@@ -1319,7 +1325,7 @@ describe("TUI review 3 — task form and settings", () => {
   function overlayRows(frame: string): string[] {
     const lines = frame.split("\n");
     const top = lines.findIndex((l) => l.includes("New task"));
-    const bottom = lines.findIndex((l, i) => i > top && l.includes("esc cancel"));
+    const bottom = lines.findIndex((l, i) => i > top && l.includes("esc close"));
     expect(top).toBeGreaterThan(0);
     expect(bottom).toBeGreaterThan(top);
     return lines.slice(top, bottom + 1);
@@ -1344,9 +1350,9 @@ describe("TUI review 3 — task form and settings", () => {
     }
     // The footer already says how to save, so the buttons row is gone.
     expect(text).not.toContain("Save");
-    expect(text).toContain("enter save · ctrl+n save + new · tab options · esc cancel");
+    expect(text).toContain("enter save · ^n next · tab options · ^r discard · esc close");
     // The overlay ends above the status bar: nothing runs off-screen.
-    const bottom = frame.split("\n").findIndex((l) => l.includes("esc cancel"));
+    const bottom = frame.split("\n").findIndex((l) => l.includes("esc close"));
     expect(bottom).toBeLessThan(23);
     // Priority and Repeats share a row, each in its own frame.
     const priorityRow = rows.findIndex((l) => l.includes("Priority"));
@@ -1493,9 +1499,9 @@ describe("TUI review 3 — task form and settings", () => {
 
     await press("a");
     const frame = captureCharFrame();
-    expect(frame).toContain("enter save · ctrl+n save + new · tab options · esc cancel");
+    expect(frame).toContain("enter save · ^n next · tab options · ^r discard · esc close");
     expect(frame).not.toContain("tab move");
-    expect(frame.split("ctrl+n save + new")).toHaveLength(2);
+    expect(frame.split("^n next")).toHaveLength(2);
     renderer.destroy();
   });
 
@@ -1537,9 +1543,10 @@ describe("TUI review 3 — task form and settings", () => {
     await type("Ship it #infra @tomorrow !3 ~w");
     const tomorrow = GoTime.now().addDate(0, 0, 1);
     expect(captureCharFrame()).toContain(
-      `→ #infra · ${tomorrow.format(DUE_PREVIEW)} · High · weekly`,
+      `High · due ${tomorrow.format("2006-01-02")} · weekly`,
     );
 
+    expect(captureCharFrame()).toContain("#infra");
     await press("RETURN");
     const created = data.listTasks().find((t) => t.title === "Ship it")!;
     expect(created).toBeDefined();
@@ -1741,7 +1748,7 @@ describe("TUI review 3 — dialogs", () => {
     renderer.destroy();
   });
 
-  test("prompt chips answer a key while the field is empty, and clicks", async () => {
+  test("prompt presets require confirmation and still support direct clicks", async () => {
     const submitted: string[] = [];
     const { captureCharFrame, press, type, click, renderer } = await mountNode(
       <PromptDialog
@@ -1763,10 +1770,12 @@ describe("TUI review 3 — dialogs", () => {
     );
 
     let frame = captureCharFrame();
-    expect(frame).toContain("t today");
-    expect(frame).toContain("n none");
+    expect(frame).toContain("today");
+    expect(frame).toContain("none");
 
-    await press("t");
+    await press("ARROW_DOWN");
+    expect(submitted).toEqual([]);
+    await press("RETURN");
     expect(submitted).toEqual(["today"]);
     expect(captureCharFrame()).toContain("1 added");
 
@@ -1777,7 +1786,7 @@ describe("TUI review 3 — dialogs", () => {
     expect(submitted).toEqual(["today", "+3dt"]);
 
     frame = captureCharFrame();
-    const chip = locate(frame, "n none");
+    const chip = locate(frame, "none");
     await click(chip.x + 1, chip.y);
     expect(submitted).toEqual(["today", "+3dt", ""]);
     renderer.destroy();
@@ -1797,6 +1806,8 @@ describe("TUI review 3 — dialogs", () => {
     await click(cross.x, cross.y);
     expect(captureCharFrame()).not.toContain("New subtask");
 
+    await press("t");
+    await press("r", { ctrl: true });
     await press("t");
     await click(1, 1);
     expect(captureCharFrame()).not.toContain("New subtask");
@@ -2028,7 +2039,7 @@ describe("TUI review 3 — detail and journal", () => {
     for (const header of ["DESCRIPTION", "SUBTASKS", "NOTES", "TIME"]) {
       expect(bare).not.toContain(header);
     }
-    expect(bare).toContain("e  describe");
+    expect(bare).toContain("E  edit task");
     expect(bare).toContain("t  subtask");
     expect(bare).toContain("n  note");
     expect(bare).toContain("L  time");
@@ -2174,7 +2185,7 @@ describe("TUI review 3 — detail and journal", () => {
     });
     await setup.flush();
     const frame = setup.captureCharFrame();
-    expect(frame).not.toContain("○ Long spec");
+    expect(frame).toContain("○ Long spec");
     expect(frame).toContain("Line 12");
     setup.renderer.destroy();
   });
@@ -2573,7 +2584,7 @@ describe("TUI review 3 — task list", () => {
   test("the selection keeps its fill when the list loses focus", async () => {
     const cfg = defaultConfig();
     cfg.theme = "dark";
-    const m = await mountWith(() => {}, 100, 30, cfg);
+    const m = await mountWith(() => {}, 120, 30, cfg);
     const theme = tuiTheme(true);
 
     const rowSpans = () => {
@@ -3311,7 +3322,7 @@ describe("TUI review 3 — keys and selection", () => {
     expect(detailColumn(captureCharFrame())).not.toContain("Line 14");
     await press(PAGE_DOWN);
     await settle(flush);
-    expect(detailColumn(captureCharFrame())).not.toContain("○ Long spec");
+    expect(detailColumn(captureCharFrame())).toContain("○ Long spec");
     expect(detailColumn(captureCharFrame())).toContain("Line 14");
 
     await press("h");
@@ -3367,7 +3378,7 @@ describe("TUI review 3 — keys and selection", () => {
 
     for (let i = 0; i < 12; i++) await press(">");
     expect(dividerAt()).toBe(38);
-    expect(captureCharFrame().split("\n")[5]).toContain("Pending");
+    expect(captureCharFrame().split("\n")[3]).toContain("Pending");
 
     for (let i = 0; i < 12; i++) await press("<");
     expect(dividerAt()).toBe(33);
@@ -3703,8 +3714,8 @@ describe("TUI review 3 — mutations and undo", () => {
     let frame = captureCharFrame();
     expect(frame).toContain("Due date");
     expect(frame).toContain("2026-12-01");
-    expect(frame).toContain("t today");
-    expect(frame).toContain("n none");
+    expect(frame).toContain("today");
+    expect(frame).toContain("none");
 
     await type("xx");
     await press("RETURN");
@@ -3715,7 +3726,7 @@ describe("TUI review 3 — mutations and undo", () => {
     renderer.destroy();
   });
 
-  test("3.3: a due chip answers a key on an undated task, and u clears it again", async () => {
+  test("3.3: a confirmed due preset dates a task, and u clears it again", async () => {
     const { captureCharFrame, press, data, renderer } = await mount(
       100,
       30,
@@ -3727,7 +3738,8 @@ describe("TUI review 3 — mutations and undo", () => {
 
     await press("G");
     await press("@");
-    await press("t");
+    await press("ARROW_DOWN");
+    await press("RETURN");
 
     const today = GoTime.now().format("2006-01-02");
     const someday = () => data.tasks.list().find((t) => t.title === "Someday")!;
@@ -3843,7 +3855,7 @@ describe("TUI review 3 — mutations and undo", () => {
     await press("RETURN");
     await type("Build");
     await press("RETURN");
-    expect(captureCharFrame()).toContain("2 added · esc done");
+    expect(captureCharFrame()).toContain("2 added · esc close");
 
     await press("ESCAPE");
     expect(captureCharFrame()).not.toContain("New subtask");
@@ -4168,7 +4180,8 @@ describe("TUI review 3 — filters, views, marks and persistence", () => {
     await press("m");
     await press("@");
     expect(captureCharFrame()).toContain("Due date for 2 tasks");
-    await press("t");
+    await press("ARROW_DOWN");
+    await press("RETURN");
     expect(captureCharFrame()).toContain(`2 tasks → Due ${today} · u undo`);
     expect(data.tasks.getById(1)!.dueDate!.format("2006-01-02")).toBe(today);
     expect(data.tasks.getById(3)!.dueDate!.format("2006-01-02")).toBe(today);
@@ -4281,7 +4294,7 @@ describe("TUI review 3 — filters, views, marks and persistence", () => {
     const { captureCharFrame, renderer } = await mount(160, 40);
     const status = statusRow(captureCharFrame(), 40);
     expect(status).toContain(" v  view ");
-    expect(status).toContain(" #  tag ");
+    expect(status).toContain(" #  filter tag ");
     expect(status).toContain(" m  mark ");
     expect(status).toMatch(/\^k  palette .* \?  help/);
     renderer.destroy();
@@ -4417,7 +4430,7 @@ describe("TUI review 3 — follow-ups", () => {
     renderer.destroy();
   });
 
-  test("3.3: the due chips still answer on a task that has a due date", async () => {
+  test("3.3: the date presets replace an existing due date after confirmation", async () => {
     const { press, data, renderer } = await mount(100, 30, defaultConfig(), (d) => {
       d.tasks.create(
         newTask({ title: "Re-date me", dueDate: GoTime.date(2026, 8, 21, 0, 0, 0, 0, "utc") }),
@@ -4425,7 +4438,9 @@ describe("TUI review 3 — follow-ups", () => {
     });
 
     await press("@");
-    await press("m");
+    await press("ARROW_DOWN");
+    await press("ARROW_DOWN");
+    await press("RETURN");
     const task = data.listTasks().find((t) => t.title === "Re-date me")!;
     expect(task.dueDate!.format("2006-01-02")).toBe(
       GoTime.now().addDate(0, 0, 1).format("2006-01-02"),

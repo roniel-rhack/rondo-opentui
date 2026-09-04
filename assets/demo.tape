@@ -12,6 +12,7 @@ Set Shell bash
 Set Width 1360
 Set Height 660
 Set FontSize 15
+Set Framerate 20
 Set Padding 18
 Set TypingSpeed 45ms
 Set Theme { "name": "RonDO", "background": "#1e1e1e", "foreground": "#e4e4e4", "cursor": "#22d3ee", "selection": "#2b3b41", "black": "#252526", "red": "#fb7185", "green": "#4ade80", "yellow": "#fbbf24", "blue": "#60a5fa", "magenta": "#c5a5ff", "cyan": "#22d3ee", "white": "#e4e4e4", "brightBlack": "#7a7a7a", "brightRed": "#fb7185", "brightGreen": "#4ade80", "brightYellow": "#fbbf24", "brightBlue": "#60a5fa", "brightMagenta": "#c5a5ff", "brightCyan": "#22d3ee", "brightWhite": "#ffffff" }
@@ -42,6 +43,12 @@ Sleep 1s
 # ─── Read a task: subtasks, notes, time logs ───
 Right
 Sleep 1.2s
+Type "E"
+Sleep 800ms
+Escape
+Sleep 500ms
+Type "D"
+Sleep 400ms
 Down
 Sleep 500ms
 Space
@@ -84,6 +91,23 @@ Type "Publish the release notes #docs"
 Enter
 Sleep 2s
 
+# ─── Resume a session draft and discard it explicitly ───
+Type "a"
+Type "Draft the follow-up"
+Escape
+Sleep 500ms
+Type "a"
+Sleep 800ms
+Ctrl+R
+Sleep 500ms
+
+# ─── Direct tag editing ───
+Type ","
+Type "shipping"
+Enter
+Ctrl+S
+Sleep 1s
+
 # ─── One key completes the task just created ───
 Space
 Sleep 1.5s
@@ -95,7 +119,9 @@ Type "+"
 Sleep 1.2s
 Type "@"
 Sleep 800ms
-Type "m"
+Down
+Down
+Enter
 Sleep 1.5s
 
 # ─── Cycle views: all → today → overdue ───
@@ -123,6 +149,20 @@ Enter
 Sleep 1.8s
 Backspace
 Sleep 1s
+
+# ─── Creation outside a filter keeps a return path ───
+Type "/"
+Type "landing"
+Enter
+Type "a"
+Type "Prepare the handoff"
+Enter
+Sleep 700ms
+Type "V"
+Sleep 800ms
+Backspace
+Escape
+Sleep 500ms
 
 # ─── Statistics ───
 Type "S"

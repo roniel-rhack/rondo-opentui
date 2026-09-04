@@ -977,6 +977,9 @@ export type HintAction =
   | "add"
   | "addDay"
   | "edit"
+  | "editTask"
+  | "editTags"
+  | "foldDescription"
   | "delete"
   | "done"
   | "start"
@@ -1019,6 +1022,8 @@ export interface HintContext {
   modal?: string;
   creating?: boolean;
   multiline?: boolean;
+  presets?: boolean;
+  drafts?: boolean;
   hasMatches?: boolean;
   /** Kind of the detail row under the cursor; null or absent when the
    * detail panel has no rows to walk. */
@@ -1044,10 +1049,18 @@ export function hintSpecs(ctx: HintContext): HintSpec[] {
     if (ctx.modal === "task-form") return [
       { key: "^s", label: "save", action: null },
       ...(ctx.creating ? [{ key: "^n", label: "save + new", action: null }] : []),
-      { key: "tab", label: "field", action: null }, cancel,
+      { key: "tab", label: "field", action: null },
+      { key: "^r", label: "discard", action: null }, cancel,
     ];
     if (ctx.modal === "prompt") return [
-      { key: ctx.multiline ? "^s" : "enter", label: "save", action: null }, cancel,
+      ...(ctx.presets ? [{ key: "↑↓", label: "presets", action: null }] : []),
+      { key: ctx.multiline ? "^s" : "enter", label: "save", action: null },
+      ...(ctx.drafts ? [{ key: "^r", label: "discard", action: null }] : []), cancel,
+    ];
+    if (ctx.modal === "tag-edit") return [
+      { key: "enter", label: "toggle", action: null },
+      { key: "^s", label: "save", action: null },
+      { key: "tab", label: "search/list", action: null }, cancel,
     ];
     if (ctx.modal === "confirm") return [
       { key: "y", label: "confirm", action: null },
@@ -1116,6 +1129,9 @@ export function hintSpecs(ctx: HintContext): HintSpec[] {
           ]
         : []),
       ...ordered,
+      { key: "E", label: "edit task", action: "editTask" },
+      { key: "D", label: "description", action: "foldDescription" },
+      { key: ",", label: "tags", action: "editTags" },
       { key: "h", label: "back", action: "back" },
       ...HINT_TAIL,
     ];
@@ -1126,6 +1142,7 @@ export function hintSpecs(ctx: HintContext): HintSpec[] {
       { key: "d", label: "delete", action: "delete" },
       { key: "+ -", label: "priority", action: null },
       { key: "@", label: "due", action: "due" },
+      { key: ",", label: "tags", action: "editTags" },
       { key: "esc", label: "clear marks", action: "clearMarks" },
       { key: "m", label: "mark", action: "mark" },
       ...HINT_TAIL,
@@ -1143,10 +1160,11 @@ export function hintSpecs(ctx: HintContext): HintSpec[] {
     { key: "d", label: "delete", action: "delete" },
     { key: "t", label: "subtask", action: "subtask" },
     { key: "v", label: "view", action: "view" },
-    { key: "#", label: "tag", action: "tag" },
+    { key: "#", label: "filter tag", action: "tag" },
+    { key: ",", label: "tags", action: "editTags" },
+    { key: "m", label: "mark", action: "mark" },
     { key: "@", label: "due", action: "due" },
     { key: "+ -", label: "priority", action: null },
-    { key: "m", label: "mark", action: "mark" },
     { key: "b", label: "block", action: "block" },
     { key: "f", label: "focus", action: "focus" },
     ...HINT_TAIL,
@@ -1198,6 +1216,8 @@ export const HELP_SECTIONS: HelpSection[] = [
     "Detail panel",
     [
       ["space", "Toggle subtask"],
+      ["E", "Edit whole task"],
+      ["D", "Fold / unfold description"],
       ["enter, e", "Edit subtask, note or log"],
       ["d", "Delete row"],
       ["t n L", "Add subtask / note / log"],
@@ -1210,6 +1230,9 @@ export const HELP_SECTIONS: HelpSection[] = [
       ["a", "Add task"],
       ["ctrl+n", "Save new task and add another"],
       ["e", "Edit task"],
+      ["E", "Edit whole task from either panel"],
+      [",", "Edit tags (also marked tasks)"],
+      ["V", "View task created outside filter"],
       ["d", "Delete (undo with u)"],
       ["space", "Mark done / reopen"],
       ["s", "Start / stop"],
@@ -1254,17 +1277,17 @@ export const HELP_SECTIONS: HelpSection[] = [
       ["m", "Mark task for bulk action"],
       ["M", "Select all visible tasks"],
       ["J K", "Extend selection down / up"],
-      ["space d + - @", "Act on every marked task"],
+      ["space d + - @ ,", "Act on every marked task"],
       ["esc", "Clear marks"],
     ],
   ],
-  ["Forms", [["^s", "Save"], ["^n", "Save new task and add another"], ["tab", "Next field / more options"], ["esc", "Cancel / close"]]],
+  ["Forms", [["^s", "Save"], ["^n", "Save new task and add another"], ["^r", "Discard editor draft"], ["↑ ↓", "Choose date preset; enter saves"], ["tab", "Next field / more options"], ["esc", "Cancel / close"]]],
 ];
 
 /** Every surface the status bar draws hints for, so the check below sees the
  * same keys the user does. */
 const HINT_CONTEXTS: HintContext[] = [
-  ...["task-form", "prompt", "confirm", "help", "stats", "settings", "palette"].map((modal) => ({ tab: "active" as const, panel: 0 as const, compact: false, searching: false, modal, creating: true, multiline: true })),
+  ...["task-form", "prompt", "confirm", "help", "stats", "settings", "palette", "tag-edit"].map((modal) => ({ tab: "active" as const, panel: 0 as const, compact: false, searching: false, modal, creating: true, multiline: true })),
   { tab: "journal", panel: 1, compact: false, searching: false, hasMatches: true },
   { tab: "active", panel: 0, compact: false, searching: false },
   { tab: "active", panel: 0, compact: true, searching: false },
@@ -1286,6 +1309,7 @@ export function hintKeysMissingFromHelp(): string[] {
   const tokens = new Set<string>();
   for (const [, rows] of HELP_SECTIONS) {
     for (const [key] of rows) {
+      if (key === ",") tokens.add(key);
       for (const part of key.split(/[\s,]+/)) if (part !== "") tokens.add(part);
     }
   }

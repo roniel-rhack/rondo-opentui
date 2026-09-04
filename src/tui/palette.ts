@@ -40,6 +40,9 @@ export interface PaletteContext {
   nextMatch?: () => void;
   addTask: () => void;
   editTask: () => void;
+  editTags?: () => void;
+  revealCreated?: () => void;
+  toggleDescription?: () => void;
   toggleDone: () => void;
   toggleStart: () => void;
   deleteTask: () => void;
@@ -99,7 +102,7 @@ export function buildPaletteActions(ctx: PaletteContext): PaletteAction[] {
             id: "task.edit",
             group: "Task",
             label: "Edit selected task",
-            hint: detail ? undefined : "e",
+            hint: detail ? "E" : "e",
             run: ctx.editTask,
           },
           {
@@ -406,6 +409,15 @@ export function buildPaletteActions(ctx: PaletteContext): PaletteAction[] {
     { id: "app.quit", group: "App", label: "Quit", hint: "q", run: ctx.quit },
   ];
 
+  if (ctx.tab !== "journal" && ctx.editTags) actions.push({
+    id: "task.tags", group: "Task", label: `Edit tags for ${target}`, hint: ",", run: ctx.editTags,
+  });
+  if (ctx.revealCreated) actions.push({
+    id: "task.revealCreated", group: "Task", label: "View task created outside filter", hint: "V", run: ctx.revealCreated,
+  });
+  if (ctx.toggleDescription) actions.push({
+    id: "detail.description", group: "Selected task", label: "Fold / unfold description", hint: "D", run: ctx.toggleDescription,
+  });
   if (detail && ctx.row) {
     const row = ctx.row === "timelog" ? "time log" : ctx.row === "entry" ? "journal entry" : ctx.row;
     if (ctx.editRow) actions.push({ id: "detail.edit", group: "Selected row", label: `Edit selected ${row}`, hint: "e", run: ctx.editRow });
