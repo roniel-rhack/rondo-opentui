@@ -1,13 +1,13 @@
 import { TextAttributes, type KeyEvent } from "@opentui/core";
 import { useKeyboard, useRenderer } from "@opentui/react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import type { InputRenderable, ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 import { RecurFreq, recurFreqString } from "../../core/task/recur.ts";
 import { Priority, priorityString } from "../../core/task/task.ts";
 import { DateOnly, GoTime } from "../../core/time.ts";
 import { fitChips, parseDueInput, parseQuickAdd, type QuickAdd } from "../state.ts";
 import { mix, priorityColors, type TuiTheme } from "../theme.ts";
-import { fitCells } from "../text.ts";
+import { cellWidth, fitCells } from "../text.ts";
 import { Button, Overlay, fixedOverlayBodyRows } from "./Overlay.tsx";
 import { ChipButton } from "./primitives.tsx";
 
@@ -41,7 +41,7 @@ interface TaskFormProps {
   knownTags?: string[];
   screenWidth: number;
   screenHeight: number;
-  onSubmit: (values: TaskFormValues, keepOpen?: boolean) => void;
+  onSubmit: (values: TaskFormValues, keepOpen?: boolean) => string | void;
   onCancel: () => void;
 }
 
@@ -54,6 +54,8 @@ const FIELDS = [
   "recur",
 ] as const;
 type FieldId = (typeof FIELDS)[number];
+const FIELD_LABELS = ["Title", "Description", "Due date", "Tags", "Priority", "Repeats"];
+const FIELD_TABS = ["Title", "Desc", "Due", "Tags", "Priority", "Repeat"];
 
 const PRIORITIES = [
   Priority.Low,
@@ -200,7 +202,12 @@ export function TaskForm({
   onSubmit,
   onCancel,
 }: TaskFormProps) {
-  const [values, setValues] = useState<TaskFormValues>(draft ?? initial);
+  const [values, setRenderedValues] = useState<TaskFormValues>(draft ?? initial);
+  const valuesRef = useRef(values);
+  const setValues = (update: SetStateAction<TaskFormValues>) => {
+    valuesRef.current = typeof update === "function" ? update(valuesRef.current) : update;
+    setRenderedValues(valuesRef.current);
+  };
   const baseline = useRef(initial);
   const submitted = useRef(false);
   const draftChange = useRef(onDraftChange);
@@ -217,17 +224,33 @@ export function TaskForm({
   const descriptionRef = useRef<TextareaRenderable | null>(null);
   const inputRefs = useRef<Partial<Record<FieldId, InputRenderable | null>>>({});
   const [fieldIndex, setFieldIndex] = useState(0);
+  const focusedIndex = useRef(0);
+  const [choosingField, setChoosingField] = useState(false);
+  const choosing = useRef(false);
+  const chooseField = (active: boolean) => {
+    choosing.current = active;
+    setChoosingField(active);
+    if (active) setExpanded(true);
+  };
   const [error, setError] = useState<Problem | null>(null);
 
   const field: FieldId = FIELDS[fieldIndex] ?? "title";
   const focus = (id: FieldId) => {
-    if (id !== "title") setExpanded(true);
-    setFieldIndex(FIELDS.indexOf(id));
+    chooseField(false);
+    if (id !== "title") {
+      materializeTokens();
+      setExpanded(true);
+    }
+    focusedIndex.current = FIELDS.indexOf(id);
+    setFieldIndex(focusedIndex.current);
   };
 
   const compact = screenHeight < COMPACT_BELOW;
   const narrow = screenWidth - 4 < FULL_WIDTH;
   const stacked = screenWidth < 60;
+  const contentWidth = Math.max(Math.min(FULL_WIDTH, screenWidth - 4) - 6, 1);
+  const titleRows = !expanded || compact ? 3 : cellWidth(values.title) > contentWidth - 3 ? 5 : 3;
+  const fieldTabRows = expanded && (choosingField || screenHeight >= 24) ? contentWidth < 60 ? 2 : 1 : 0;
 
   // The overlay cannot grow past the status bar, so the optional rows are
   // budgeted against what is left: the error message always wins, and the
@@ -240,8 +263,8 @@ export function TaskForm({
     ? Math.ceil((error.message.length + 2) / Math.max(Math.min(FULL_WIDTH, screenWidth - 4) - 6, 1))
     : 0;
   const spareRows =
-    bodyRows - (compact ? COMPACT_FIELD_ROWS : FULL_FIELD_ROWS) -
-    (stacked ? (compact ? 6 : 8) : 0) - errorRows;
+    bodyRows - (compact ? COMPACT_FIELD_ROWS : FULL_FIELD_ROWS + titleRows - 3) -
+    (stacked ? (compact ? 6 : 8) : 0) - errorRows - fieldTabRows - (compact ? 0 : 2);
   // Each column of the due/tags row keeps its own chips on one line; what
   // does not fit is dropped rather than wrapped.
   const columnWidth =
@@ -296,22 +319,34 @@ export function TaskForm({
   // The title is conceptually one line: whatever enter left behind in the
   // buffer collapses back into spaces.
   const current = (): TaskFormValues => ({
-    ...values,
-    title: (titleRef.current?.plainText ?? values.title)
+    ...valuesRef.current,
+    title: (titleRef.current?.plainText ?? valuesRef.current.title)
       .replace(/\s+/g, " ")
       .trim(),
-    description: descriptionRef.current?.plainText ?? values.description,
-    due: inputRefs.current.due?.value ?? values.due,
-    tags: inputRefs.current.tags?.value ?? values.tags,
+    description: descriptionRef.current?.plainText ?? valuesRef.current.description,
+    due: inputRefs.current.due?.value ?? valuesRef.current.due,
+    tags: inputRefs.current.tags?.value ?? valuesRef.current.tags,
   });
+
+  // Once a user leaves the title, metadata belongs to the controls. Keeping
+  // tokens in the title would silently override their subsequent edits.
+  const materializeTokens = () => {
+    const latest = current();
+    const quick = parseQuickAdd(latest.title, GoTime.now());
+    if (!quickAddPreview(quick)) return;
+    const merged = applyQuickAdd(latest, quick);
+    titleRef.current?.setText(merged.title);
+    if (titleRef.current) titleRef.current.cursorOffset = merged.title.length;
+    if (inputRefs.current.due) inputRefs.current.due.value = merged.due;
+    if (inputRefs.current.tags) inputRefs.current.tags.value = merged.tags;
+    lastTitle.current = merged.title;
+    setValues(merged);
+  };
 
   const close = () => {
     const latest = {
-      ...values,
-      title: titleRef.current?.plainText ?? values.title,
-      description: descriptionRef.current?.plainText ?? values.description,
-      due: inputRefs.current.due?.value ?? values.due,
-      tags: inputRefs.current.tags?.value ?? values.tags,
+      ...current(),
+      title: titleRef.current?.plainText ?? valuesRef.current.title,
     };
     if (!submitted.current) {
       draftChange.current?.(FIELDS.some((id) => latest[id] !== baseline.current[id]) ? latest : null);
@@ -329,9 +364,13 @@ export function TaskForm({
       focus(problem.field);
       return;
     }
+    const result = onSubmit(merged, keepOpen);
+    if (typeof result === "string") {
+      setError({ field, message: result });
+      return;
+    }
     submitted.current = true;
     draftChange.current?.(null);
-    onSubmit(merged, keepOpen);
     if (keepOpen) {
       const next = { ...merged, title: "", description: "" };
       baseline.current = next;
@@ -396,24 +435,38 @@ export function TaskForm({
   };
 
   const appendTag = (tag: string) => {
-    const tags = splitTags(values.tags);
+    const tags = splitTags(current().tags);
     if (tags.includes(tag)) return;
-    setValues({ ...values, tags: [...tags, tag].join(", ") });
+    setValues((prev) => ({ ...prev, tags: [...tags, tag].join(", ") }));
   };
 
   const cycleField = (id: FieldId, delta: number) => {
     if (id === "priority") {
-      const idx = PRIORITIES.indexOf(values.priority);
+      const idx = PRIORITIES.indexOf(valuesRef.current.priority);
       const next = (idx + delta + PRIORITIES.length) % PRIORITIES.length;
-      setValues({ ...values, priority: PRIORITIES[next]! });
+      setValues((prev) => ({ ...prev, priority: PRIORITIES[next]! }));
     } else if (id === "recur") {
-      const idx = RECURRENCES.indexOf(values.recur);
+      const idx = RECURRENCES.indexOf(valuesRef.current.recur);
       const next = (idx + delta + RECURRENCES.length) % RECURRENCES.length;
-      setValues({ ...values, recur: RECURRENCES[next]! });
+      setValues((prev) => ({ ...prev, recur: RECURRENCES[next]! }));
     }
   };
 
   useKeyboard((key: KeyEvent) => {
+    const field = FIELDS[focusedIndex.current]!;
+    if (key.ctrl && key.name === "g") {
+      key.preventDefault();
+      chooseField(!choosing.current);
+      return;
+    }
+    if (choosing.current) {
+      key.preventDefault();
+      if (key.name === "escape") chooseField(false);
+      else if (!key.ctrl && !key.meta && /^[1-6]$/.test(key.sequence)) {
+        focus(FIELDS[Number(key.sequence) - 1]!);
+      }
+      return;
+    }
     if (key.name === "escape") {
       close();
       return;
@@ -443,10 +496,7 @@ export function TaskForm({
     }
     if (key.name === "tab") {
       key.preventDefault();
-      setExpanded(true);
-      setFieldIndex(
-        (i) => (i + (key.shift ? -1 : 1) + FIELDS.length) % FIELDS.length,
-      );
+      focus(FIELDS[(focusedIndex.current + (key.shift ? -1 : 1) + FIELDS.length) % FIELDS.length]!);
       return;
     }
     // Arrow keys navigate between fields, except inside the textarea where they
@@ -454,17 +504,17 @@ export function TaskForm({
     if (field !== "description") {
       if (key.name === "down") {
         key.preventDefault();
-        setExpanded(true);
-        setFieldIndex((i) => Math.min(i + 1, FIELDS.length - 1));
+        focus(FIELDS[Math.min(focusedIndex.current + 1, FIELDS.length - 1)]!);
         return;
       }
       if (key.name === "up") {
         key.preventDefault();
-        setFieldIndex((i) => Math.max(i - 1, 0));
+        focus(FIELDS[Math.max(focusedIndex.current - 1, 0)]!);
         return;
       }
     }
     if (field === "priority" || field === "recur") {
+      if (["left", "right", "space", "return"].includes(key.name)) key.preventDefault();
       if (key.name === "left") cycleField(field, -1);
       if (key.name === "right") cycleField(field, 1);
       if (key.name === "space") cycleField(field, 1);
@@ -481,10 +531,15 @@ export function TaskForm({
     effective.recur === RecurFreq.None ? "" : recurFreqString(effective.recur),
   ].filter(Boolean).join(" · ")}`;
   const metadataTags = splitTags(effective.tags).map((tag) => `#${tag}`).join(" ");
-  const contentWidth = Math.max(Math.min(FULL_WIDTH, screenWidth - 4) - 6, 1);
   const end = onDraftChange ? "esc close" : "esc cancel";
   const discardHint = onDiscard ? " · ^r discard" : "";
-  const footer = contentWidth < 45
+  const footer = choosingField
+    ? "1–6 choose field · esc back"
+    : expanded
+    ? contentWidth < 45
+      ? `^s save · ${end}`
+      : `${field === "description" && contentWidth >= 60 ? "enter newline · " : ""}^s save · ^g field · ${end}`
+    : contentWidth < 45
     ? `${creating ? "enter" : "^s save"}${discardHint} · ${end}`
     : creating
       ? `enter save · ^n next${contentWidth < 60 ? "" : " · tab options"}${discardHint} · ${end}`
@@ -663,6 +718,7 @@ export function TaskForm({
     <Overlay
       theme={theme}
       title={title}
+      subtitle={choosingField ? "Choose field" : expanded ? `${fieldIndex + 1}/6 ${FIELD_LABELS[fieldIndex]}` : undefined}
       width={FULL_WIDTH}
       height={expanded ? (compact ? COMPACT_HEIGHT : FULL_HEIGHT) : 10}
       screenWidth={screenWidth}
@@ -679,6 +735,20 @@ export function TaskForm({
           <text fg={theme.danger}>Discard</text>
         </box>
       ) : null}
+      {fieldTabRows > 0 ? (
+        <box flexDirection="row" height={fieldTabRows} flexShrink={0}
+          flexWrap="wrap">
+          {FIELDS.map((id, index) => (
+            <box key={id} width={Math.floor(contentWidth / (contentWidth < 60 ? 3 : 6))}
+              height={1} backgroundColor={field === id ? theme.accent : theme.surfaceAlt}
+              onMouseDown={() => focus(id)}>
+              <text fg={field === id ? theme.textOn : theme.textDim} wrapMode="none">
+                {`${index + 1} ${id === "priority" && contentWidth < 60 ? "Prio" : FIELD_TABS[index]}`}
+              </text>
+            </box>
+          ))}
+        </box>
+      ) : null}
       <scrollbox
         ref={scrollRef}
         flexGrow={1}
@@ -693,7 +763,7 @@ export function TaskForm({
       {frame(
         "title",
         {
-          height: !expanded || compact ? 3 : 5,
+          height: titleRows,
           title: frameTitle("Title"),
           bottomTitle: expanded ? tokenPreview ?? undefined : undefined,
         },
@@ -751,7 +821,7 @@ export function TaskForm({
             "due",
             "YYYY-MM-DD",
             values.due,
-            (v) => setValues({ ...values, due: v }),
+            (v) => setValues((prev) => ({ ...prev, due: v })),
             {
               title: frameTitle("Due date", due?.text),
               titleColor: due && !due.valid ? theme.danger : undefined,
@@ -767,15 +837,15 @@ export function TaskForm({
                 onPress={() => {
                   focus("due");
                   clearError("due", "");
-                  setValues({
-                    ...values,
+                  setValues((prev) => ({
+                    ...prev,
                     due:
                       shortcut.days === null
                         ? ""
                         : GoTime.now()
                             .addDate(0, 0, shortcut.days)
                             .format(DateOnly),
-                  });
+                  }));
                 }}
               />
             ))}
@@ -789,7 +859,7 @@ export function TaskForm({
             "tags",
             "work, home",
             values.tags,
-            (v) => setValues({ ...values, tags: v }),
+            (v) => setValues((prev) => ({ ...prev, tags: v })),
             { title: frameTitle("Tags") },
           )}
           {tagChips.length > 0 ? (
@@ -821,7 +891,7 @@ export function TaskForm({
               label: priorityString(p),
               active: values.priority === p,
               color: priorityColors(theme)[p] ?? theme.accent,
-              onPress: () => setValues({ ...values, priority: p }),
+              onPress: () => setValues((prev) => ({ ...prev, priority: p })),
             })),
           )}
         </box>
@@ -835,7 +905,7 @@ export function TaskForm({
               label: RECUR_LABELS[r] ?? recurFreqString(r),
               active: values.recur === r,
               color: theme.secondary,
-              onPress: () => setValues({ ...values, recur: r }),
+              onPress: () => setValues((prev) => ({ ...prev, recur: r })),
             })),
           )}
         </box>
@@ -843,7 +913,8 @@ export function TaskForm({
 
       </> : (
         <box flexDirection="row" flexShrink={0}>
-          <Button theme={theme} label="More options · Tab" onPress={() => focus("description")} />
+          <Button theme={theme} label={contentWidth >= 45 ? "More options · Tab / Ctrl+G" : "More options · Tab"}
+            onPress={() => focus("description")} />
         </box>
       )}
       </scrollbox>

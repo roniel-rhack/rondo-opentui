@@ -81,10 +81,16 @@ Type "a"
 Sleep 1s
 Type "Ship the 2.0 release #release @tomorrow !high ~w"
 Sleep 1.5s
-Tab
+# Jump straight to the description; inline tokens now populate the controls.
+Ctrl+G
+Type "2"
 Sleep 400ms
 Type "Tag, publish the binaries and update the tap."
 Sleep 1s
+Ctrl+G
+Type "5"
+Left
+Sleep 600ms
 Ctrl+N
 Sleep 1s
 Type "Publish the release notes #docs"

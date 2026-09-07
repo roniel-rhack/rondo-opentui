@@ -5,7 +5,8 @@ import { Status, type Task } from "../../core/task/task.ts";
 import type { PaletteAction } from "../palette.ts";
 import { fuzzyIndices, fuzzyIndicesAfter, fuzzyScore } from "../state.ts";
 import { mix, type TuiTheme } from "../theme.ts";
-import { Button, Overlay, overlayBodyRows } from "./Overlay.tsx";
+import { cellWidth, fitCells } from "../text.ts";
+import { Button, Overlay, fixedOverlayBodyRows, overlayBodyRows } from "./Overlay.tsx";
 import { ChipButton, Section, highlightSpans } from "./primitives.tsx";
 
 /** Rows a list dialog can show under its search field: the overlay body
@@ -156,6 +157,7 @@ export function PromptDialog({
     if (!submitted.current) draftChange.current?.(dirty ? value : null);
   }, [value, dirty]);
   const [chipIndex, setChipIndex] = useState(-1);
+  const selectedChip = useRef(-1);
   const chipValue = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [accepted, setAccepted] = useState(0);
@@ -195,6 +197,7 @@ export function PromptDialog({
     lastText.current = "";
     setValue("");
     submitted.current = false;
+    selectedChip.current = -1;
     setChipIndex(-1);
     setError(null);
     setAccepted((n) => n + 1);
@@ -202,7 +205,7 @@ export function PromptDialog({
 
   const submit = () => {
     const text = currentValue().trim();
-    if (text === "" && chips?.[chipIndex]?.value !== "") {
+    if (text === "" && chips?.[selectedChip.current]?.value !== "") {
       setError("Cannot be empty");
       return;
     }
@@ -233,14 +236,15 @@ export function PromptDialog({
     if (!chips?.length || key.ctrl || key.meta) return;
     if (key.name === "up" || key.name === "down") {
       key.preventDefault();
-      const next = chipIndex < 0
+      const next = selectedChip.current < 0
         ? key.name === "up" ? chips.length - 1 : 0
-        : (chipIndex + (key.name === "up" ? -1 : 1) + chips.length) % chips.length;
+        : (selectedChip.current + (key.name === "up" ? -1 : 1) + chips.length) % chips.length;
       const chip = chips[next]!;
       chipValue.current = chip.value;
       areaRef.current?.setText(chip.value);
       if (areaRef.current) areaRef.current.cursorOffset = chip.value.length;
       setValue(chip.value);
+      selectedChip.current = next;
       setChipIndex(next);
       setError(null);
     }
@@ -266,6 +270,7 @@ export function PromptDialog({
     setValue(text);
     if (text !== chipValue.current) {
       chipValue.current = null;
+      selectedChip.current = -1;
       setChipIndex(-1);
     }
     if (text.trim() !== lastText.current.trim()) {
@@ -281,10 +286,31 @@ export function PromptDialog({
 
   const verb = stayOpen ? "add" : "save";
   const end = onDraftChange ? "esc close" : stayOpen ? "esc done" : "esc cancel";
-  const footer = (multiline
-    ? `ctrl+s ${verb} · enter new line · ${end}`
-    : `${chips?.length ? "↑↓ presets · " : ""}enter ${verb} · ${end}`)
-    + (onDiscard ? " · ctrl+r discard" : "");
+  const contentWidth = Math.max(Math.min(64, screenWidth - 4) - 6, 1);
+  const compact = screenHeight < 24 || contentWidth < 44;
+  const footer = compact
+    ? `${multiline ? "^s" : "enter"} ${verb} · ${end}`
+    : multiline
+      ? `ctrl+s ${verb} · enter new line · ${end}`
+      : `${chips?.length ? "↑↓ presets · " : ""}enter ${verb} · ${end}`;
+  const chipRows: PromptChip[][] = [];
+  let rowWidth = 0;
+  for (const chip of chips ?? []) {
+    const width = Math.min(cellWidth(chip.label), contentWidth - 3) + 3;
+    if (chipRows.length === 0 || rowWidth + width > contentWidth) {
+      chipRows.push([]);
+      rowWidth = 0;
+    }
+    chipRows.at(-1)!.push(chip);
+    rowWidth += width;
+  }
+  const errorRows = error ? Math.ceil(cellWidth(`⚠ ${error}`) / contentWidth) : 0;
+  const spacing = compact ? 0 : 1;
+  const fieldRows = multiline ? 8 : cellWidth(value) > contentWidth - 2 ? 5 : 3;
+  const fixedRows = chipRows.length + 1 + spacing * (2 + (chipRows.length > 0 ? 1 : 0));
+  const wantedHeight = 4 + fieldRows + errorRows + fixedRows;
+  const bodyRows = fixedOverlayBodyRows(screenHeight, wantedHeight);
+  const shownErrorRows = Math.min(errorRows, Math.max(1, bodyRows - 3 - fixedRows));
 
   return (
     <Overlay
@@ -292,19 +318,29 @@ export function PromptDialog({
       title={title}
       subtitle={accepted > 0 ? `${accepted} added · ${end}` : label}
       width={64}
+      height={wantedHeight}
       screenWidth={screenWidth}
       screenHeight={screenHeight}
       footer={footer}
       onBackdropClick={cancelIfPristine}
       onClose={close}
     >
-      <box flexDirection="column" paddingTop={1}>
+      {dirty && onDiscard ? (
+        <box position="absolute" top={-1} right={3} height={1} zIndex={1}
+          paddingLeft={1} paddingRight={1} backgroundColor={theme.surfaceAlt} onMouseDown={onDiscard}>
+          <text fg={theme.danger}>Discard</text>
+        </box>
+      ) : null}
+      <box flexDirection="column" flexGrow={1} minHeight={0} paddingTop={spacing}>
         <box
           border
           borderStyle="rounded"
           borderColor={error ? theme.danger : theme.accent}
           backgroundColor={mix(theme.surfaceAlt, theme.accentSoft, 0.4)}
-          height={multiline ? 8 : 5}
+          flexGrow={1}
+          minHeight={3}
+          title={compact && chips?.length ? " ↑↓ presets " : undefined}
+          titleColor={theme.textMuted}
         >
           <textarea
             ref={areaRef}
@@ -320,28 +356,31 @@ export function PromptDialog({
           />
         </box>
 
-        {chips && chips.length > 0 ? (
-          <box flexDirection="row" paddingTop={1}>
-            {chips.map((chip) => (
+        {chipRows.length > 0 ? (
+          <box flexDirection="column" paddingTop={spacing} flexShrink={0}>
+            {chipRows.map((row, index) => <box key={index} flexDirection="row" height={1} flexShrink={0}>
+            {row.map((chip) => (
               <ChipButton
                 key={chip.key}
                 theme={theme}
-                label={chip.label}
+                label={fitCells(chip.label, contentWidth - 3)}
+                active={chips?.[chipIndex] === chip}
                 onPress={() => deliver(chip.value)}
               />
             ))}
+            </box>)}
           </box>
         ) : null}
 
         {error ? (
-          <box paddingTop={1}>
-            <text fg={theme.danger} attributes={TextAttributes.BOLD}>
+          <scrollbox height={shownErrorRows} flexShrink={0} focused={false} scrollX={false}>
+            <text fg={theme.danger} attributes={TextAttributes.BOLD} wrapMode="word">
               {`⚠ ${error}`}
             </text>
-          </box>
+          </scrollbox>
         ) : null}
 
-        <box flexDirection="row" paddingTop={1}>
+        <box flexDirection="row" paddingTop={spacing} flexShrink={0}>
           <Button
             theme={theme}
             label={stayOpen ? "Add" : "Save"}
@@ -353,7 +392,6 @@ export function PromptDialog({
             label={onDraftChange ? "Close" : stayOpen ? "Done" : "Cancel"}
             onPress={close}
           />
-          {dirty && onDiscard ? <Button theme={theme} label="Discard" danger onPress={onDiscard} /> : null}
         </box>
       </box>
     </Overlay>

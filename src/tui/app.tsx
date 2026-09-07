@@ -575,10 +575,9 @@ export function App({ data, onQuit }: AppProps) {
         notify(visible ? `Created "${created.title}"` : `Created #${created.id} outside filter · V view`, "success");
       } else {
         const task = data.tasks.getById(taskId);
-        if (task) {
-          pushUndo(data.updateTask(task, draft));
-          notify(`Updated "${task.title}"`, "success");
-        }
+        if (!task) return `Task #${taskId} no longer exists`;
+        pushUndo(data.updateTask(task, draft));
+        notify(`Updated "${task.title}"`, "success");
       }
       if (!keepOpen) closeModal();
       reloadTasks();
@@ -2474,7 +2473,12 @@ export function App({ data, onQuit }: AppProps) {
           screenWidth={width}
           screenHeight={height}
           onSubmit={(values, keepOpen) => {
-            submitTaskForm(values, modal.taskId, keepOpen);
+            try {
+              const error = submitTaskForm(values, modal.taskId, keepOpen);
+              if (error) return error;
+            } catch (error) {
+              return `Could not save: ${(error as Error).message}`;
+            }
             taskDrafts.current.delete(String(modal.taskId ?? "new"));
           }}
           onCancel={closeModal}

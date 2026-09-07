@@ -169,12 +169,20 @@ map in-app. The keys you will use most:
 Quick-add tokens work in the title field of `a`/`e` — `#tag` (repeatable),
 `@today` / `@tomorrow` / `@+3d` / `@+1w` / `@2026-09-01`, `!low` / `!med` /
 `!high` / `!urgent` (or `!1`–`!4`), `~d` / `~w` / `~m` / `~y` for recurrence —
-stripped from the stored title and previewed live as you type.
+stripped from the stored title and previewed live as you type. Moving from the
+title to another field transfers these tokens into the controls, so subsequent
+date, tag, priority and recurrence edits are the values that get saved.
 
 New tasks open with the title and token preview. Press `tab` or click More options
 to expand all fields. `enter` saves from the title; `ctrl+n` saves and starts
 another task, retaining tags, due date, priority and recurrence while clearing
 title and description. Journal search opens the matching entry directly.
+
+In task forms, `ctrl+g` opens the field chooser; `1`–`6` jump to Title,
+Description, Due date, Tags, Priority and Repeats. `esc` dismisses the chooser.
+The numbered field tabs are also clickable when
+there is room; short terminals keep the current field in the header. Titles
+and prompts grow to show wrapped text, while short values use less space.
 
 Marks apply only to visible results; changing a filter removes marks outside it.
 Undo follows the latest mutation, including creation and edits; the palette names
@@ -184,8 +192,10 @@ Inside dialogs: `tab` / `shift+tab` move between fields, `←` / `→` pick a
 segmented option, `ctrl+s` saves (multiline fields keep `enter` for new
 lines). `esc` closes text editors while keeping dirty drafts for the current
 session; reopen the same editor to resume. `ctrl+r` or Discard explicitly removes
-a draft. Successful saves clear it. Date prompts use `↑` / `↓` for presets,
-`enter` to save and `esc` to cancel; typing never activates a preset.
+a draft. Successful saves clear it; a failed save keeps the editor and draft.
+Date prompts use `↑` / `↓` to highlight and preview presets, `enter` to save
+and `esc` to cancel; typing never activates a preset. Presets wrap in narrow
+terminals, keeping validation and Save / Close accessible.
 
 The tag editor (`,`) preserves untouched tags, including differences between
 marked tasks. Type to search or create a tag, `enter` toggles or creates it,

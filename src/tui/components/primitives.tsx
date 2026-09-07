@@ -45,11 +45,12 @@ export function Chip({
 interface ChipButtonProps {
   theme: TuiTheme;
   label: string;
+  active?: boolean;
   onPress: () => void;
 }
 
 /** Keycap-styled clickable chip, used for quick presets under form fields. */
-export function ChipButton({ theme, label, onPress }: ChipButtonProps) {
+export function ChipButton({ theme, label, active = false, onPress }: ChipButtonProps) {
   const [hover, setHover] = useState(false);
   return (
     // Fixed width and no wrapping: a row of chips wider than its column would
@@ -60,13 +61,13 @@ export function ChipButton({ theme, label, onPress }: ChipButtonProps) {
       paddingRight={1}
       marginRight={1}
       backgroundColor={
-        hover ? mix(theme.surfaceAlt, theme.accentSoft, 0.6) : theme.surfaceAlt
+        active ? theme.accent : hover ? mix(theme.surfaceAlt, theme.accentSoft, 0.6) : theme.surfaceAlt
       }
       onMouseOver={() => setHover(true)}
       onMouseOut={() => setHover(false)}
       onMouseDown={onPress}
     >
-      <text fg={theme.accent} wrapMode="none">
+      <text fg={active ? theme.textOn : theme.accent} wrapMode="none">
         {label}
       </text>
     </box>

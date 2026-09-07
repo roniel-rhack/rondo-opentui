@@ -95,6 +95,20 @@ test("journal entry drafts survive closing without writing the database", async 
   } finally { m.close(); }
 });
 
+test("saving a task deleted while its form was open preserves the editor draft", async () => {
+  const m = await mount();
+  try {
+    await m.press("e");
+    await m.type(" revised");
+    m.data.tasks.delete(1);
+    await m.press("s", { ctrl: true });
+    expect(m.captureCharFrame()).toContain("Task #1 no longer exists");
+    expect(m.captureCharFrame()).toContain("Edit task #1");
+    expect(m.captureCharFrame()).toContain("revised");
+    expect(m.data.tasks.getById(1)).toBeNull();
+  } finally { m.close(); }
+});
+
 test("E edits the parent task from the inspector while e still edits its child", async () => {
   const m = await mount();
   try {

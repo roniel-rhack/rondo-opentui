@@ -1050,6 +1050,7 @@ export function hintSpecs(ctx: HintContext): HintSpec[] {
       { key: "^s", label: "save", action: null },
       ...(ctx.creating ? [{ key: "^n", label: "save + new", action: null }] : []),
       { key: "tab", label: "field", action: null },
+      { key: "^g", label: "field picker", action: null },
       { key: "^r", label: "discard", action: null }, cancel,
     ];
     if (ctx.modal === "prompt") return [
@@ -1281,7 +1282,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       ["esc", "Clear marks"],
     ],
   ],
-  ["Forms", [["^s", "Save"], ["^n", "Save new task and add another"], ["^r", "Discard editor draft"], ["↑ ↓", "Choose date preset; enter saves"], ["tab", "Next field / more options"], ["esc", "Cancel / close"]]],
+  ["Forms", [["^s", "Save"], ["^n", "Save new task and add another"], ["^r", "Discard editor draft"], ["^g", "Choose task field, then press 1–6"], ["↑ ↓", "Choose date preset; enter saves"], ["tab / shift+tab", "Next / previous field; more options"], ["esc", "Cancel / close"]]],
 ];
 
 /** Every surface the status bar draws hints for, so the check below sees the

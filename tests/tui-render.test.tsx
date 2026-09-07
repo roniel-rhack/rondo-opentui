@@ -1350,12 +1350,12 @@ describe("TUI review 3 — task form and settings", () => {
     }
     // The footer already says how to save, so the buttons row is gone.
     expect(text).not.toContain("Save");
-    expect(text).toContain("enter save · ^n next · tab options · ^r discard · esc close");
+    expect(text).toContain("enter newline · ^s save · ^g field · esc close");
     // The overlay ends above the status bar: nothing runs off-screen.
     const bottom = frame.split("\n").findIndex((l) => l.includes("esc close"));
     expect(bottom).toBeLessThan(23);
     // Priority and Repeats share a row, each in its own frame.
-    const priorityRow = rows.findIndex((l) => l.includes("Priority"));
+    const priorityRow = rows.findIndex((l) => l.includes("─ Priority"));
     expect(rows[priorityRow]).toContain("Repeats");
     renderer.destroy();
   });
